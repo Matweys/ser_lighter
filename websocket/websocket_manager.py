@@ -19,7 +19,7 @@ from core.events import (
     OrderFilledEvent, PositionUpdateEvent, PositionClosedEvent
 )
 from cache.redis_manager import redis_manager
-from core.database.db_trades import get_user_api_credentials
+from database.db_trades import get_user_api_credentials
 
 # Настройка точности для Decimal
 getcontext().prec = 28

@@ -10,7 +10,7 @@ import json
 
 from core.bot import bot
 from core.logger import log_info, log_error, log_warning
-from core.database.db_trades import db_manager
+from database.db_trades import db_manager
 from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent, UserSettingsChangedEvent
 from core.enums import StrategyType, OrderSide, NotificationType
 from keyboards.inline import (

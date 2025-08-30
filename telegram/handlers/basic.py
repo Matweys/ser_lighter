@@ -10,7 +10,7 @@ from datetime import datetime
 import asyncio
 
 from core.logger import log_info, log_error, log_warning
-from core.database.db_trades import db_manager
+from database.db_trades import db_manager
 from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent
 from core.enums import NotificationType, SessionStatus
 from keyboards.inline import (
