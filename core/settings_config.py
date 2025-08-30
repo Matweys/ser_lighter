@@ -247,7 +247,7 @@ class ConfigLoader:
                 telegram=telegram_config,
                 security=security_config,
                 monitoring=monitoring_config,
-                environment=self.env.str("production"),
+                environment=self.env.str("ENVIRONMENT", "production"),
                 debug=False,
                 timezone="Europe/Moscow",
                 max_users=self.env.int("MAX_USERS", 1000),
