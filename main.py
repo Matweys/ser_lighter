@@ -11,17 +11,17 @@ from decimal import Decimal, getcontext
 from dataclasses import dataclass
 from aiogram.types import BotCommand
 
-from core.bot import bot, dp
+from telegram.bot import bot, dp
 from core.logger import log_info, log_error, log_warning
 from core.settings_config import config
-from core.database.db_trades import init_db_pool, init_db, add_user
+from database.database.db_trades import init_db_pool, init_db, add_user
 from cache.redis_manager import redis_manager
-from core.websocket_manager import WebSocketManager
+from websocket.websocket_manager import WebSocketManager
 from core.events import EventBus, UserSessionStartEvent, UserSessionStopEvent
 from core.bot_application import BotApplication
 from core.user_session import UserSession
 # Импорт обработчиков
-from core.handlers import basic, callback
+from telegram.handlers import basic, callback
 
 # Регистрация роутеров
 dp.include_router(basic.router)
