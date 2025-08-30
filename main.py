@@ -5,14 +5,15 @@
 """
 import sys
 import os
+import asyncio
+import logging
 # Добавляем корневую папку проекта в PYTHONPATH
 # Это решает все проблемы с импортами при запуске из systemd
 project_root = os.path.dirname(os.path.abspath(__file__))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-import asyncio
-import logging
+
 from contextlib import asynccontextmanager
 from typing import Dict, Optional
 from decimal import Decimal, getcontext
@@ -22,7 +23,7 @@ from aiogram.types import BotCommand
 from telegram.bot import bot, dp
 from core.logger import log_info, log_error, log_warning
 from core.settings_config import config
-from database.db_trades import init_db_pool, init_db, add_user
+from database.db_trades import init_db_pool, db_manager
 from cache.redis_manager import redis_manager
 from websocket.websocket_manager import WebSocketManager
 from core.events import EventBus, UserSessionStartEvent, UserSessionStopEvent
@@ -150,7 +151,7 @@ async def lifespan_context():
         # Инициализация базы данных
         log_info(0, "Инициализация базы данных...", module_name=__name__)
         await init_db_pool()
-        await init_db()
+
 
         # Настройка администратора
         await setup_admin_user()
