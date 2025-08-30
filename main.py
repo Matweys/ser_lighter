@@ -17,8 +17,8 @@ from core.settings_config import system_config
 from database.db_trades import db_manager
 from cache.redis_manager import redis_manager
 from core.bot_application import BotApplication
-from telegram.handlers import basic_handlers
-from telegram.handlers import callback_handlers
+from telegram.handlers import basic
+from telegram.handlers import callback
 
 # Регистрация роутеров
 dp.include_router(basic_handlers.router)
