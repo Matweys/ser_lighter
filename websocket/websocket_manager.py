@@ -19,7 +19,7 @@ from core.events import (
     OrderFilledEvent, PositionUpdateEvent, PositionClosedEvent
 )
 from cache.redis_manager import redis_manager
-from database.db_trades import get_user_api_credentials
+from database.db_trades import db_manager
 
 # Настройка точности для Decimal
 getcontext().prec = 28
@@ -361,10 +361,11 @@ class DataFeedHandler:
     async def _load_api_credentials(self):
         """Загрузка API ключей пользователя"""
         try:
-            credentials = await get_user_api_credentials(self.user_id)
-            if credentials:
-                self.api_key = credentials.get("api_key")
-                self.api_secret = credentials.get("secret_key")
+            # Используем db_manager и его метод get_api_keys
+            keys = await db_manager.get_api_keys(self.user_id, "bybit")
+            if keys:
+                # Метод возвращает кортеж (api_key, secret_key, passphrase)
+                self.api_key, self.api_secret, _ = keys
                 log_info(self.user_id, "API ключи загружены", module_name=__name__)
             else:
                 log_info(self.user_id, "API ключи не найдены", module_name=__name__)
