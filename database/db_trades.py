@@ -13,7 +13,7 @@ from enum import Enum
 
 from core.logger import log_info, log_error, log_warning
 from core.settings_config import system_config
-from core.enums import OrderStatus, PositionSide, StrategyType, TradeStatus
+from core.enums import OrderStatus, PositionSide, StrategyType, TradingStatus
 from core.functions import to_decimal, DecimalEncoder
 from cryptography.fernet import Fernet
 import base64
@@ -73,7 +73,7 @@ class TradeRecord:
     leverage: int = 1
     profit: Decimal = Decimal('0')
     commission: Decimal = Decimal('0')
-    status: str = TradeStatus.ACTIVE.value
+    status: str = TradingStatus.TRADING.value
     strategy_type: str = ""
     order_id: Optional[str] = None
     position_idx: int = 0
