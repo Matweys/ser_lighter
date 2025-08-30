@@ -1,0 +1,489 @@
+"""
+Профессиональная система обработки callback запросов для многопользовательского торгового бота
+"""
+from aiogram import Router, F
+from aiogram.types import CallbackQuery, Message
+from aiogram.fsm.context import FSMContext
+from typing import Dict, Any, Optional
+from decimal import Decimal
+import json
+
+from core.bot import bot
+from core.logger import log_info, log_error, log_warning
+from core.database.db_trades import db_manager
+from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent, UserSettingsChangedEvent
+from core.enums import StrategyType, OrderSide, NotificationType
+from keyboards.inline import (
+    get_main_menu_keyboard,
+    get_strategy_selection_keyboard,
+    get_strategy_config_keyboard,
+    get_confirmation_keyboard,
+    get_symbol_selection_keyboard,
+    get_settings_keyboard,
+    get_risk_settings_keyboard,
+    get_strategy_settings_keyboard
+)
+from core.handlers.states import UserStates
+from cache.redis_manager import redis_manager
+from core.functions import get_current_price, format_currency, format_percentage, validate_symbol
+from core.default_configs import DefaultConfigs
+
+
+router = Router()
+
+class CallbackHandler:
+    """Профессиональный обработчик callback запросов"""
+    
+    def __init__(self, event_bus: EventBus):
+        self.event_bus = event_bus
+        self.strategy_descriptions = {
+            StrategyType.BIDIRECTIONAL_GRID.value: {
+                "name": "🔄 Двунаправленная сетка",
+                "description": (
+                    "Стратегия для торговли в боковом рынке.\n"
+                    "Размещает ордера на покупку и продажу вокруг текущей цены.\n"
+                    "Подходит для флэтовых рынков с низкой волатильностью."
+                ),
+                "risk_level": "MEDIUM",
+                "min_balance": Decimal('100')
+            },
+            StrategyType.GRID_SCALPING.value: {
+                "name": "⚡ Сеточный скальпинг", 
+                "description": (
+                    "Быстрая скальпинговая стратегия с частыми сделками.\n"
+                    "Использует узкие спреды для получения небольшой прибыли.\n"
+                    "Требует высокой ликвидности и низких комиссий."
+                ),
+                "risk_level": "HIGH",
+                "min_balance": Decimal('200')
+            },
+            StrategyType.IMPULSE_TRAILING.value: {
+                "name": "🚀 Импульсный трейлинг",
+                "description": (
+                    "Стратегия следования за трендом с трейлинг-стопом.\n"
+                    "Входит в позицию при сильных импульсах.\n"
+                    "Максимизирует прибыль в трендовых движениях."
+                ),
+                "risk_level": "HIGH", 
+                "min_balance": Decimal('150')
+            }
+        }
+
+callback_handler = CallbackHandler(None)  # EventBus будет инициализирован позже
+
+def set_event_bus(event_bus: EventBus):
+    """Установка EventBus для callback handler"""
+    callback_handler.event_bus = event_bus
+
+# Главное меню
+@router.callback_query(F.data == "main_menu")
+async def callback_main_menu(callback: CallbackQuery, state: FSMContext):
+    """Возврат в главное меню"""
+    user_id = callback.from_user.id
+    
+    try:
+        await state.clear()
+        
+        # Получаем статус пользователя
+        user_profile = await db_manager.get_user(user_id)
+        if not user_profile:
+            await callback.answer("❌ Пользователь не найден", show_alert=True)
+            return
+        
+        # Получаем статус сессии
+        session_status = await redis_manager.get_user_session_status(user_id)
+        is_active = session_status.get('is_active', False) if session_status else False
+        
+        status_text = "🟢 Активен" if is_active else "🔴 Неактивен"
+        
+        text = (
+            f"🏠 <b>Главное меню</b>\n\n"
+            f"👤 Пользователь: {user_profile.username or 'Не указано'}\n"
+            f"📊 Статус: {status_text}\n"
+            f"💰 Общая прибыль: {format_currency(user_profile.total_profit)}\n"
+            f"📈 Всего сделок: {user_profile.total_trades}\n"
+            f"🎯 Win Rate: {format_percentage(user_profile.win_rate)}\n\n"
+            f"Выберите действие:"
+        )
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_main_menu_keyboard(is_active),
+            parse_mode="HTML"
+        )
+        
+        log_info(user_id, "Пользователь вернулся в главное меню", module_name='callback')
+        
+    except Exception as e:
+        log_error(user_id, f"Ошибка в главном меню: {e}", module_name='callback')
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+# Управление торговлей
+@router.callback_query(F.data == "start_trading")
+async def callback_start_trading(callback: CallbackQuery, state: FSMContext):
+    """Запуск торговли"""
+    user_id = callback.from_user.id
+    
+    try:
+        # Проверяем доступ пользователя
+        user_profile = await db_manager.get_user(user_id)
+        if not user_profile or not user_profile.is_active:
+            await callback.answer("🚫 У вас нет доступа к торговле", show_alert=True)
+            return
+        
+        # Проверяем API ключи
+        api_keys = await db_manager.get_api_keys(user_id, "bybit")
+        if not api_keys:
+            await callback.answer(
+                "⚠️ Сначала настройте API ключи в разделе 'Настройки'",
+                show_alert=True
+            )
+            return
+        
+        # Проверяем существующую сессию
+        session_status = await redis_manager.get_user_session_status(user_id)
+        if session_status and session_status.get('is_active'):
+            await callback.answer("⚠️ Торговля уже запущена", show_alert=True)
+            return
+        
+        # Публикуем событие запуска сессии
+        if callback_handler.event_bus:
+            await callback_handler.event_bus.publish(
+                UserSessionStartRequestedEvent(user_id=user_id)
+            )
+        
+        await callback.message.edit_text(
+            "🚀 <b>Запуск торговли...</b>\n\n"
+            "⏳ Инициализация торговой сессии...\n"
+            "📊 Загрузка конфигураций...\n"
+            "🔄 Подключение к рынку...",
+            reply_markup=get_main_menu_keyboard(False),
+            parse_mode="HTML"
+        )
+        
+        log_info(user_id, "Запуск торговли", module_name='callback')
+        
+    except Exception as e:
+        log_error(user_id, f"Ошибка запуска торговли: {e}", module_name='callback')
+        await callback.answer("❌ Ошибка запуска торговли", show_alert=True)
+
+@router.callback_query(F.data == "stop_trading")
+async def callback_stop_trading(callback: CallbackQuery, state: FSMContext):
+    """Остановка торговли"""
+    user_id = callback.from_user.id
+    
+    try:
+        # Проверяем существующую сессию
+        session_status = await redis_manager.get_user_session_status(user_id)
+        if not session_status or not session_status.get('is_active'):
+            await callback.answer("⚠️ Торговля не запущена", show_alert=True)
+            return
+        
+        # Публикуем событие остановки сессии
+        if callback_handler.event_bus:
+            await callback_handler.event_bus.publish(
+                UserSessionStopRequestedEvent(user_id=user_id)
+            )
+        
+        await callback.message.edit_text(
+            "🛑 <b>Остановка торговли...</b>\n\n"
+            "⏳ Закрытие активных позиций...\n"
+            "📊 Сохранение статистики...\n"
+            "🔄 Завершение сессии...",
+            reply_markup=get_main_menu_keyboard(True),
+            parse_mode="HTML"
+        )
+        
+        log_info(user_id, "Остановка торговли", module_name='callback')
+        
+    except Exception as e:
+        log_error(user_id, f"Ошибка остановки торговли: {e}", module_name='callback')
+        await callback.answer("❌ Ошибка остановки торговли", show_alert=True)
+
+# Настройки
+@router.callback_query(F.data == "settings")
+async def callback_settings(callback: CallbackQuery, state: FSMContext):
+    """Главное меню настроек"""
+    user_id = callback.from_user.id
+    
+    try:
+        # Получаем текущие настройки
+        user_config = await redis_manager.get_user_config(user_id)
+        if not user_config:
+            # Создаем конфигурацию по умолчанию
+            await DefaultConfigs.create_default_user_config(user_id)
+            user_config = await redis_manager.get_user_config(user_id)
+        
+        risk_config = user_config.get('risk_management', {})
+        
+        text = (
+            f"⚙️ <b>Настройки</b>\n\n"
+            f"🎯 Риск на сделку: {format_percentage(risk_config.get('risk_per_trade', 2))}\n"
+            f"📉 Макс. дневная просадка: {format_percentage(risk_config.get('max_daily_drawdown', 10))}\n"
+            f"📊 Одновременных сделок: {risk_config.get('max_concurrent_trades', 3)}\n"
+            f"💰 Мин. баланс: {format_currency(risk_config.get('min_balance', 100))}\n\n"
+            f"Выберите категорию настроек:"
+        )
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_settings_keyboard(),
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        log_error(user_id, f"Ошибка в настройках: {e}", module_name='callback')
+        await callback.answer("❌ Ошибка загрузки настроек", show_alert=True)
+
+@router.callback_query(F.data == "risk_settings")
+async def callback_risk_settings(callback: CallbackQuery, state: FSMContext):
+    """Настройки риск-менеджмента"""
+    user_id = callback.from_user.id
+    
+    try:
+        user_config = await redis_manager.get_user_config(user_id)
+        risk_config = user_config.get('risk_management', {})
+        
+        text = (
+            f"🛡️ <b>Настройки риск-менеджмента</b>\n\n"
+            f"🎯 <b>Риск на сделку:</b> {format_percentage(risk_config.get('risk_per_trade', 2))}\n"
+            f"Процент от баланса, рискуемый в одной сделке\n\n"
+            f"📉 <b>Макс. дневная просадка:</b> {format_percentage(risk_config.get('max_daily_drawdown', 10))}\n"
+            f"Максимальная просадка за день\n\n"
+            f"📊 <b>Одновременных сделок:</b> {risk_config.get('max_concurrent_trades', 3)}\n"
+            f"Максимальное количество активных позиций\n\n"
+            f"💰 <b>Минимальный баланс:</b> {format_currency(risk_config.get('min_balance', 100))}\n"
+            f"Минимальный баланс для торговли\n\n"
+            f"Выберите параметр для изменения:"
+        )
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_risk_settings_keyboard(),
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        log_error(user_id, f"Ошибка в настройках риска: {e}", module_name='callback')
+        await callback.answer("❌ Ошибка загрузки настроек", show_alert=True)
+
+@router.callback_query(F.data == "strategy_settings")
+async def callback_strategy_settings(callback: CallbackQuery, state: FSMContext):
+    """Настройки стратегий"""
+    user_id = callback.from_user.id
+    
+    try:
+        user_config = await redis_manager.get_user_config(user_id)
+        strategies_config = user_config.get('strategies', {})
+        
+        text = (
+            f"📊 <b>Настройки стратегий</b>\n\n"
+            f"Настройте параметры для каждого типа стратегии:\n\n"
+        )
+        
+        # Добавляем информацию о каждой стратегии
+        for strategy_type, info in callback_handler.strategy_descriptions.items():
+            strategy_config = strategies_config.get(strategy_type, {})
+            enabled = strategy_config.get('enabled', True)
+            status = "✅" if enabled else "❌"
+            
+            text += f"{status} <b>{info['name']}</b>\n"
+            text += f"   Риск: {info['risk_level']}\n"
+            text += f"   Мин. баланс: {format_currency(info['min_balance'])}\n\n"
+        
+        text += "Выберите стратегию для настройки:"
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_strategy_settings_keyboard(),
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        log_error(user_id, f"Ошибка в настройках стратегий: {e}", module_name='callback')
+        await callback.answer("❌ Ошибка загрузки настроек", show_alert=True)
+
+# Выбор стратегии для настройки
+@router.callback_query(F.data.startswith("configure_strategy_"))
+async def callback_configure_strategy(callback: CallbackQuery, state: FSMContext):
+    """Настройка конкретной стратегии"""
+    user_id = callback.from_user.id
+    strategy_type = callback.data.replace("configure_strategy_", "")
+    
+    try:
+        if strategy_type not in callback_handler.strategy_descriptions:
+            await callback.answer("❌ Неизвестная стратегия", show_alert=True)
+            return
+        
+        strategy_info = callback_handler.strategy_descriptions[strategy_type]
+        user_config = await redis_manager.get_user_config(user_id)
+        strategy_config = user_config.get('strategies', {}).get(strategy_type, {})
+        
+        # Сохраняем тип стратегии в состоянии
+        await state.update_data(configuring_strategy=strategy_type)
+        await state.set_state(UserStates.CONFIGURING_STRATEGY)
+        
+        text = (
+            f"⚙️ <b>Настройка: {strategy_info['name']}</b>\n\n"
+            f"📝 <b>Описание:</b>\n{strategy_info['description']}\n\n"
+            f"🎯 <b>Уровень риска:</b> {strategy_info['risk_level']}\n"
+            f"💰 <b>Мин. баланс:</b> {format_currency(strategy_info['min_balance'])}\n\n"
+            f"<b>Текущие настройки:</b>\n"
+        )
+        
+        # Добавляем текущие параметры стратегии
+        if strategy_type == StrategyType.BIDIRECTIONAL_GRID.value:
+            text += f"📏 Количество уровней: {strategy_config.get('grid_levels', 5)}\n"
+            text += f"📊 Spacing (%): {strategy_config.get('spacing_percent', 0.5)}\n"
+            text += f"💵 Размер ордера (USDT): {strategy_config.get('order_size_usdt', 10)}\n"
+        elif strategy_type == StrategyType.GRID_SCALPING.value:
+            text += f"⚡ Таймаут ордера (сек): {strategy_config.get('order_timeout', 30)}\n"
+            text += f"📊 Мин. спред (%): {strategy_config.get('min_spread_percent', 0.1)}\n"
+            text += f"💵 Размер ордера (USDT): {strategy_config.get('order_size_usdt', 20)}\n"
+        elif strategy_type == StrategyType.IMPULSE_TRAILING.value:
+            text += f"🎯 Мин. сила сигнала: {strategy_config.get('min_signal_strength', 70)}\n"
+            text += f"📈 Трейлинг (%): {strategy_config.get('trailing_percent', 1.0)}\n"
+            text += f"💵 Размер позиции (USDT): {strategy_config.get('position_size_usdt', 50)}\n"
+        
+        text += f"\nВыберите параметр для изменения:"
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_strategy_config_keyboard(strategy_type),
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        log_error(user_id, f"Ошибка настройки стратегии {strategy_type}: {e}", module_name='callback')
+        await callback.answer("❌ Ошибка настройки стратегии", show_alert=True)
+
+# Статистика
+@router.callback_query(F.data == "statistics")
+async def callback_statistics(callback: CallbackQuery, state: FSMContext):
+    """Показ статистики пользователя"""
+    user_id = callback.from_user.id
+    
+    try:
+        # Получаем профиль пользователя
+        user_profile = await db_manager.get_user(user_id)
+        if not user_profile:
+            await callback.answer("❌ Профиль не найден", show_alert=True)
+            return
+        
+        # Получаем последние сделки
+        recent_trades = await db_manager.get_user_trades(user_id, limit=10)
+        
+        # Получаем статус сессии
+        session_status = await redis_manager.get_user_session_status(user_id)
+        
+        text = (
+            f"📊 <b>Статистика торговли</b>\n\n"
+            f"👤 <b>Пользователь:</b> {user_profile.username or 'Не указано'}\n"
+            f"📅 <b>Регистрация:</b> {user_profile.registration_date.strftime('%d.%m.%Y') if user_profile.registration_date else 'Не указано'}\n\n"
+            f"💰 <b>Общая прибыль:</b> {format_currency(user_profile.total_profit)}\n"
+            f"📈 <b>Всего сделок:</b> {user_profile.total_trades}\n"
+            f"🎯 <b>Win Rate:</b> {format_percentage(user_profile.win_rate)}\n"
+            f"📉 <b>Макс. просадка:</b> {format_percentage(user_profile.max_drawdown)}\n\n"
+        )
+        
+        if session_status and session_status.get('is_active'):
+            active_strategies = session_status.get('active_strategies', [])
+            text += f"🟢 <b>Статус:</b> Активен\n"
+            text += f"📊 <b>Активных стратегий:</b> {len(active_strategies)}\n"
+            if active_strategies:
+                text += f"🔄 <b>Стратегии:</b> {', '.join(active_strategies)}\n"
+        else:
+            text += f"🔴 <b>Статус:</b> Неактивен\n"
+        
+        text += f"\n📋 <b>Последние сделки:</b>\n"
+        
+        if recent_trades:
+            for i, trade in enumerate(recent_trades[:5], 1):
+                profit_emoji = "📈" if trade.profit > 0 else "📉"
+                text += (
+                    f"{i}. {profit_emoji} {trade.symbol} "
+                    f"{format_currency(trade.profit)} "
+                    f"({trade.entry_time.strftime('%d.%m %H:%M') if trade.entry_time else 'N/A'})\n"
+                )
+        else:
+            text += "Сделок пока нет\n"
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_main_menu_keyboard(session_status.get('is_active', False) if session_status else False),
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        log_error(user_id, f"Ошибка получения статистики: {e}", module_name='callback')
+        await callback.answer("❌ Ошибка загрузки статистики", show_alert=True)
+
+# Подтверждение действий
+@router.callback_query(F.data.startswith("confirm_"))
+async def callback_confirm_action(callback: CallbackQuery, state: FSMContext):
+    """Подтверждение различных действий"""
+    user_id = callback.from_user.id
+    action = callback.data.replace("confirm_", "")
+    
+    try:
+        if action == "start_trading":
+            # Подтверждение запуска торговли
+            if callback_handler.event_bus:
+                await callback_handler.event_bus.publish(
+                    UserSessionStartRequestedEvent(user_id=user_id)
+                )
+            
+            await callback.message.edit_text(
+                "✅ <b>Торговля запущена!</b>\n\n"
+                "🚀 Система начала мониторинг рынка\n"
+                "📊 Стратегии активированы\n"
+                "💼 Торговая сессия инициализирована",
+                reply_markup=get_main_menu_keyboard(True),
+                parse_mode="HTML"
+            )
+            
+        elif action == "stop_trading":
+            # Подтверждение остановки торговли
+            if callback_handler.event_bus:
+                await callback_handler.event_bus.publish(
+                    UserSessionStopRequestedEvent(user_id=user_id)
+                )
+            
+            await callback.message.edit_text(
+                "🛑 <b>Торговля остановлена!</b>\n\n"
+                "📊 Все стратегии деактивированы\n"
+                "💼 Торговая сессия завершена\n"
+                "📈 Статистика сохранена",
+                reply_markup=get_main_menu_keyboard(False),
+                parse_mode="HTML"
+            )
+        
+        log_info(user_id, f"Подтверждено действие '{action}'", module_name='callback')
+        
+    except Exception as e:
+        log_error(user_id, f"Ошибка подтверждения действия '{action}': {e}", module_name='callback')
+        await callback.answer("❌ Ошибка выполнения действия", show_alert=True)
+
+@router.callback_query(F.data == "cancel")
+async def callback_cancel(callback: CallbackQuery, state: FSMContext):
+    """Отмена текущего действия"""
+    user_id = callback.from_user.id
+    
+    try:
+        await state.clear()
+        await callback_main_menu(callback, state)
+        log_info(user_id, "Пользователь отменил действие", module_name='callback')
+        
+    except Exception as e:
+        og_error(user_id, f"Ошибка отмены: {e}", module_name='callback')
+        await callback.answer("❌ Ошибка отмены", show_alert=True)
+
+# Обработчик неизвестных callback
+@router.callback_query()
+async def callback_unknown(callback: CallbackQuery):
+    """Обработчик неизвестных callback запросов"""
+    user_id = callback.from_user.id
+    
+    log_warning(user_id, f"Неизвестный callback: {callback.data}", module_name='callback')
+    await callback.answer("❌ Неизвестная команда", show_alert=True)
+

@@ -1,0 +1,555 @@
+# core/websocket_manager.py
+"""
+Многопользовательский WebSocket менеджер для торговой системы
+Реализует DataFeedHandler для каждого пользователя с событийной архитектурой
+"""
+import asyncio
+import json
+import websockets
+from decimal import Decimal, getcontext
+from typing import Dict, Optional, Set, List, Any
+from datetime import datetime
+import hmac
+import hashlib
+import time
+
+from core.logger import log_error, log_info
+from core.events import (
+    event_bus, EventType, NewCandleEvent, PriceUpdateEvent, OrderUpdateEvent,
+    OrderFilledEvent, PositionUpdateEvent, PositionClosedEvent
+)
+from cache.redis_manager import redis_manager
+from core.database.db_trades import get_user_api_credentials
+
+# Настройка точности для Decimal
+getcontext().prec = 28
+
+# WebSocket URLs
+WS_URL_PUBLIC = "wss://stream.bybit.com/v5/public/linear"
+WS_URL_PRIVATE = "wss://stream.bybit.com/v5/private"
+
+
+class GlobalWebSocketManager:
+    """
+    Глобальный менеджер WebSocket соединений
+    Управляет одним публичным соединением для всех пользователей
+    """
+    
+    def __init__(self):
+        self.public_connection: Optional[websockets.WebSocketClientProtocol] = None
+        self.running = False
+        
+        # Отслеживание подписок
+        self.symbol_subscribers: Dict[str, Set[int]] = {}  # symbol -> set of user_ids
+        self.subscribed_symbols: Set[str] = set()
+        
+        # Задачи
+        self._public_task: Optional[asyncio.Task] = None
+        
+    async def start(self):
+        """Запуск глобального WebSocket менеджера"""
+        if self.running:
+            return
+            
+        log_info(0, "Запуск GlobalWebSocketManager...", module_name=__name__)
+        
+        self.running = True
+        self._public_task = asyncio.create_task(self._public_websocket_loop())
+        
+        log_info(0, "GlobalWebSocketManager запущен", module_name=__name__)
+        
+    async def stop(self):
+        """Остановка глобального WebSocket менеджера"""
+        if not self.running:
+            return
+            
+        log_info(0, "Остановка GlobalWebSocketManager...", module_name=__name__)
+        
+        self.running = False
+        
+        if self._public_task:
+            self._public_task.cancel()
+            try:
+                await self._public_task
+            except asyncio.CancelledError:
+                pass
+                
+        if self.public_connection:
+            await self.public_connection.close()
+            
+        log_info(0, "GlobalWebSocketManager остановлен", module_name=__name__)
+        
+    async def subscribe_symbol(self, user_id: int, symbol: str):
+        """Подписка пользователя на символ"""
+        if symbol not in self.symbol_subscribers:
+            self.symbol_subscribers[symbol] = set()
+            
+        self.symbol_subscribers[symbol].add(user_id)
+        
+        # Если это первая подписка на символ, подписываемся в WebSocket
+        if symbol not in self.subscribed_symbols:
+            await self._subscribe_to_symbol(symbol)
+            self.subscribed_symbols.add(symbol)
+            
+        log_info(user_id, f"Подписка на {symbol}", module_name=__name__)
+        
+    async def unsubscribe_symbol(self, user_id: int, symbol: str):
+        """Отписка пользователя от символа"""
+        if symbol in self.symbol_subscribers:
+            self.symbol_subscribers[symbol].discard(user_id)
+            
+            # Если больше нет подписчиков, отписываемся от WebSocket
+            if not self.symbol_subscribers[symbol]:
+                await self._unsubscribe_from_symbol(symbol)
+                self.subscribed_symbols.discard(symbol)
+                del self.symbol_subscribers[symbol]
+                
+        log_info(user_id, f"Отписка от {symbol}", module_name=__name__)
+        
+    async def unsubscribe_user(self, user_id: int):
+        """Отписка пользователя от всех символов"""
+        symbols_to_remove = []
+        
+        for symbol, subscribers in self.symbol_subscribers.items():
+            if user_id in subscribers:
+                subscribers.discard(user_id)
+                if not subscribers:
+                    symbols_to_remove.append(symbol)
+                    
+        for symbol in symbols_to_remove:
+            await self._unsubscribe_from_symbol(symbol)
+            self.subscribed_symbols.discard(symbol)
+            del self.symbol_subscribers[symbol]
+            
+        log_info(user_id, "Отписка от всех символов", module_name=__name__)
+        
+    async def _public_websocket_loop(self):
+        """Основной цикл публичного WebSocket"""
+        while self.running:
+            try:
+                log_info(0, "Подключение к публичному WebSocket...", module_name=__name__)
+                
+                async with websockets.connect(WS_URL_PUBLIC) as websocket:
+                    self.public_connection = websocket
+                    log_info(0, "Подключен к публичному WebSocket", module_name=__name__)
+                    
+                    # Переподписка на все символы
+                    for symbol in list(self.subscribed_symbols):
+                        await self._subscribe_to_symbol(symbol)
+                        
+                    # Обработка сообщений
+                    async for message in websocket:
+                        if not self.running:
+                            break
+                            
+                        try:
+                            await self._handle_public_message(message)
+                        except Exception as e:
+                            log_error(0, f"Ошибка обработки публичного сообщения: {e}", module_name=__name__)
+                            
+            except Exception as e:
+                log_error(0, f"Ошибка публичного WebSocket: {e}", module_name=__name__)
+                
+                if self.running:
+                    await asyncio.sleep(5)  # Пауза перед переподключением
+                    
+    async def _subscribe_to_symbol(self, symbol: str):
+        """Подписка на символ в WebSocket"""
+        if not self.public_connection:
+            return
+            
+        try:
+            # Подписка на тикер (цена)
+            ticker_msg = {
+                "op": "subscribe",
+                "args": [f"tickers.{symbol}"]
+            }
+            await self.public_connection.send(json.dumps(ticker_msg))
+            
+            # Подписка на свечи 1m
+            candle_msg = {
+                "op": "subscribe", 
+                "args": [f"kline.1.{symbol}"]
+            }
+            await self.public_connection.send(json.dumps(candle_msg))
+            
+            log_info(0, f"Подписка на {symbol} отправлена", module_name=__name__)
+            
+        except Exception as e:
+            log_error(0, f"Ошибка подписки на {symbol}: {e}", module_name=__name__)
+            
+    async def _unsubscribe_from_symbol(self, symbol: str):
+        """Отписка от символа в WebSocket"""
+        if not self.public_connection:
+            return
+            
+        try:
+            # Отписка от тикера
+            ticker_msg = {
+                "op": "unsubscribe",
+                "args": [f"tickers.{symbol}"]
+            }
+            await self.public_connection.send(json.dumps(ticker_msg))
+            
+            # Отписка от свечей
+            candle_msg = {
+                "op": "unsubscribe",
+                "args": [f"kline.1.{symbol}"]
+            }
+            await self.public_connection.send(json.dumps(candle_msg))
+            
+            log_info(0, f"Отписка от {symbol} отправлена", module_name=__name__)
+            
+        except Exception as e:
+            log_error(0, f"Ошибка отписки от {symbol}: {e}", module_name=__name__)
+            
+    async def _handle_public_message(self, message: str):
+        """Обработка публичных сообщений"""
+        try:
+            data = json.loads(message)
+            
+            if "topic" not in data:
+                return
+                
+            topic = data["topic"]
+            
+            # Обработка тикеров (цены)
+            if topic.startswith("tickers."):
+                symbol = topic.split(".")[1]
+                await self._handle_ticker_update(symbol, data["data"])
+                
+            # Обработка свечей
+            elif topic.startswith("kline."):
+                parts = topic.split(".")
+                interval = parts[1]
+                symbol = parts[2]
+                await self._handle_candle_update(symbol, interval, data["data"])
+                
+        except Exception as e:
+            log_error(0, f"Ошибка парсинга публичного сообщения: {e}", module_name=__name__)
+            
+    async def _handle_ticker_update(self, symbol: str, ticker_data: List[Dict]):
+        """Обработка обновления тикера"""
+        try:
+            if not ticker_data:
+                return
+                
+            ticker = ticker_data[0]
+            price = Decimal(str(ticker.get("lastPrice", "0")))
+            
+            if price <= 0:
+                return
+                
+            # Отправка события всем подписчикам символа
+            if symbol in self.symbol_subscribers:
+                for user_id in self.symbol_subscribers[symbol]:
+                    price_event = PriceUpdateEvent(
+                        user_id=user_id,
+                        symbol=symbol,
+                        price=price
+                    )
+                    await event_bus.publish(price_event)
+                    
+        except Exception as e:
+            log_error(0, f"Ошибка обработки тикера {symbol}: {e}", module_name=__name__)
+            
+    async def _handle_candle_update(self, symbol: str, interval: str, candle_data: List[Dict]):
+        """Обработка обновления свечи"""
+        try:
+            if not candle_data:
+                return
+                
+            candle = candle_data[0]
+            
+            # Проверяем, что свеча закрыта
+            if not candle.get("confirm", False):
+                return
+                
+            # Конвертация данных свечи в Decimal
+            candle_decimal = {
+                "timestamp": int(candle["start"]),
+                "open": Decimal(str(candle["open"])),
+                "high": Decimal(str(candle["high"])),
+                "low": Decimal(str(candle["low"])),
+                "close": Decimal(str(candle["close"])),
+                "volume": Decimal(str(candle["volume"]))
+            }
+            
+            # Отправка события всем подписчикам символа
+            if symbol in self.symbol_subscribers:
+                for user_id in self.symbol_subscribers[symbol]:
+                    candle_event = NewCandleEvent(
+                        user_id=user_id,
+                        symbol=symbol,
+                        interval=interval,
+                        candle_data=candle_decimal
+                    )
+                    await event_bus.publish(candle_event)
+                    
+        except Exception as e:
+            log_error(0, f"Ошибка обработки свечи {symbol}: {e}", module_name=__name__)
+
+
+class DataFeedHandler:
+    """
+    Персональный обработчик данных для пользователя
+    Управляет подписками на рыночные данные и приватные события
+    """
+    
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+        self.running = False
+        
+        # Приватное WebSocket соединение
+        self.private_connection: Optional[websockets.WebSocketClientProtocol] = None
+        self._private_task: Optional[asyncio.Task] = None
+        
+        # API ключи пользователя
+        self.api_key: Optional[str] = None
+        self.api_secret: Optional[str] = None
+        
+    async def start(self):
+        """Запуск DataFeedHandler"""
+        if self.running:
+            return
+            
+        log_info(self.user_id, "Запуск DataFeedHandler...", module_name=__name__)
+        
+        try:
+            # Загрузка API ключей
+            await self._load_api_credentials()
+            
+            # Подписка на символы из watchlist
+            await self._subscribe_to_watchlist()
+            
+            # Запуск приватного WebSocket
+            if self.api_key and self.api_secret:
+                self._private_task = asyncio.create_task(self._private_websocket_loop())
+            
+            self.running = True
+            log_info(self.user_id, "DataFeedHandler запущен", module_name=__name__)
+            
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка запуска DataFeedHandler: {e}", module_name=__name__)
+            raise
+            
+    async def stop(self):
+        """Остановка DataFeedHandler"""
+        if not self.running:
+            return
+            
+        log_info(self.user_id, "Остановка DataFeedHandler...", module_name=__name__)
+        
+        self.running = False
+        
+        # Отписка от всех символов
+        await global_ws_manager.unsubscribe_user(self.user_id)
+        
+        # Остановка приватного WebSocket
+        if self._private_task:
+            self._private_task.cancel()
+            try:
+                await self._private_task
+            except asyncio.CancelledError:
+                pass
+                
+        if self.private_connection:
+            await self.private_connection.close()
+            
+        log_info(self.user_id, "DataFeedHandler остановлен", module_name=__name__)
+        
+    async def _load_api_credentials(self):
+        """Загрузка API ключей пользователя"""
+        try:
+            credentials = await get_user_api_credentials(self.user_id)
+            if credentials:
+                self.api_key = credentials.get("api_key")
+                self.api_secret = credentials.get("secret_key")
+                log_info(self.user_id, "API ключи загружены", module_name=__name__)
+            else:
+                log_info(self.user_id, "API ключи не найдены", module_name=__name__)
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка загрузки API ключей: {e}", module_name=__name__)
+            
+    async def _subscribe_to_watchlist(self):
+        """Подписка на символы из watchlist пользователя"""
+        try:
+            global_config = await redis_manager.get_json(f"user:{self.user_id}:global_config")
+            if not global_config:
+                return
+                
+            watchlist = global_config.get("watchlist_symbols", [])
+            
+            for symbol in watchlist:
+                await global_ws_manager.subscribe_symbol(self.user_id, symbol)
+                
+            log_info(self.user_id, f"Подписка на watchlist: {watchlist}", module_name=__name__)
+            
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка подписки на watchlist: {e}", module_name=__name__)
+            
+    async def _private_websocket_loop(self):
+        """Основной цикл приватного WebSocket"""
+        while self.running:
+            try:
+                log_info(self.user_id, "Подключение к приватному WebSocket...", module_name=__name__)
+                
+                async with websockets.connect(WS_URL_PRIVATE) as websocket:
+                    self.private_connection = websocket
+                    
+                    # Аутентификация
+                    await self._authenticate_private_websocket()
+                    
+                    # Подписка на приватные каналы
+                    await self._subscribe_private_channels()
+                    
+                    log_info(self.user_id, "Подключен к приватному WebSocket", module_name=__name__)
+                    
+                    # Обработка сообщений
+                    async for message in websocket:
+                        if not self.running:
+                            break
+                            
+                        try:
+                            await self._handle_private_message(message)
+                        except Exception as e:
+                            log_error(self.user_id, f"Ошибка обработки приватного сообщения: {e}", module_name=__name__)
+                            
+            except Exception as e:
+                log_error(self.user_id, f"Ошибка приватного WebSocket: {e}", module_name=__name__)
+                
+                if self.running:
+                    await asyncio.sleep(5)  # Пауза перед переподключением
+                    
+    async def _authenticate_private_websocket(self):
+        """Аутентификация в приватном WebSocket"""
+        if not self.api_key or not self.api_secret:
+            return
+            
+        try:
+            expires = int(time.time() * 1000) + 10000
+            signature = hmac.new(
+                self.api_secret.encode('utf-8'),
+                f'GET/realtime{expires}'.encode('utf-8'),
+                hashlib.sha256
+            ).hexdigest()
+            
+            auth_msg = {
+                "op": "auth",
+                "args": [self.api_key, expires, signature]
+            }
+            
+            await self.private_connection.send(json.dumps(auth_msg))
+            log_info(self.user_id, "Аутентификация отправлена", module_name=__name__)
+            
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка аутентификации: {e}", module_name=__name__)
+            
+    async def _subscribe_private_channels(self):
+        """Подписка на приватные каналы"""
+        try:
+            # Подписка на ордера
+            order_msg = {
+                "op": "subscribe",
+                "args": ["order"]
+            }
+            await self.private_connection.send(json.dumps(order_msg))
+            
+            # Подписка на позиции
+            position_msg = {
+                "op": "subscribe",
+                "args": ["position"]
+            }
+            await self.private_connection.send(json.dumps(position_msg))
+            
+            log_info(self.user_id, "Подписка на приватные каналы отправлена", module_name=__name__)
+            
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка подписки на приватные каналы: {e}", module_name=__name__)
+            
+    async def _handle_private_message(self, message: str):
+        """Обработка приватных сообщений"""
+        try:
+            data = json.loads(message)
+            
+            if "topic" not in data:
+                return
+                
+            topic = data["topic"]
+            
+            # Обработка ордеров
+            if topic == "order":
+                await self._handle_order_update(data["data"])
+                
+            # Обработка позиций
+            elif topic == "position":
+                await self._handle_position_update(data["data"])
+                
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка парсинга приватного сообщения: {e}", module_name=__name__)
+            
+    async def _handle_order_update(self, order_data: List[Dict]):
+        """Обработка обновления ордера"""
+        try:
+            for order in order_data:
+                # Общее событие обновления ордера
+                order_event = OrderUpdateEvent(
+                    user_id=self.user_id,
+                    order_data=order
+                )
+                await event_bus.publish(order_event)
+                
+                # Специальное событие для исполненных ордеров
+                if order.get("orderStatus") == "Filled":
+                    filled_event = OrderFilledEvent(
+                        user_id=self.user_id,
+                        order_id=order.get("orderId", ""),
+                        symbol=order.get("symbol", ""),
+                        side=order.get("side", ""),
+                        qty=Decimal(str(order.get("qty", "0"))),
+                        price=Decimal(str(order.get("avgPrice", "0"))),
+                        fee=Decimal(str(order.get("cumExecFee", "0")))
+                    )
+                    await event_bus.publish(filled_event)
+                    
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка обработки ордера: {e}", module_name=__name__)
+            
+    async def _handle_position_update(self, position_data: List[Dict]):
+        """Обработка обновления позиции"""
+        try:
+            for position in position_data:
+                position_event = PositionUpdateEvent(
+                    user_id=self.user_id,
+                    symbol=position.get("symbol", ""),
+                    side=position.get("side", ""),
+                    size=Decimal(str(position.get("size", "0"))),
+                    entry_price=Decimal(str(position.get("avgPrice", "0"))),
+                    mark_price=Decimal(str(position.get("markPrice", "0"))),
+                    unrealized_pnl=Decimal(str(position.get("unrealisedPnl", "0")))
+                )
+                await event_bus.publish(position_event)
+                
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка обработки позиции: {e}", module_name=__name__)
+
+
+# Глобальный экземпляр WebSocket менеджера
+global_ws_manager = GlobalWebSocketManager()
+
+
+async def start_websocket_manager():
+    """Запуск глобального WebSocket менеджера"""
+    await global_ws_manager.start()
+
+
+async def stop_websocket_manager():
+    """Остановка глобального WebSocket менеджера"""
+    await global_ws_manager.stop()
+
+
+# Для совместимости с существующим кодом
+def start_websocket_manager_task():
+    """Создание задачи для запуска WebSocket менеджера"""
+    asyncio.create_task(start_websocket_manager())
+
