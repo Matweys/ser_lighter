@@ -5,6 +5,8 @@
 """
 import asyncio
 import logging
+import sys
+import os
 from contextlib import asynccontextmanager
 from typing import Dict, Optional
 from decimal import Decimal, getcontext
@@ -14,7 +16,7 @@ from aiogram.types import BotCommand
 from telegram.bot import bot, dp
 from core.logger import log_info, log_error, log_warning
 from core.settings_config import config
-from database.database.db_trades import init_db_pool, init_db, add_user
+from database.db_trades import init_db_pool, init_db, add_user
 from cache.redis_manager import redis_manager
 from websocket.websocket_manager import WebSocketManager
 from core.events import EventBus, UserSessionStartEvent, UserSessionStopEvent
