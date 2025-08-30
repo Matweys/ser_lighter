@@ -9,7 +9,6 @@ from typing import Dict, Optional, List
 from datetime import datetime, timedelta
 from api.bybit_api import BybitAPI
 from cache.redis_manager import redis_manager
-from core.functions import get_account_balance
 from core.logger import log_info, log_error
 from core.events import (
     event_bus, EventType, OrderFilledEvent, PositionClosedEvent,
@@ -470,7 +469,7 @@ class RiskManager:
                 for pos in self.active_positions.values()
             )
             
-            balance = await get_account_balance(self.user_id)
+            balance = await self.get_account_balance()
             if balance <= 0:
                 return True
                 
