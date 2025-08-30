@@ -368,7 +368,7 @@ class RiskManager:
     async def _initialize_daily_stats(self):
         """Инициализация дневной статистики"""
         try:
-            balance = await get_account_balance(self.user_id)
+            balance = await self.get_account_balance()
             self.daily_stats["start_balance"] = balance
             
             # Загрузка сохраненной статистики из Redis

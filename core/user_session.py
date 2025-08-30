@@ -14,7 +14,7 @@ from core.events import (
     SignalEvent, OrderFilledEvent, RiskLimitExceededEvent, UserSettingsChangedEvent
 )
 from analysis.meta_strategist import MetaStrategist
-from core.risk_manager import RiskManager
+from analysis.risk_manager import RiskManager
 from api.bybit_api import BybitAPI
 from websocket.websocket_manager import global_ws_manager, DataFeedHandle
 from database.db_trades import db_manager
