@@ -91,7 +91,7 @@ async def callback_main_menu(callback: CallbackQuery, state: FSMContext):
             return
         
         # Получаем статус сессии
-        session_status = await redis_manager.get_user_session_status(user_id)
+        session_status = await redis_manager.get_user_session(user_id)
         is_active = session_status.get('is_active', False) if session_status else False
         
         status_text = "🟢 Активен" if is_active else "🔴 Неактивен"
@@ -141,7 +141,7 @@ async def callback_start_trading(callback: CallbackQuery, state: FSMContext):
             return
         
         # Проверяем существующую сессию
-        session_status = await redis_manager.get_user_session_status(user_id)
+        session_status = await redis_manager.get_user_session(user_id)
         if session_status and session_status.get('is_active'):
             await callback.answer("⚠️ Торговля уже запущена", show_alert=True)
             return
@@ -174,7 +174,7 @@ async def callback_stop_trading(callback: CallbackQuery, state: FSMContext):
     
     try:
         # Проверяем существующую сессию
-        session_status = await redis_manager.get_user_session_status(user_id)
+        session_status = await redis_manager.get_user_session(user_id)
         if not session_status or not session_status.get('is_active'):
             await callback.answer("⚠️ Торговля не запущена", show_alert=True)
             return
@@ -374,7 +374,7 @@ async def callback_statistics(callback: CallbackQuery, state: FSMContext):
         recent_trades = await db_manager.get_user_trades(user_id, limit=10)
         
         # Получаем статус сессии
-        session_status = await redis_manager.get_user_session_status(user_id)
+        session_status = await redis_manager.get_user_session(user_id)
         
         text = (
             f"📊 <b>Статистика торговли</b>\n\n"

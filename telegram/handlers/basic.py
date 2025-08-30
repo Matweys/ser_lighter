@@ -85,7 +85,7 @@ async def cmd_start(message: Message, state: FSMContext):
         await state.set_state(UserStates.MAIN_MENU)
         
         # Получаем статус сессии
-        session_status = await redis_manager.get_user_session_status(user_id)
+        session_status = await redis_manager.get_user_session(user_id)
         is_active = session_status.get('is_active', False) if session_status else False
         
         # Получаем статистику пользователя
@@ -181,7 +181,7 @@ async def cmd_status(message: Message, state: FSMContext):
         await basic_handler.log_command_usage(user_id, "status")
         
         # Получаем статус сессии
-        session_status = await redis_manager.get_user_session_status(user_id)
+        session_status = await redis_manager.get_user_session(user_id)
         user_config = await redis_manager.get_user_config(user_id)
         
         if not session_status:
@@ -255,7 +255,7 @@ async def cmd_trade_start(message: Message, state: FSMContext):
             return
         
         # Проверяем существующую сессию
-        session_status = await redis_manager.get_user_session_status(user_id)
+        session_status = await redis_manager.get_user_session(user_id)
         if session_status and session_status.get('is_active'):
             await message.answer("⚠️ Торговля уже запущена")
             return

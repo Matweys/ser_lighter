@@ -113,7 +113,7 @@ class OrderRecord:
     price: Decimal = Decimal('0')
     filled_quantity: Decimal = Decimal('0')
     average_price: Decimal = Decimal('0')
-    status: str = OrderStatus.PENDING.value
+    status: str = OrderStatus.NEW.value
     order_id: str = ""
     client_order_id: Optional[str] = None
     strategy_type: str = ""
