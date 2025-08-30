@@ -133,6 +133,7 @@ class StrategyStopEvent(BaseEvent):
 @dataclass
 class UserSessionStartedEvent(BaseEvent):
     """Событие о запуске пользовательской сессии"""
+    timestamp: datetime
     event_type: EventType = field(default=EventType.USER_SESSION_STARTED, init=False)
 
 
@@ -140,6 +141,7 @@ class UserSessionStartedEvent(BaseEvent):
 class UserSessionStoppedEvent(BaseEvent):
     """Событие об остановке пользовательской сессии"""
     reason: str
+    timestamp: datetime
     event_type: EventType = field(default=EventType.USER_SESSION_STOPPED, init=False)
 
 

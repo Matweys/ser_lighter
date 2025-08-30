@@ -10,10 +10,10 @@ from decimal import Decimal
 from datetime import datetime
 
 from core.logger import log_info, log_error
-from core.events import (
-    event_bus, EventType, BaseEvent, UserSessionStartEvent, UserSessionStopEvent,
+from core.events import (event_bus, EventType, BaseEvent, UserSessionStartedEvent, UserSessionStoppedEvent,
     UserSettingsChangedEvent, RiskLimitExceededEvent
 )
+
 from cache.redis_manager import redis_manager
 from core.user_session import UserSession
 from core.websocket_manager import GlobalWebSocketManager
@@ -166,7 +166,7 @@ class BotApplication:
                     self.app_stats["active_sessions"] = len(self.active_sessions)
                     
                     # Публикация события
-                    event = UserSessionStartEvent(user_id=user_id, timestamp=datetime.now())
+                    event = UserSessionStartedEvent(user_id=user_id, timestamp=datetime.now())
                     await event_bus.publish(event)
                     
                     log_info(user_id, "Пользовательская сессия создана", module_name=__name__)
@@ -213,7 +213,7 @@ class BotApplication:
                 self.app_stats["active_sessions"] = len(self.active_sessions)
                 
                 # Публикация события
-                event = UserSessionStopEvent(user_id=user_id, reason=reason, timestamp=datetime.now())
+                event = UserSessionStoppedEvent(user_id=user_id, reason=reason, timestamp=datetime.now())
                 await event_bus.publish(event)
                 
                 log_info(user_id, f"Пользовательская сессия остановлена: {reason}", module_name=__name__)
