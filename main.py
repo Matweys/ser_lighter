@@ -1,44 +1,32 @@
-# main.py
-"""
-Главный модуль многопользовательского торгового бота
-Реализует событийно-ориентированную архитектуру с BotApplication и UserSession
-"""
 import sys
 import os
 import asyncio
 import logging
+from contextlib import asynccontextmanager
+from aiogram.types import BotCommand
+
 # Добавляем корневую папку проекта в PYTHONPATH
-# Это решает все проблемы с импортами при запуске из systemd
 project_root = os.path.dirname(os.path.abspath(__file__))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 
-from contextlib import asynccontextmanager
-from typing import Dict, Optional
-from decimal import Decimal, getcontext
-from dataclasses import dataclass
-from aiogram.types import BotCommand
-
-from telegram.bot import bot, dp
-from core.logger import log_info, log_error, log_warning
-from core.settings_config import config
-from database.db_trades import init_db_pool, db_manager
+from telegram.bot import bot, dp, bot_manager
+from core.logger import log_info, log_error
+from core.settings_config import system_config
+from database.db_trades import db_manager
 from cache.redis_manager import redis_manager
-from core.events import EventBus, UserSessionStartEvent, UserSessionStopEvent
 from core.bot_application import BotApplication
-from core.user_session import UserSession
-# Импорт обработчиков
-from telegram.handlers import basic, callback
+from telegram.handlers import basic_handlers, callback_handlers
 
 # Регистрация роутеров
-dp.include_router(basic.router)
-dp.include_router(callback.router)
+dp.include_router(basic_handlers.router)
+dp.include_router(callback_handlers.router)
 
 # Настройка точности для Decimal
 getcontext().prec = 28
 
-
+# ВОЗВРАЩАЕМ ВАШУ ФУНКЦИЮ: set_commands
 async def set_commands():
     """Устанавливает команды, видимые в меню Telegram."""
     commands = [
@@ -54,8 +42,8 @@ async def set_commands():
         BotCommand(command="/settings", description="🔧 Настройки стратегий"),
         BotCommand(command="/help", description="ℹ️ Помощь"),
     ]
-    await bot.set_my_commands(commands)
 
+    await bot_manager.bot.set_my_commands(commands)
 
 async def setup_admin_user():
     """Проверяет, существует ли админ в БД, и добавляет его, если нет."""
@@ -106,25 +94,25 @@ async def initialize_default_configs():
                 "initial_order_amount": 10.0,
                 "averaging_order_amount": 10.0,
                 "profit_percent": 1.0,
-                "drop_percent": 1.5,
+                "drop_percent": 1.0,
                 "max_averaging": 5,
-                "stop_loss_percent": 5.0
+                "stop_loss_percent": 1.0
             },
             "bidirectional_grid": {
                 "enabled": False,
-                "leverage": 5,
-                "order_amount": 15.0,
+                "leverage": 3,
+                "order_amount": 10.0,
                 "grid_levels": 6,
-                "grid_step_percent": 0.5,
+                "grid_step_percent": 1.0,
                 "profit_percent": 1.0
             },
             "impulse_trailing": {
                 "enabled": False,
                 "leverage": 5,
                 "order_amount": 50.0,
-                "initial_stop_loss_percent": 2.0,
-                "trailing_percent": 1.5,
-                "min_profit_percent": 0.5
+                "initial_stop_loss_percent": 1.0,
+                "trailing_percent": 2.0,
+                "min_profit_percent": 1.0
             }
         }
 
@@ -144,77 +132,46 @@ async def lifespan_context():
     """Контекстный менеджер для управления жизненным циклом приложения"""
     bot_app = None
     try:
-        # Инициализация при запуске
         log_info(0, "=== ЗАПУСК FUTURES TRADING BOT v2.0 ===", module_name=__name__)
 
-        # Инициализация базы данных
-        log_info(0, "Инициализация базы данных...", module_name=__name__)
-        await init_db_pool()
-
-
-        # Настройка администратора
-        await setup_admin_user()
-
-        # Инициализация Redis
-        log_info(0, "Инициализация Redis...", module_name=__name__)
+        # Инициализация всех компонентов
+        await db_manager.initialize()
         await redis_manager.init_redis()
-
-        # Инициализация конфигураций по умолчанию
-        await initialize_default_configs()
+        await bot_manager.initialize() # Инициализируем Telegram бота
 
         # Установка команд бота
-        log_info(0, "Установка команд бота...", module_name=__name__)
         await set_commands()
 
         # Создание и запуск BotApplication
-        log_info(0, "Создание BotApplication...", module_name=__name__)
         bot_app = BotApplication()
         await bot_app.start()
 
         log_info(0, "=== БОТ УСПЕШНО ЗАПУЩЕН ===", module_name=__name__)
-
         yield bot_app
-
-    except Exception as err:
-        log_error(0, f"Критическая ошибка при запуске: {err}", module_name=__name__)
-        raise
     finally:
         # Очистка при завершении
         log_info(0, "=== ЗАВЕРШЕНИЕ РАБОТЫ БОТА ===", module_name=__name__)
-
-        try:
-            if bot_app:
-                await bot_app.stop()
-                log_info(0, "BotApplication остановлен", module_name=__name__)
-        except Exception as err:
-            log_error(0, f"Ошибка остановки BotApplication: {err}", module_name=__name__)
-
-        try:
-            await redis_manager.close()
-            log_info(0, "Redis соединение закрыто", module_name=__name__)
-        except Exception as err:
-            log_error(0, f"Ошибка закрытия Redis: {err}", module_name=__name__)
-
+        if bot_app:
+            await bot_app.stop()
+        await redis_manager.close()
+        await db_manager.close()
+        await bot_manager.stop()
         log_info(0, "=== БОТ ЗАВЕРШЕН ===", module_name=__name__)
-
 
 async def main():
     """Главная функция запуска бота"""
     try:
         async with lifespan_context() as bot_app:
-            # Запуск бота с интеграцией BotApplication
             await dp.start_polling(
-                bot,
+                bot_manager.bot,
                 allowed_updates=["message", "callback_query"],
                 drop_pending_updates=True,
-                bot_application=bot_app  # Передаем BotApplication в контекст
+                bot_application=bot_app
             )
-    except KeyboardInterrupt:
-        log_info(0, "Получен сигнал завершения (Ctrl+C)", module_name=__name__)
+    except (KeyboardInterrupt, SystemExit):
+        log_info(0, "Получен сигнал завершения", module_name=__name__)
     except Exception as err:
         log_error(0, f"Критическая ошибка в main(): {err}", module_name=__name__)
-        raise
-
 
 if __name__ == "__main__":
     try:

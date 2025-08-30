@@ -119,8 +119,8 @@ class BotApplication:
                 await self._stop_global_components()
                 
                 # Отписка от событий
-                event_bus.unsubscribe(EventType.USER_SESSION_START, self._handle_session_start)
-                event_bus.unsubscribe(EventType.USER_SESSION_STOP, self._handle_session_stop)
+                event_bus.unsubscribe(EventType.USER_SESSION_STARTED, self._handle_session_start)
+                event_bus.unsubscribe(EventType.USER_SESSION_STOPPED, self._handle_session_stop)
                 event_bus.unsubscribe(EventType.USER_SETTINGS_CHANGED, self._handle_settings_changed)
                 event_bus.unsubscribe(EventType.RISK_LIMIT_EXCEEDED, self._handle_risk_limit)
                 

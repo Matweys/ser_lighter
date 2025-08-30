@@ -706,37 +706,23 @@ class BaseStrategy(ABC):
         return f"<{self.__class__.__name__}: {self.strategy_type.value}, {self.symbol}, user={self.user_id}>"
 
 
-def create_strategy(strategy_type: str, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, config: Dict[str, Any]) -> Optional[BaseStrategy]:
+def create_strategy(strategy_type: str, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, config: Dict[str, Any]) -> Optional['BaseStrategy']:
     """
     Фабричная функция для создания стратегий.
-
-    Args:
-        strategy_type: Тип стратегии
-        user_id: ID пользователя
-        symbol: Торговая пара
-        signal_data: Данные сигнала от MetaStrategist
-        api: Экземпляр API клиента BybitAPI
-        config: Конфигурация стратегии
-
-    Returns:
-        BaseStrategy: Экземпляр стратегии или None
     """
-    from strategies.grid_scalping_strategy import GridScalpingStrategy
-    from strategies.bidirectional_grid_strategy import BidirectionalGridStrategy
-    from strategies.impulse_trailing_strategy import ImpulseTrailingStrategy
+    from .grid_scalping_strategy import GridScalpingStrategy
+    from .bidirectional_grid_strategy import BidirectionalGridStrategy
+    from .impulse_trailing_strategy import ImpulseTrailingStrategy
 
     strategy_map = {
-        StrategyType.GRID_SCALPING.value: GridScalpingStrategy,
         "grid_scalping": GridScalpingStrategy,
-        StrategyType.BIDIRECTIONAL_GRID.value: BidirectionalGridStrategy,
         "bidirectional_grid": BidirectionalGridStrategy,
-        StrategyType.IMPULSE_TRAILING.value: ImpulseTrailingStrategy,
         "impulse_trailing": ImpulseTrailingStrategy,
     }
 
     strategy_class = strategy_map.get(strategy_type)
     if not strategy_class:
-        log_error(self.user_id, f"Неподдерживаемый тип стратегии: {strategy_type}", module_name=__name__)
+        log_error(user_id, f"Неподдерживаемый тип стратегии: {strategy_type}", module_name="base_strategy")
         return None
 
     # Передаем все необходимые аргументы в конструктор

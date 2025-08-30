@@ -11,10 +11,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from api.bybit_api import BybitAPI
 from core.logger import log_info, log_error
-from core.events import (
-    event_bus, EventType, BaseEvent, NewCandleEvent, SignalEvent,
-    UserSettingsChangedEvent
-)
+from core.events import event_bus, EventType, NewCandleEvent, SignalEvent, UserSettingsChangedEvent
 from cache.redis_manager import redis_manager
 
 # Настройка точности для Decimal
@@ -79,9 +76,7 @@ class MarketAnalyzer:
             # Добавляем текущую цену и ATR для расчета позиции
             current_data = await self._get_current_market_data(user_id, symbol)
             final_analysis.update(current_data)
-            
             return final_analysis
-            
         except Exception as e:
             log_error(user_id, f"Ошибка анализа рынка для {symbol}: {e}", module_name=__name__)
             return {
@@ -301,9 +296,9 @@ class MetaStrategist:
     Анализирует рынок и принимает решения о запуске стратегий на основе событий
     """
     
-    def __init__(self, user_id: int):
+    def __init__(self, user_id: int, analyzer: 'MarketAnalyzer'):
         self.user_id = user_id
-        self.analyzer = MarketAnalyzer()
+        self.analyzer = analyzer
         self.running = False
         
         # Кэш для предотвращения спама анализа
@@ -382,14 +377,8 @@ class MetaStrategist:
                 )
                 
                 await event_bus.publish(signal_event)
-                
-                log_info(
-                    self.user_id,
-                    f"Сигнал отправлен: {strategy_decision['strategy_type']} для {event.symbol} "
-                    f"(сила: {analysis.get('signal_strength', 50)})",
-                    module_name=__name__
-                )
-                
+                log_info(self.user_id,f"Сигнал отправлен: {strategy_decision['strategy_type']} для {event.symbol} "
+                    f"(сила: {analysis.get('signal_strength', 50)})",module_name=__name__)
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки новой свечи {event.symbol}: {e}", module_name=__name__)
             
@@ -424,7 +413,6 @@ class MetaStrategist:
     async def _make_strategy_decision(self, analysis: Dict[str, Any]) -> Optional[Dict[str, str]]:
         """
         Принятие решения о запуске стратегии на основе анализа
-        
         Returns:
             Dict с типом стратегии или None если стратегию запускать не нужно
         """
@@ -459,7 +447,6 @@ class MetaStrategist:
                 }
                 
             return None
-            
         except Exception as e:
             log_error(self.user_id, f"Ошибка принятия решения о стратегии: {e}", module_name=__name__)
             return None

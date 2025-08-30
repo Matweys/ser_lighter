@@ -129,28 +129,24 @@ class StrategyStopEvent(BaseEvent):
     event_type: EventType = field(default=EventType.STRATEGY_STOP, init=False)
 
 
-# Имена классов приведены в соответствие с их использованием в bot_application.py
+
 @dataclass
 class UserSessionStartedEvent(BaseEvent):
     """Событие о запуске пользовательской сессии"""
-    session_id: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
     event_type: EventType = field(default=EventType.USER_SESSION_STARTED, init=False)
 
 
 @dataclass
 class UserSessionStoppedEvent(BaseEvent):
     """Событие об остановке пользовательской сессии"""
-    session_id: str
-    reason: str = "user_request"
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    reason: str
     event_type: EventType = field(default=EventType.USER_SESSION_STOPPED, init=False)
 
 
 @dataclass
 class UserSettingsChangedEvent(BaseEvent):
     """Событие об изменении настроек пользователя"""
-    changed_keys: List[str] = field(default_factory=list)
+    changed_settings: List[str] = field(default_factory=list)
     config_type: str = "global"
     strategy_type: Optional[str] = None
     event_type: EventType = field(default=EventType.USER_SETTINGS_CHANGED, init=False)

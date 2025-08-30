@@ -10,19 +10,20 @@ from decimal import Decimal, getcontext
 from datetime import datetime
 from core.logger import log_info, log_error, log_warning
 from core.events import (
-    event_bus, EventType, BaseEvent, StrategyStartEvent, StrategyStopEvent,
-    SignalEvent, OrderEvent, RiskLimitExceededEvent
+    event_bus, EventType, StrategyStartEvent, StrategyStopEvent,
+    SignalEvent, OrderFilledEvent, RiskLimitExceededEvent, UserSettingsChangedEvent
 )
-from cache.redis_manager import redis_manager
 from analysis.meta_strategist import MetaStrategist
-from analysis.risk_manager import RiskManager
+from core.risk_manager import RiskManager
 from api.bybit_api import BybitAPI
+from websocket.websocket_manager import global_ws_manager, DataFeedHandle
+from database.db_trades import db_manager
+
 # Импорт стратегий
+from strategies.base_strategy import create_strategy, BaseStrategy
 from strategies.bidirectional_grid_strategy import BidirectionalGridStrategy
 from strategies.impulse_trailing_strategy import ImpulseTrailingStrategy
 from strategies.grid_scalping_strategy import GridScalpingStrategy
-from strategies.base_strategy import BaseStrategy
-
 
 # Установка точности Decimal
 getcontext().prec = 28
@@ -206,40 +207,35 @@ class UserSession:
         except Exception as e:
             log_error(self.user_id, f"Ошибка получения статуса сессии: {e}", module_name=__name__)
             return {"user_id": self.user_id, "running": self.running, "error": str(e)}
-            
+
     async def start_strategy(self, strategy_type: str, symbol: str, config: Optional[Dict] = None) -> bool:
         """
         Запуск стратегии
-        
-        Args:
-            strategy_type: Тип стратегии
-            symbol: Торговый символ
-            config: Дополнительная конфигурация
-            
-        Returns:
-            bool: True если стратегия запущена успешно
         """
         try:
             strategy_id = f"{strategy_type}_{symbol}"
-            
+
             if strategy_id in self.active_strategies:
                 log_warning(self.user_id, f"Стратегия {strategy_id} уже запущена", module_name=__name__)
                 return True
-                
-            # Проверка лимитов
+
             if not await self.risk_manager.can_start_new_strategy():
                 log_warning(self.user_id, "Превышен лимит активных стратегий", module_name=__name__)
                 return False
-                
-            # Создание стратегии
-            if strategy_type not in STRATEGY_CLASSES:
-                log_error(self.user_id, f"Неизвестный тип стратегии: {strategy_type}", module_name=__name__)
+
+            strategy = create_strategy(
+                strategy_type=strategy_type,
+                user_id=self.user_id,
+                symbol=symbol,
+                signal_data=config or {},  # Передаем config как signal_data
+                api=self.api,
+                config=config
+            )
+
+            if not strategy:
+                log_error(self.user_id, f"Не удалось создать стратегию типа: {strategy_type}", module_name=__name__)
                 return False
 
-            strategy_class = STRATEGY_CLASSES[strategy_type]
-            # Передаем self.api как четвертый аргумент
-            strategy = strategy_class(self.user_id, symbol, config, self.api)
-            
             # Запуск стратегии
             if await strategy.start():
                 self.active_strategies[strategy_id] = strategy
@@ -325,51 +321,53 @@ class UserSession:
     async def _initialize_components(self):
         """Инициализация компонентов сессии"""
         try:
-            # Получаем ключи и создаем API клиент
-            api_keys = await redis_manager.get_user_api_keys(self.user_id)
-            if not api_keys:
-                raise ValueError("API ключи для пользователя не найдены в Redis")
+            # Получаем ключи из БД и создаем API клиент
+            keys = await db_manager.get_api_keys(self.user_id, "bybit")
+            if not keys:
+                raise ValueError("API ключи для пользователя не найдены в БД")
+
+            api_key, secret_key, _ = keys
 
             self.api = BybitAPI(
                 user_id=self.user_id,
-                api_key=api_keys.get("api_key"),
-                api_secret=api_keys.get("api_secret")
+                api_key=api_key,
+                api_secret=secret_key
             )
 
-            # Инициализация компонентов с передачей API клиента
-            self.meta_strategist = MetaStrategist(self.api)  # <-- self.user_id уже есть в self.api
+            # Инициализация компонентов
             self.risk_manager = RiskManager(self.user_id, self.api)
+            self.data_feed_handler = DataFeedHandler(self.user_id)
+
+            # Создаем независимый анализатор
+            from core.meta_strategist import MarketAnalyzer
+            market_analyzer = MarketAnalyzer(self.user_id, self.api)
+
+            # Передаем анализатор в MetaStrategist как зависимость
+            self.meta_strategist = MetaStrategist(
+                user_id=self.user_id,
+                analyzer=market_analyzer
+            )
 
             log_info(self.user_id, "Компоненты сессии инициализированы", module_name=__name__)
 
-        except Exception as e:  # <-- Добавлен недостающий блок
+        except Exception as e:
             log_error(self.user_id, f"Ошибка инициализации компонентов: {e}", module_name=__name__)
             raise
-            
+
     async def _start_components(self):
         """Запуск компонентов сессии"""
         try:
             # Запуск RiskManager
-            if not await self.risk_manager.start():
-                raise Exception("Не удалось запустить RiskManager")
-                
+            await self.risk_manager.start()
+
             # Запуск DataFeedHandler
-            if not await self.data_feed_handler.start():
-                raise Exception("Не удалось запустить DataFeedHandler")
-                
+            await self.data_feed_handler.start()
+
             # Запуск MetaStrategist
-            if not await self.meta_strategist.start():
-                raise Exception("Не удалось запустить MetaStrategist")
-                
-            # Создание задач для компонентов
-            self._component_tasks = [
-                asyncio.create_task(self.meta_strategist.run()),
-                asyncio.create_task(self.risk_manager.run()),
-                asyncio.create_task(self.data_feed_handler.run())
-            ]
-            
+            await self.meta_strategist.start()
+
             log_info(self.user_id, "Компоненты сессии запущены", module_name=__name__)
-            
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка запуска компонентов: {e}", module_name=__name__)
             raise
@@ -437,14 +435,16 @@ class UserSession:
         """Подписка на события"""
         try:
             # Подписка на сигналы
-            event_bus.subscribe(EventType.SIGNAL_GENERATED, self._handle_signal_event)
-            
+            event_bus.subscribe_user(self.user_id, self._handle_signal_event)
+
             # Подписка на торговые события
-            event_bus.subscribe(EventType.ORDER_FILLED, self._handle_order_event)
-            event_bus.subscribe(EventType.ORDER_CANCELLED, self._handle_order_event)
-            
+            event_bus.subscribe_user(self.user_id, self._handle_order_filled_event)
+
             # Подписка на события риска
-            event_bus.subscribe(EventType.RISK_LIMIT_EXCEEDED, self._handle_risk_event)
+            event_bus.subscribe_user(self.user_id, self._handle_risk_event)
+
+            # Подписка на изменение настроек
+            event_bus.subscribe_user(self.user_id, self._handle_settings_changed)
             
         except Exception as e:
             log_error(self.user_id, f"Ошибка подписки на события: {e}", module_name=__name__)
@@ -452,11 +452,8 @@ class UserSession:
     async def _unsubscribe_from_events(self):
         """Отписка от событий"""
         try:
-            event_bus.unsubscribe(EventType.SIGNAL_GENERATED, self._handle_signal_event)
-            event_bus.unsubscribe(EventType.ORDER_FILLED, self._handle_order_event)
-            event_bus.unsubscribe(EventType.ORDER_CANCELLED, self._handle_order_event)
-            event_bus.unsubscribe(EventType.RISK_LIMIT_EXCEEDED, self._handle_risk_event)
-            
+            # Отписка пользователя от всех его персональных событий
+            event_bus.unsubscribe_user(self.user_id)
         except Exception as e:
             log_error(self.user_id, f"Ошибка отписки от событий: {e}", module_name=__name__)
             
@@ -491,44 +488,48 @@ class UserSession:
             
     # Обработчики событий
     async def _handle_signal_event(self, event: SignalEvent):
-        """Обработчик событий сигналов"""
+        """Обработчик событий сигналов от MetaStrategist"""
         if event.user_id != self.user_id:
             return
-            
+
         self.session_stats["total_signals"] += 1
-        log_info(self.user_id, f"Получен сигнал: {event.signal_type}", module_name=__name__)
-        
-    async def _handle_order_event(self, event: OrderEvent):
-        """Обработчик торговых событий"""
+        log_info(self.user_id, f"Получен сигнал: {event.strategy_type} для {event.symbol}", module_name=__name__)
+
+        try:
+            # Проверяем, можем ли мы открыть новую сделку
+            if not await self.risk_manager.can_open_new_trade(event.symbol):
+                log_warning(self.user_id, f"Открытие новой сделки для {event.symbol} отклонено риск-менеджером.",
+                            module_name=__name__)
+                return
+
+            # Запуск стратегии на основе сигнала
+            await self.start_strategy(event.strategy_type, event.symbol, event.analysis_data)
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка обработки сигнала для {event.symbol}: {e}", module_name=__name__)
+
+    async def _handle_order_event(self, event: OrderFilledEvent):
+        """Обработчик событий исполненных ордеров для глобальной статистики сессии"""
         if event.user_id != self.user_id:
             return
-            
-        if event.event_type == EventType.ORDER_FILLED:
-            # Определение успешности сделки по PnL
-            pnl = event.order_data.get("pnl", Decimal("0"))
-            if pnl > 0:
-                self.session_stats["successful_trades"] += 1
-            elif pnl < 0:
-                self.session_stats["failed_trades"] += 1
-                
-            self.session_stats["total_pnl"] += pnl
-            
-        log_info(self.user_id, f"Торговое событие: {event.event_type}", module_name=__name__)
-        
+
+        #Эта логика должна быть в стратегии, но для общей статистики сессии можно оставить здесь
+        pnl = event.fee # Пример, реальный PnL рассчитывается при закрытии позиции
+        if pnl > 0:
+            self.session_stats["successful_trades"] += 1
+        else:
+            self.session_stats["failed_trades"] += 1
+        self.session_stats["total_pnl"] += pnl
+        pass
+
     async def _handle_risk_event(self, event: RiskLimitExceededEvent):
         """Обработчик событий риска"""
         if event.user_id != self.user_id:
             return
-            
         self.session_stats["risk_violations"] += 1
-        
-        log_error(
-            self.user_id,
-            f"Превышен лимит риска: {event.limit_type}",
-            module_name=__name__
-        )
-        
+        log_error(self.user_id,f"Превышен лимит риска: {event.limit_type}", module_name=__name__)
+
         # Экстренная остановка при критических нарушениях
-        if event.limit_type in ["daily_drawdown", "max_loss"]:
+        if event.action_required == "stop_trading":
             await self.stop(f"Risk limit exceeded: {event.limit_type}")
 
