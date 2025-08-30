@@ -367,32 +367,29 @@ def validate_config(config_to_validate: SystemConfig) -> bool:
         if not config_to_validate.database.url:
             raise ValueError("DATABASE_URL не задан")
 
-        if not config.redis.url:
+        if not config_to_validate.redis.url:
             raise ValueError("REDIS_URL не задан")
 
-        if not config.telegram.token:
+        if not config_to_validate.telegram.token:
             raise ValueError("TELEGRAM_TOKEN не задан")
 
-        if not config.security.encryption_key:
+        if not config_to_validate.security.encryption_key:
             raise ValueError("ENCRYPTION_KEY не задан")
 
-        if not config.security.jwt_secret:
-            raise ValueError("JWT_SECRET не задан")
-
         # Проверяем наличие хотя бы одной биржи
-        if not config.exchanges:
+        if not config_to_validate.exchanges:
             raise ValueError("Не настроена ни одна биржа")
 
         # Проверяем конфигурации бирж
-        for name, exchange_config in config.exchanges.items():
+        for name, exchange_config in config_to_validate.exchanges.items():
             if not exchange_config.api_key or not exchange_config.secret_key:
                 raise ValueError(f"API ключи для биржи {name} не заданы")
 
-        log_info(0, "Валидация конфигурации прошла успешно", module_name='system_config')
+        log_info(0, "Валидация конфигурации прошла успешно", module_name="system_config")
         return True
 
     except Exception as err:
-        log_error(0, f"Ошибка валидации конфигурации: {err}", module_name='system_config')
+        log_error(0, f"Ошибка валидации конфигурации: {err}", module_name="system_config")
         return False
 
 # Глобальная конфигурация (загружается при импорте)
