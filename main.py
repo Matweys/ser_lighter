@@ -25,7 +25,6 @@ from core.logger import log_info, log_error, log_warning
 from core.settings_config import config
 from database.db_trades import init_db_pool, db_manager
 from cache.redis_manager import redis_manager
-from websocket.websocket_manager import WebSocketManager
 from core.events import EventBus, UserSessionStartEvent, UserSessionStopEvent
 from core.bot_application import BotApplication
 from core.user_session import UserSession
