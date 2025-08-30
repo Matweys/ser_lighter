@@ -3,10 +3,16 @@
 Главный модуль многопользовательского торгового бота
 Реализует событийно-ориентированную архитектуру с BotApplication и UserSession
 """
-import asyncio
-import logging
 import sys
 import os
+# Добавляем корневую папку проекта в PYTHONPATH
+# Это решает все проблемы с импортами при запуске из systemd
+project_root = os.path.dirname(os.path.abspath(__file__))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from typing import Dict, Optional
 from decimal import Decimal, getcontext
