@@ -42,12 +42,10 @@ class DefaultConfigs:
             # Watchlist символов для анализа
             "watchlist_symbols": [
                 "BTCUSDT",
-                "ETHUSDT", 
-                "ADAUSDT",
-                "SOLUSDT",
-                "DOTUSDT"
+                "ETHUSDT",
+                "SOLUSDT"
             ],
-            
+
             # Настройки анализа
             "analysis_timeframes": ["15m", "1h", "4h"],
             "analysis_cooldown_minutes": 5,  # Минимальный интервал между анализами

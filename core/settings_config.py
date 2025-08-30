@@ -16,8 +16,8 @@ from core.enums import ExchangeType, AccountType, SystemConstants
 # Константы системы
 DEFAULT_SYMBOLS = [
     'BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'SOLUSDT', 'DOTUSDT',
-    'XRPUSDT', 'LINKUSDT', 'AVAXUSDT', 'MATICUSDT', 'ATOMUSDT',
-    'NEARUSDT', 'FTMUSDT', 'ALGOUSDT', 'VETUSDT', 'ICPUSDT'
+    'XRPUSDT', 'LINKUSDT', 'AVAXUSDT', 'ATOMUSDT',
+    'NEARUSDT', 'ICPUSDT'
 ]
 
 # Комиссии бирж (в процентах)
@@ -108,12 +108,12 @@ class ExchangeConfig:
     passphrase: Optional[str] = None
     sandbox: bool = False
     base_url: Optional[str] = None
-    
+
     # Настройки торговли
     default_leverage: int = 1
     max_leverage: int = 20
     account_type: AccountType = AccountType.UNIFIED
-    
+
     # Лимиты
     min_order_size: Decimal = Decimal('5')      # Минимальный размер ордера в USDT
     max_order_size: Decimal = Decimal('10000')  # Максимальный размер ордера в USDT
@@ -150,7 +150,7 @@ class MonitoringConfig:
     health_check_interval: int = 60
     alert_webhook_url: Optional[str] = None
     log_level: str = "INFO"
-    
+
     # Пороги для алертов
     max_memory_usage: float = 0.8    # 80%
     max_cpu_usage: float = 0.7       # 70%
@@ -165,27 +165,27 @@ class SystemConfig:
     telegram: TelegramConfig
     security: SecurityConfig
     monitoring: MonitoringConfig
-    
+
     # Биржи (может быть несколько)
     exchanges: Dict[str, ExchangeConfig] = field(default_factory=dict)
-    
+
     # Общие настройки
     environment: str = "production"  # production, staging, development
     debug: bool = False
     timezone: str = "UTC"
-    
+
     # Торговые настройки по умолчанию
     default_symbols: List[str] = field(default_factory=lambda: DEFAULT_SYMBOLS.copy())
     supported_timeframes: List[str] = field(default_factory=lambda: [
         '1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d'
     ])
-    
+
     # Лимиты системы
     max_users: int = 1000
     max_strategies_per_user: int = 10
     max_active_orders_per_user: int = 50
     max_positions_per_user: int = 20
-    
+
     # Настройки производительности
     worker_threads: int = 4
     max_concurrent_requests: int = 100
@@ -210,26 +210,26 @@ class SystemConfig:
         """Получить лимит запросов"""
         limits = API_RATE_LIMITS.get(exchange_type, {})
         return limits.get(endpoint_type, 10)  # По умолчанию 10 запросов в секунду
-    
+
     def is_production(self) -> bool:
         """Проверка production окружения"""
         return self.environment.lower() == "production"
-    
+
     def is_development(self) -> bool:
         """Проверка development окружения"""
         return self.environment.lower() == "development"
 
 class ConfigLoader:
     """Загрузчик конфигураций"""
-    
+
     def __init__(self, env_file: str = ".env"):
         self.env_file = env_file
         self.env = Env()
-        
+
         # Читаем переменные окружения
         if Path(env_file).exists():
             self.env.read_env(env_file)
-    
+
     def load_config(self) -> SystemConfig:
         """Загрузка полной конфигурации системы"""
         try:
@@ -239,7 +239,7 @@ class ConfigLoader:
             telegram_config = self._load_telegram_config()
             security_config = self._load_security_config()
             monitoring_config = self._load_monitoring_config()
-            
+
             # Создаем главную конфигурацию
             system_config_obj = SystemConfig(
                 database=database_config,
@@ -247,9 +247,9 @@ class ConfigLoader:
                 telegram=telegram_config,
                 security=security_config,
                 monitoring=monitoring_config,
-                environment=self.env.str("ENVIRONMENT", "production"),
-                debug=self.env.bool("DEBUG", False),
-                timezone=self.env.str("TIMEZONE", "UTC"),
+                environment=self.env.str("production"),
+                debug=False,
+                timezone="Europe/Moscow",
                 max_users=self.env.int("MAX_USERS", 1000),
                 worker_threads=self.env.int("WORKER_THREADS", 4),
             )
@@ -263,7 +263,7 @@ class ConfigLoader:
         except Exception as err:
             log_error(0, f"Ошибка загрузки конфигурации: {err}", module_name='system_config')
             raise ValueError(f"Критическая ошибка загрузки конфигурации: {err}")
-    
+
     def _load_database_config(self) -> DatabaseConfig:
         """Загрузка конфигурации базы данных"""
         return DatabaseConfig(
@@ -274,7 +274,7 @@ class ConfigLoader:
             pool_recycle=self.env.int("DB_POOL_RECYCLE", 3600),
             echo=self.env.bool("DB_ECHO", False),
         )
-    
+
     def _load_redis_config(self) -> RedisConfig:
         """Загрузка конфигурации Redis"""
         return RedisConfig(
@@ -291,7 +291,7 @@ class ConfigLoader:
         """Загрузка конфигурации Telegram"""
         admin_ids_str = self.env.str("ADMIN_IDS", "")
         admin_ids = [int(admin_id_str.strip()) for admin_id_str in admin_ids_str.split(",") if admin_id_str.strip().isdigit()]
-        
+
         return TelegramConfig(
             token=self.env.str("TELEGRAM_TOKEN"),
             admin_ids=admin_ids,
@@ -299,7 +299,7 @@ class ConfigLoader:
             webhook_port=self.env.int("WEBHOOK_PORT", 8443),
             max_connections=self.env.int("TELEGRAM_MAX_CONNECTIONS", 40),
         )
-    
+
     def _load_security_config(self) -> SecurityConfig:
         """Загрузка настроек безопасности"""
         return SecurityConfig(
@@ -311,7 +311,7 @@ class ConfigLoader:
             password_min_length=self.env.int("PASSWORD_MIN_LENGTH", 8),
             require_2fa=self.env.bool("REQUIRE_2FA", False),
         )
-    
+
     def _load_monitoring_config(self) -> MonitoringConfig:
         """Загрузка настроек мониторинга"""
         return MonitoringConfig(
@@ -336,12 +336,12 @@ class ConfigLoader:
                 sandbox=self.env.bool("BYBIT_SANDBOX", False),
                 base_url=self.env.str("BYBIT_BASE_URL", "https://api.bybit.com"),
                 default_leverage=self.env.int("BYBIT_DEFAULT_LEVERAGE", 1),
-                max_leverage=self.env.int("BYBIT_MAX_LEVERAGE", 20),
+                max_leverage=self.env.int("BYBIT_MAX_LEVERAGE", 5),
                 min_order_size=Decimal(self.env.str("BYBIT_MIN_ORDER_SIZE", "5")),
                 max_order_size=Decimal(self.env.str("BYBIT_MAX_ORDER_SIZE", "10000")),
             )
             system_config_obj.add_exchange_config("bybit", bybit_config)
-        
+
         # Binance
         if self.env.str("BINANCE_API_KEY", None) and self.env.str("BINANCE_SECRET_KEY", None):
             binance_config = ExchangeConfig(
@@ -366,31 +366,31 @@ def validate_config(config_to_validate: SystemConfig) -> bool:
         # Проверяем обязательные поля
         if not config_to_validate.database.url:
             raise ValueError("DATABASE_URL не задан")
-        
+
         if not config.redis.url:
             raise ValueError("REDIS_URL не задан")
-        
+
         if not config.telegram.token:
             raise ValueError("TELEGRAM_TOKEN не задан")
-        
+
         if not config.security.encryption_key:
             raise ValueError("ENCRYPTION_KEY не задан")
-        
+
         if not config.security.jwt_secret:
             raise ValueError("JWT_SECRET не задан")
-        
+
         # Проверяем наличие хотя бы одной биржи
         if not config.exchanges:
             raise ValueError("Не настроена ни одна биржа")
-        
+
         # Проверяем конфигурации бирж
         for name, exchange_config in config.exchanges.items():
             if not exchange_config.api_key or not exchange_config.secret_key:
                 raise ValueError(f"API ключи для биржи {name} не заданы")
-        
+
         log_info(0, "Валидация конфигурации прошла успешно", module_name='system_config')
         return True
-        
+
     except Exception as err:
         log_error(0, f"Ошибка валидации конфигурации: {err}", module_name='system_config')
         return False
