@@ -16,7 +16,7 @@ from core.events import (event_bus, EventType, BaseEvent, UserSessionStartedEven
 
 from cache.redis_manager import redis_manager
 from core.user_session import UserSession
-from core.websocket_manager import GlobalWebSocketManager
+from websocket.websocket_manager import GlobalWebSocketManager
 from core.default_configs import DefaultConfigs
 
 
