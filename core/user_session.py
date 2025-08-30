@@ -16,7 +16,7 @@ from core.events import (
 from analysis.meta_strategist import MetaStrategist
 from analysis.risk_manager import RiskManager
 from api.bybit_api import BybitAPI
-from websocket.websocket_manager import global_ws_manager, DataFeedHandle
+from websocket.websocket_manager import global_ws_manager, DataFeedHandler
 from database.db_trades import db_manager
 
 # Импорт стратегий
