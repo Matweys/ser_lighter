@@ -25,7 +25,7 @@ from ..keyboards.inline import (
 )
 from telegram.handlers.states import UserStates
 from cache.redis_manager import redis_manager
-from core.functions import get_current_price, format_currency, format_percentage, validate_symbol
+from core.functions import format_currency, format_percentage, validate_symbol
 from core.default_configs import DefaultConfigs
 
 
@@ -362,20 +362,19 @@ async def callback_configure_strategy(callback: CallbackQuery, state: FSMContext
 async def callback_statistics(callback: CallbackQuery, state: FSMContext):
     """Показ статистики пользователя"""
     user_id = callback.from_user.id
-    
+
     try:
-        # Получаем профиль пользователя
+        # Получаем профиль пользователя из БД
         user_profile = await db_manager.get_user(user_id)
         if not user_profile:
             await callback.answer("❌ Профиль не найден", show_alert=True)
             return
-        
-        # Получаем последние сделки
+
+        # Получаем последние сделки из БД
         recent_trades = await db_manager.get_user_trades(user_id, limit=10)
-        
-        # Получаем статус сессии
+        # Получаем статус сессии из Redis, а не через прямое обращение к API
         session_status = await redis_manager.get_user_session(user_id)
-        
+
         text = (
             f"📊 <b>Статистика торговли</b>\n\n"
             f"👤 <b>Пользователь:</b> {user_profile.username or 'Не указано'}\n"
@@ -385,18 +384,21 @@ async def callback_statistics(callback: CallbackQuery, state: FSMContext):
             f"🎯 <b>Win Rate:</b> {format_percentage(user_profile.win_rate)}\n"
             f"📉 <b>Макс. просадка:</b> {format_percentage(user_profile.max_drawdown)}\n\n"
         )
-        
-        if session_status and session_status.get('is_active'):
+
+        # Используем данные из сессии Redis для отображения статуса
+        if session_status and session_status.get('status') == 'active':
             active_strategies = session_status.get('active_strategies', [])
             text += f"🟢 <b>Статус:</b> Активен\n"
             text += f"📊 <b>Активных стратегий:</b> {len(active_strategies)}\n"
             if active_strategies:
-                text += f"🔄 <b>Стратегии:</b> {', '.join(active_strategies)}\n"
+                # Преобразуем список словарей в строку
+                strategy_names = [s.get('strategy_type', 'N/A') for s in active_strategies]
+                text += f"🔄 <b>Стратегии:</b> {', '.join(strategy_names)}\n"
         else:
             text += f"🔴 <b>Статус:</b> Неактивен\n"
-        
+
         text += f"\n📋 <b>Последние сделки:</b>\n"
-        
+
         if recent_trades:
             for i, trade in enumerate(recent_trades[:5], 1):
                 profit_emoji = "📈" if trade.profit > 0 else "📉"
@@ -407,13 +409,12 @@ async def callback_statistics(callback: CallbackQuery, state: FSMContext):
                 )
         else:
             text += "Сделок пока нет\n"
-        
+        is_active_session = session_status.get('status') == 'active' if session_status else False
         await callback.message.edit_text(
             text,
-            reply_markup=get_main_menu_keyboard(session_status.get('is_active', False) if session_status else False),
+            reply_markup=get_main_menu_keyboard(is_active_session),
             parse_mode="HTML"
         )
-        
     except Exception as e:
         log_error(user_id, f"Ошибка получения статистики: {e}", module_name='callback')
         await callback.answer("❌ Ошибка загрузки статистики", show_alert=True)

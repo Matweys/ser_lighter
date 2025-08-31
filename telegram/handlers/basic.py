@@ -21,7 +21,7 @@ from ..keyboards.inline import (
 )
 from telegram.handlers.states import UserStates
 from cache.redis_manager import redis_manager
-from core.functions import format_currency, format_percentage, get_current_price
+from core.functions import format_currency, format_percentage
 from core.default_configs import DefaultConfigs
 
 
