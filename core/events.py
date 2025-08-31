@@ -128,7 +128,17 @@ class StrategyStopEvent(BaseEvent):
     reason: str
     event_type: EventType = field(default=EventType.STRATEGY_STOP, init=False)
 
+@dataclass
+class UserSessionStartRequestedEvent(BaseEvent):
+    """Событие-запрос на запуск пользовательской сессии от пользователя"""
+    event_type: EventType = field(default=EventType.USER_SESSION_START_REQUESTED, init=False)
 
+
+@dataclass
+class UserSessionStopRequestedEvent(BaseEvent):
+    """Событие-запрос на остановку пользовательской сессии от пользователя"""
+    reason: str = "user_request"
+    event_type: EventType = field(default=EventType.USER_SESSION_STOP_REQUESTED, init=False)
 
 @dataclass
 class UserSessionStartedEvent(BaseEvent):
