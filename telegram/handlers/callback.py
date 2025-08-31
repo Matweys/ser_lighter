@@ -13,7 +13,7 @@ from core.logger import log_info, log_error, log_warning
 from database.db_trades import db_manager
 from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent, UserSettingsChangedEvent
 from core.enums import StrategyType, PositionSide, NotificationType, ConfigType
-from ..keyboards.inline import (
+from keyboards.inline import (
     get_main_menu_keyboard,
     get_strategy_selection_keyboard,
     get_strategy_config_keyboard,
@@ -21,7 +21,10 @@ from ..keyboards.inline import (
     get_symbol_selection_keyboard,
     get_settings_keyboard,
     get_risk_settings_keyboard,
-    get_strategy_settings_keyboard
+    get_strategy_settings_keyboard,
+    get_back_keyboard,
+    get_balance_keyboard,
+    get_watchlist_keyboard
 )
 from telegram.handlers.states import UserStates
 from cache.redis_manager import redis_manager
@@ -209,11 +212,13 @@ async def callback_settings(callback: CallbackQuery, state: FSMContext):
     try:
         # Получаем текущие настройки
         user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+
         if not user_config:
-            # Создаем конфигурацию по умолчанию
-            await DefaultConfigs.create_default_user_config(user_id)
-            user_config = await redis_manager.get_user_config(user_id)
-        
+            log_info(user_id, "Конфигурация не найдена, создаю по умолчанию.", module_name='callback')
+            default_config_data = DefaultConfigs.get_global_config()
+            await redis_manager.save_config(user_id, ConfigType.GLOBAL, default_config_data)
+            user_config = default_config_data
+
         risk_config = user_config.get('risk_management', {})
         
         text = (
@@ -601,6 +606,15 @@ async def callback_api_keys(callback: CallbackQuery, state: FSMContext):
             "❌ Ошибка загрузки информации о ключах.",
             reply_markup=get_back_keyboard("settings")
         )
+
+@router.callback_query(F.data == "help")
+async def callback_help(callback: CallbackQuery, state: FSMContext):
+    """Обработчик кнопки 'Помощь'"""
+    # Этот колбэк просто должен вызывать текстовую команду /help
+    # Для этого мы импортируем ее обработчик
+    from .basic import cmd_help
+    await cmd_help(callback.message, state)
+    await callback.answer() # Закрываем "часики" на кнопке
 
 
 # Обработчик неизвестных callback

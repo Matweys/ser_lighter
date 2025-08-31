@@ -605,6 +605,28 @@ async def cmd_positions(message: Message, state: FSMContext):
         await message.answer("❌ Произошла ошибка при запросе позиций.")
 
 
+@router.message(Command("parameters"))
+async def cmd_parameters(message: Message, state: FSMContext):
+    """Обработчик команды /parameters, перенаправляет на /settings"""
+    await basic_handler.log_command_usage(message.from_user.id, "parameters")
+    # Эта команда по сути дублирует /settings, поэтому просто вызовем ее обработчик
+    await cmd_settings(message, state)
+
+
+@router.message(Command("stop_all"))
+async def cmd_stop_all(message: Message, state: FSMContext):
+    """Обработчик команды /stop_all (экстренная остановка)"""
+    user_id = message.from_user.id
+    await basic_handler.log_command_usage(user_id, "stop_all")
+
+    # Эта команда выполняет то же, что и кнопка экстренной остановки
+    await message.answer(
+        "🚨 <b>ВНИМАНИЕ!</b>\nВы собираетесь экстренно остановить всю торговлю и закрыть все открытые позиции. Это действие необратимо.",
+        parse_mode="HTML",
+        reply_markup=get_confirmation_keyboard("emergency_stop")  # Используем клавиатуру подтверждения
+    )
+
+
 # Обработчик неизвестных команд
 @router.message()
 async def handle_unknown_message(message: Message, state: FSMContext):
