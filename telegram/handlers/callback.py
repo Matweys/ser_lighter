@@ -8,7 +8,7 @@ from typing import Dict, Any, Optional
 from decimal import Decimal
 import json
 
-from core.bot import bot
+from ..bot import bot_manager
 from core.logger import log_info, log_error, log_warning
 from database.db_trades import db_manager
 from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent, UserSettingsChangedEvent
