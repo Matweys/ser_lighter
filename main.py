@@ -4,7 +4,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from aiogram.types import BotCommand
-
+from decimal import Decimal, getcontext
 # Добавляем корневую папку проекта в PYTHONPATH
 project_root = os.path.dirname(os.path.abspath(__file__))
 if project_root not in sys.path:
