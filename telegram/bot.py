@@ -16,8 +16,8 @@ from core.settings_config import system_config
 from core.logger import log_info, log_error, log_warning
 from core.enums import SystemConstants
 from core.events import EventBus
-from aiogram.dispatcher.fsm.storage.redis import RedisStorage
-from aiogram.dispatcher.fsm.storage.base import BaseEventIsolation
+from aiogram.fsm.storage.redis import RedisStorage
+from aiogram.fsm.storage.base import BaseEventIsolation
 
 class TelegramBotManager:
     """Профессиональный менеджер Telegram бота"""
@@ -99,25 +99,19 @@ class TelegramBotManager:
         except Exception as e:
             log_error(0, f"Ошибка создания бота: {e}", module_name='bot')
             raise
-    
+
     async def _setup_dispatcher(self) -> None:
         """Настройка диспетчера"""
         try:
-            fsm_storage = RedisStorage.from_url(system_config.redis.url)
-            events_isolation = fsm_storage.create_isolation()
-
             self.dp = Dispatcher(
                 storage=self.storage,
-                # Дополнительные настройки
-                events_isolation=events_isolation,
-                disable_fsm=False,
             )
-            
+
             # Настраиваем middleware
             await self._setup_middleware()
-            
+
             log_info(0, "Диспетчер настроен", module_name='bot')
-            
+
         except Exception as e:
             log_error(0, f"Ошибка настройки диспетчера: {e}", module_name='bot')
             raise
