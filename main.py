@@ -5,28 +5,25 @@ import logging
 from contextlib import asynccontextmanager
 from aiogram.types import BotCommand
 from decimal import Decimal, getcontext
-# Добавляем корневую папку проекта в PYTHONPATH
+
+# --- 1. Настройка путей (обязательно в самом верху) ---
 project_root = os.path.dirname(os.path.abspath(__file__))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-
-from telegram.bot import bot, dp, bot_manager
+# --- 2. Корректные и единственные импорты ---
 from core.logger import log_info, log_error
-from core.settings_config import system_config
+from core.settings_config import system_config # config теперь импортируется как system_config
 from database.db_trades import db_manager
 from cache.redis_manager import redis_manager
 from core.bot_application import BotApplication
 from telegram.bot import bot_manager
-from telegram.handlers import basic
-from telegram.handlers import callback
+from telegram.handlers import basic, callback
 
-
-
-# Настройка точности для Decimal
+# --- 3. Настройка точности ---
 getcontext().prec = 28
 
-# ВОЗВРАЩАЕМ ВАШУ ФУНКЦИЮ: set_commands
+# --- 4. Ваши функции  ---
 async def set_commands():
     """Устанавливает команды, видимые в меню Telegram."""
     commands = [
@@ -47,22 +44,19 @@ async def set_commands():
 
 async def setup_admin_user():
     """Проверяет, существует ли админ в БД, и добавляет его, если нет."""
-    from core.database.db_trades import db_manager
-
-    admin_exists = await db_manager.get_user(config.admin_id)
+    admin_exists = await db_manager.get_user(system_config.admin_id)
 
     if not admin_exists:
-        log_info(0, f"Администратор с ID {config.admin_id} не найден в БД. Добавление...", module_name=__name__)
+        log_info(0, f"Администратор с ID {system_config.admin_id} не найден в БД. Добавление...", module_name=__name__)
         try:
-            # Используем новую структуру UserProfile для добавления
-            from core.database.db_trades import UserProfile
+            from database.db_trades import UserProfile
             admin_profile = UserProfile(
-                user_id=config.admin_id,
+                user_id=system_config.admin_id,
                 username="admin",
                 is_active=True
             )
             await db_manager.create_user(admin_profile)
-            log_info(0, f"Администратор с ID {config.admin_id} успешно добавлен в БД.", module_name=__name__)
+            log_info(0, f"Администратор с ID {system_config.admin_id} успешно добавлен в БД.", module_name=__name__)
         except Exception as err:
             log_error(0, f"Не удалось добавить администратора в БД: {err}", module_name=__name__)
 
@@ -127,19 +121,20 @@ async def initialize_default_configs():
         log_error(0, f"Ошибка инициализации конфигураций по умолчанию: {err}", module_name=__name__)
 
 
+# --- 5. Контекстный менеджер жизненного цикла ---
 @asynccontextmanager
 async def lifespan_context():
     """Контекстный менеджер для управления жизненным циклом приложения"""
     bot_app = None
     try:
-        log_info(0, "=== ЗАПУСК FUTURES TRADING BOT v2.0 ===", module_name=__name__)
+        log_info(0, "=== ЗАПУСК FUTURES TRADING BOT v2.0 ===", module_name="main")
 
         # Инициализация всех компонентов
         await db_manager.initialize()
         await redis_manager.init_redis()
         await bot_manager.initialize()
 
-        # регистрация роутеров
+        # Регистрация роутеров
         bot_manager.dp.include_router(basic.router)
         bot_manager.dp.include_router(callback.router)
         log_info(0, "Обработчики Telegram (роутеры) зарегистрированы.", module_name="main")
