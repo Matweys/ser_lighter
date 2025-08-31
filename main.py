@@ -17,6 +17,7 @@ from core.settings_config import system_config
 from database.db_trades import db_manager
 from cache.redis_manager import redis_manager
 from core.bot_application import BotApplication
+from telegram.bot import bot_manager
 from telegram.handlers import basic
 from telegram.handlers import callback
 
@@ -136,12 +137,11 @@ async def lifespan_context():
         # Инициализация всех компонентов
         await db_manager.initialize()
         await redis_manager.init_redis()
-        await bot_manager.initialize()  # <-- Здесь создается bot и dp
+        await bot_manager.initialize()
 
         # регистрация роутеров
-        # Теперь мы уверены, что dp существует
-        dp.include_router(basic.router)
-        dp.include_router(callback.router)
+        bot_manager.dp.include_router(basic.router)
+        bot_manager.dp.include_router(callback.router)
         log_info(0, "Обработчики Telegram (роутеры) зарегистрированы.", module_name="main")
 
         # Вызов ваших функций
@@ -169,7 +169,7 @@ async def main():
     """Главная функция запуска бота"""
     try:
         async with lifespan_context() as bot_app:
-            await dp.start_polling(
+            await bot_manager.dp.start_polling(
                 bot_manager.bot,
                 allowed_updates=["message", "callback_query"],
                 drop_pending_updates=True,
