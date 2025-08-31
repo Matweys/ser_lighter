@@ -20,9 +20,7 @@ from core.bot_application import BotApplication
 from telegram.handlers import basic
 from telegram.handlers import callback
 
-# Регистрация роутеров
-dp.include_router(basic_handlers.router)
-dp.include_router(callback_handlers.router)
+
 
 # Настройка точности для Decimal
 getcontext().prec = 28
@@ -138,12 +136,20 @@ async def lifespan_context():
         # Инициализация всех компонентов
         await db_manager.initialize()
         await redis_manager.init_redis()
-        await bot_manager.initialize() # Инициализируем Telegram бота
+        await bot_manager.initialize()  # <-- Здесь создается bot и dp
 
-        # Установка команд бота
+        # регистрация роутеров
+        # Теперь мы уверены, что dp существует
+        dp.include_router(basic.router)
+        dp.include_router(callback.router)
+        log_info(0, "Обработчики Telegram (роутеры) зарегистрированы.", module_name="main")
+
+        # Вызов ваших функций
+        await setup_admin_user()
+        await initialize_default_configs()
         await set_commands()
 
-        # Создание и запуск BotApplication
+        # Создание и запуск основного приложения
         bot_app = BotApplication()
         await bot_app.start()
 
