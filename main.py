@@ -120,13 +120,12 @@ async def initialize_default_configs():
             }
         }
 
-        # Сохраняем шаблоны в Redis
-        await redis_manager.set_json("default:global_config", default_global_config)
+        # Используем метод cache_data для сохранения шаблонов.
+        # Устанавливаем TTL=None, чтобы данные не удалялись.
+        await redis_manager.cache_data("default:global_config",default_global_config,ttl=None)
         for strategy_name, strategy_config in default_strategies.items():
-            await redis_manager.set_json(f"default:strategy:{strategy_name}", strategy_config)
-
+            await redis_manager.cache_data(f"default:strategy:{strategy_name}",strategy_config,ttl=None)
         log_info(0, "Конфигурации по умолчанию инициализированы", module_name=__name__)
-
     except Exception as err:
         log_error(0, f"Ошибка инициализации конфигураций по умолчанию: {err}", module_name=__name__)
 

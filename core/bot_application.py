@@ -297,47 +297,42 @@ class BotApplication:
             
         except Exception as e:
             log_error(0, f"Ошибка остановки глобальных компонентов: {e}", module_name=__name__)
-            
+
     async def _restore_user_sessions(self):
         """Восстановление пользовательских сессий после перезапуска"""
         try:
-            # Получение списка активных сессий из Redis
-            session_keys = await redis_manager.keys("user:*:session")
-            
+            active_users = await redis_manager.get_active_users()
+
+            if not active_users:
+                log_info(0, "Нет активных сессий для восстановления.", module_name=__name__)
+                return
+
             restored_count = 0
-            for key in session_keys:
+            for user_id in active_users:
                 try:
-                    # Извлечение user_id из ключа
-                    user_id = int(key.split(":")[1])
-                    
                     # Проверка конфигурации пользователя
-                    global_config = await redis_manager.get_json(f"user:{user_id}:global_config")
+                    global_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
                     if not global_config:
+                        log_warning(0,f"Нет конфигурации для активного пользователя {user_id}, сессия не будет восстановлена.",
+                                    module_name=__name__)
                         continue
-                        
+
                     # Создание и запуск сессии
                     session = UserSession(user_id)
                     if await session.start():
                         self.active_sessions[user_id] = session
                         restored_count += 1
-                        
                         log_info(user_id, "Сессия восстановлена", module_name=__name__)
-                        
+
                 except Exception as e:
-                    log_error(0, f"Ошибка восстановления сессии {key}: {e}", module_name=__name__)
+                    log_error(0, f"Ошибка восстановления сессии для пользователя {user_id}: {e}", module_name=__name__)
                     continue
                     
             # Обновление статистики
             self.app_stats["active_sessions"] = len(self.active_sessions)
             if restored_count > 0:
                 self.app_stats["system_restarts"] += 1
-                
-            log_info(
-                0,
-                f"Восстановлено {restored_count} пользовательских сессий",
-                module_name=__name__
-            )
-            
+            log_info(0,f"Восстановлено {restored_count} пользовательских сессий", module_name=__name__)
         except Exception as e:
             log_error(0, f"Ошибка восстановления сессий: {e}", module_name=__name__)
             
