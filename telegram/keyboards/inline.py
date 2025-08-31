@@ -3,7 +3,7 @@
 """
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from typing import List, Optional, Dict, Any
-from core.enums import StrategyType, OrderSide, NotificationType
+from core.enums import StrategyType, PositionSide, NotificationType
 
 class KeyboardBuilder:
     """Профессиональный конструктор клавиатур"""

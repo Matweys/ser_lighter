@@ -12,7 +12,7 @@ from core.bot import bot
 from core.logger import log_info, log_error, log_warning
 from database.db_trades import db_manager
 from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent, UserSettingsChangedEvent
-from core.enums import StrategyType, OrderSide, NotificationType
+from core.enums import StrategyType, PositionSide, NotificationType
 from ..keyboards.inline import (
     get_main_menu_keyboard,
     get_strategy_selection_keyboard,
