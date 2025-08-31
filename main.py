@@ -43,22 +43,32 @@ async def set_commands():
     await bot_manager.bot.set_my_commands(commands)
 
 async def setup_admin_user():
-    """Проверяет, существует ли админ в БД, и добавляет его, если нет."""
-    admin_exists = await db_manager.get_user(system_config.admin_id)
+    """Проверяет, существуют ли админы из конфига в БД, и добавляет их, если нет."""
+    # ИСПРАВЛЕНИЕ: Получаем список ID из правильного места: system_config.telegram.admin_ids
+    admin_ids = system_config.telegram.admin_ids
+    if not admin_ids:
+        log_warning(0, "В конфигурации не указаны ID администраторов (ADMIN_IDS).", module_name=__name__)
+        return
 
-    if not admin_exists:
-        log_info(0, f"Администратор с ID {system_config.admin_id} не найден в БД. Добавление...", module_name=__name__)
-        try:
-            from database.db_trades import UserProfile
-            admin_profile = UserProfile(
-                user_id=system_config.admin_id,
-                username="admin",
-                is_active=True
-            )
-            await db_manager.create_user(admin_profile)
-            log_info(0, f"Администратор с ID {system_config.admin_id} успешно добавлен в БД.", module_name=__name__)
-        except Exception as err:
-            log_error(0, f"Не удалось добавить администратора в БД: {err}", module_name=__name__)
+    # ИСПРАВЛЕНИЕ: Проходим по всему списку администраторов
+    for admin_id in admin_ids:
+        admin_exists = await db_manager.get_user(admin_id)
+
+        if not admin_exists:
+            log_info(0, f"Администратор с ID {admin_id} не найден в БД. Добавление...", module_name=__name__)
+            try:
+                from database.db_trades import UserProfile
+                admin_profile = UserProfile(
+                    user_id=admin_id,
+                    username=f"admin_{admin_id}", # Делаем username уникальным
+                    is_active=True,
+                    is_premium=True # Администраторы должны иметь премиум-доступ
+                )
+                await db_manager.create_user(admin_profile)
+                log_info(0, f"Администратор с ID {admin_id} успешно добавлен в БД.", module_name=__name__)
+            except Exception as err:
+                log_error(0, f"Не удалось добавить администратора {admin_id} в БД: {err}", module_name=__name__)
+
 
 
 async def initialize_default_configs():
