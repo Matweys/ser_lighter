@@ -13,7 +13,7 @@ from core.logger import log_info, log_error, log_warning
 from database.db_trades import db_manager
 from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent, UserSettingsChangedEvent
 from core.enums import StrategyType, OrderSide, NotificationType
-from keyboards.inline import (
+from ..keyboards.inline import (
     get_main_menu_keyboard,
     get_strategy_selection_keyboard,
     get_strategy_config_keyboard,
@@ -23,7 +23,7 @@ from keyboards.inline import (
     get_risk_settings_keyboard,
     get_strategy_settings_keyboard
 )
-from core.handlers.states import UserStates
+from telegram.handlers.states import UserStates
 from cache.redis_manager import redis_manager
 from core.functions import get_current_price, format_currency, format_percentage, validate_symbol
 from core.default_configs import DefaultConfigs

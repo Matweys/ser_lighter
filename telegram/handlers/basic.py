@@ -13,13 +13,13 @@ from core.logger import log_info, log_error, log_warning
 from database.db_trades import db_manager
 from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent
 from core.enums import NotificationType, SessionStatus
-from keyboards.inline import (
+from ..keyboards.inline import (
     get_main_menu_keyboard, 
     get_welcome_keyboard,
     get_help_keyboard,
     get_quick_actions_keyboard
 )
-from core.handlers.states import UserStates
+from telegram.handlers.states import UserStates
 from cache.redis_manager import redis_manager
 from core.functions import format_currency, format_percentage, get_current_price
 from core.default_configs import DefaultConfigs
