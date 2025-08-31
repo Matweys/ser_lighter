@@ -421,18 +421,15 @@ class BotApplication:
                 
         except Exception as e:
             log_error(0, f"Ошибка проверки состояния сессий: {e}", module_name=__name__)
-            
+
     async def _update_app_stats(self):
         """Обновление статистики приложения"""
         try:
             self.app_stats["active_sessions"] = len(self.active_sessions)
-            
-            # Сохранение статистики в Redis
-            await redis_manager.set_json("app:stats", self.app_stats)
-            
+            await redis_manager.cache_data("app:stats", self.app_stats, ttl=600)
         except Exception as e:
             log_error(0, f"Ошибка обновления статистики: {e}", module_name=__name__)
-            
+
     async def _save_final_stats(self):
         """Сохранение финальной статистики"""
         try:
@@ -441,9 +438,10 @@ class BotApplication:
                 "shutdown_time": datetime.now().isoformat(),
                 "total_runtime": str(datetime.now() - self.app_stats["start_time"])
             }
-            
-            await redis_manager.set_json("app:final_stats", final_stats)
-            
+
+            # ИСПРАВЛЕНИЕ: Используем cache_data с TTL=None, чтобы сохранить
+            # финальную статистику навсегда.
+            await redis_manager.cache_data("app:final_stats", final_stats, ttl=None)
         except Exception as e:
             log_error(0, f"Ошибка сохранения финальной статистики: {e}", module_name=__name__)
             

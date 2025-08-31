@@ -12,7 +12,7 @@ from ..bot import bot_manager
 from core.logger import log_info, log_error, log_warning
 from database.db_trades import db_manager
 from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent, UserSettingsChangedEvent
-from core.enums import StrategyType, PositionSide, NotificationType
+from core.enums import StrategyType, PositionSide, NotificationType, ConfigType
 from ..keyboards.inline import (
     get_main_menu_keyboard,
     get_strategy_selection_keyboard,
@@ -208,7 +208,7 @@ async def callback_settings(callback: CallbackQuery, state: FSMContext):
     
     try:
         # Получаем текущие настройки
-        user_config = await redis_manager.get_user_config(user_id)
+        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
         if not user_config:
             # Создаем конфигурацию по умолчанию
             await DefaultConfigs.create_default_user_config(user_id)
@@ -478,6 +478,130 @@ async def callback_cancel(callback: CallbackQuery, state: FSMContext):
     except Exception as e:
         og_error(user_id, f"Ошибка отмены: {e}", module_name='callback')
         await callback.answer("❌ Ошибка отмены", show_alert=True)
+
+
+# --- Обработчики кнопок из главного меню ---
+
+@router.callback_query(F.data == "show_balance")
+async def callback_show_balance(callback: CallbackQuery, state: FSMContext):
+    """Обработчик кнопки 'Баланс'"""
+    user_id = callback.from_user.id
+    await callback.answer("Запрашиваю баланс...")  # Быстрый ответ пользователю
+
+    keys = await db_manager.get_api_keys(user_id, "bybit")
+    if not keys:
+        await callback.message.edit_text(
+            "⚠️ <b>API ключи не настроены.</b>\nНе могу получить баланс. Перейдите в 'Настройки' -> 'API ключи' для их добавления.",
+            parse_mode="HTML",
+            reply_markup=get_back_keyboard("settings")
+        )
+        return
+
+    try:
+        # Создаем временный экземпляр API для запроса
+        from api.bybit_api import BybitAPI
+        api = BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1])
+        balance_data = await api.get_wallet_balance()
+
+        if balance_data and 'totalEquity' in balance_data:
+            total_equity = format_currency(balance_data['totalEquity'])
+            available_balance = format_currency(balance_data['totalAvailableBalance'])
+            unrealised_pnl = format_currency(balance_data['totalUnrealisedPnl'])
+            pnl_emoji = "📈" if balance_data['totalUnrealisedPnl'] >= 0 else "📉"
+
+            balance_text = (
+                f"💰 <b>Баланс аккаунта (Bybit)</b>\n\n"
+                f"<b>Общий капитал:</b> {total_equity}\n"
+                f"<b>Доступно для вывода:</b> {available_balance}\n"
+                f"<b>Нереализованный PnL:</b> {pnl_emoji} {unrealised_pnl}"
+            )
+            await callback.message.edit_text(
+                balance_text,
+                parse_mode="HTML",
+                reply_markup=get_balance_keyboard()
+            )
+        else:
+            await callback.message.edit_text(
+                "❌ Не удалось получить данные о балансе. Проверьте права ваших API ключей.",
+                reply_markup=get_back_keyboard("main_menu")
+            )
+    except Exception as e:
+        log_error(user_id, f"Ошибка получения баланса по кнопке: {e}", module_name='callback')
+        await callback.message.edit_text(
+            "❌ Произошла ошибка при запросе баланса.",
+            reply_markup=get_back_keyboard("main_menu")
+        )
+
+
+@router.callback_query(F.data == "watchlist")
+async def callback_watchlist(callback: CallbackQuery, state: FSMContext):
+    """Обработчик кнопки 'Watchlist'"""
+    user_id = callback.from_user.id
+    await callback.answer("Загружаю список отслеживания...")
+
+    try:
+        from core.enums import ConfigType
+        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+        watchlist = user_config.get("watchlist_symbols", [])
+
+        if not watchlist:
+            text = "📋 <b>Список отслеживания пуст.</b>\n\nДобавьте торговые пары, за которыми бот будет следить и по которым будет открывать сделки."
+        else:
+            text = "📋 <b>Список отслеживаемых пар:</b>\n\n"
+            # Преобразуем список в строку с нумерацией
+            for i, symbol in enumerate(watchlist, 1):
+                text += f"{i}. <code>{symbol}</code>\n"
+
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=get_watchlist_keyboard()
+        )
+    except Exception as e:
+        log_error(user_id, f"Ошибка отображения watchlist: {e}", module_name='callback')
+        await callback.message.edit_text(
+            "❌ Ошибка загрузки списка отслеживания.",
+            reply_markup=get_back_keyboard("main_menu")
+        )
+
+
+@router.callback_query(F.data == "api_keys")
+async def callback_api_keys(callback: CallbackQuery, state: FSMContext):
+    """Обработчик кнопки 'API ключи'"""
+    user_id = callback.from_user.id
+    await callback.answer()
+
+    try:
+        keys = await db_manager.get_api_keys(user_id, "bybit")
+
+        if keys:
+            # Показываем только часть ключа для безопасности
+            api_key_short = keys[0][:4] + '...' + keys[0][-4:]
+            text = (
+                f"🔑 <b>Настроенные API ключи (Bybit)</b>\n\n"
+                f"<b>API Key:</b> <code>{api_key_short}</code>\n\n"
+                f"✅ Ключи настроены. Вы можете обновить их в любой момент."
+            )
+        else:
+            text = (
+                f"🔑 <b>Настройка API ключей</b>\n\n"
+                f"🔴 Ключи не настроены.\n\n"
+                f"Для работы бота необходимо добавить API ключи от вашего аккаунта на бирже Bybit."
+            )
+
+        # TODO: Добавить клавиатуру для управления ключами (добавить/удалить)
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=get_back_keyboard("settings")
+        )
+    except Exception as e:
+        log_error(user_id, f"Ошибка отображения API ключей: {e}", module_name='callback')
+        await callback.message.edit_text(
+            "❌ Ошибка загрузки информации о ключах.",
+            reply_markup=get_back_keyboard("settings")
+        )
+
 
 # Обработчик неизвестных callback
 @router.callback_query()

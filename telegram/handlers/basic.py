@@ -23,24 +23,24 @@ from telegram.handlers.states import UserStates
 from cache.redis_manager import redis_manager
 from core.functions import format_currency, format_percentage
 from core.default_configs import DefaultConfigs
-
+from api.bybit_api import BybitAPI
 
 router = Router()
 
 class BasicCommandHandler:
     """Профессиональный обработчик базовых команд"""
-    
+
     def __init__(self, event_bus: EventBus):
         self.event_bus = event_bus
         self.command_stats = {}
         self.user_sessions = {}
-    
+
     async def log_command_usage(self, user_id: int, command: str):
         """Логирование использования команд"""
         if command not in self.command_stats:
             self.command_stats[command] = 0
         self.command_stats[command] += 1
-        
+
         log_info(user_id, f"Команда '{command}' выполнена", module_name='basic_handlers')
         # Обновляем активность пользователя в Redis
         await redis_manager.update_user_activity(user_id)
@@ -58,10 +58,10 @@ async def cmd_start(message: Message, state: FSMContext):
     username = message.from_user.username or "Пользователь"
     first_name = message.from_user.first_name or ""
     last_name = message.from_user.last_name or ""
-    
+
     try:
         await basic_handler.log_command_usage(user_id, "start")
-        
+
         # Создаем или обновляем профиль пользователя
         from core.database.db_trades import UserProfile
         user_profile = UserProfile(
@@ -71,28 +71,28 @@ async def cmd_start(message: Message, state: FSMContext):
             last_name=last_name,
             is_active=True
         )
-        
+
         await db_manager.create_user(user_profile)
-        
+
         # Создаем конфигурацию по умолчанию если её нет
         user_config = await redis_manager.get_user_config(user_id)
         if not user_config:
             log_info(user_id, f"Создание конфигурации по умолчанию для нового пользователя {user_id}", module_name='basic_handlers')
             await DefaultConfigs.create_default_user_config(user_id)
-        
+
         # Очищаем состояние
         await state.clear()
         await state.set_state(UserStates.MAIN_MENU)
-        
+
         # Получаем статус сессии
         session_status = await redis_manager.get_user_session(user_id)
         is_active = session_status.get('is_active', False) if session_status else False
-        
+
         # Получаем статистику пользователя
         user_data = await db_manager.get_user(user_id)
         total_profit = user_data.total_profit if user_data else 0
         total_trades = user_data.total_trades if user_data else 0
-        
+
         welcome_text = (
             f"👋 <b>Добро пожаловать, {first_name}!</b>\n\n"
             f"🤖 <b>Профессиональный торговый бот</b>\n"
@@ -108,15 +108,15 @@ async def cmd_start(message: Message, state: FSMContext):
             f"📈 Детальная статистика и аналитика\n\n"
             f"Выберите действие в меню ниже:"
         )
-        
+
         await message.answer(
-            welcome_text, 
+            welcome_text,
             reply_markup=get_welcome_keyboard(is_active),
             parse_mode="HTML"
         )
-        
+
         log_info(user_id, f"Пользователь {user_id} ({username}) запустил бота", module_name='basic_handlers')
-        
+
     except Exception as e:
         log_error(user_id, f"Ошибка в команде /start: {e}", module_name='basic_handlers')
         await message.answer(
@@ -128,10 +128,10 @@ async def cmd_start(message: Message, state: FSMContext):
 async def cmd_help(message: Message, state: FSMContext):
     """Обработчик команды /help"""
     user_id = message.from_user.id
-    
+
     try:
         await basic_handler.log_command_usage(user_id, "help")
-        
+
         help_text = (
             f"📚 <b>Справка по командам</b>\n\n"
             f"<b>🔧 Основные команды:</b>\n"
@@ -161,13 +161,13 @@ async def cmd_help(message: Message, state: FSMContext):
             f"• Используйте стоп-лоссы для защиты капитала\n\n"
             f"Для получения подробной информации используйте кнопки меню."
         )
-        
+
         await message.answer(
             help_text,
             reply_markup=get_help_keyboard(),
             parse_mode="HTML"
         )
-        
+
     except Exception as e:
         log_error(user_id, f"Ошибка в команде /help: {e}", module_name='basic_handlers')
         await message.answer("❌ Ошибка получения справки")
@@ -176,14 +176,14 @@ async def cmd_help(message: Message, state: FSMContext):
 async def cmd_status(message: Message, state: FSMContext):
     """Обработчик команды /status"""
     user_id = message.from_user.id
-    
+
     try:
         await basic_handler.log_command_usage(user_id, "status")
-        
+
         # Получаем статус сессии
         session_status = await redis_manager.get_user_session(user_id)
         user_config = await redis_manager.get_user_config(user_id)
-        
+
         if not session_status:
             status_text = (
                 f"🔴 <b>Статус: Неактивен</b>\n\n"
@@ -194,21 +194,21 @@ async def cmd_status(message: Message, state: FSMContext):
             is_active = session_status.get('is_active', False)
             active_strategies = session_status.get('active_strategies', [])
             last_activity = session_status.get('last_activity')
-            
+
             status_emoji = "🟢" if is_active else "🔴"
             status_name = "Активен" if is_active else "Неактивен"
-            
+
             status_text = (
                 f"{status_emoji} <b>Статус: {status_name}</b>\n\n"
                 f"📊 <b>Активных стратегий:</b> {len(active_strategies)}\n"
             )
-            
+
             if active_strategies:
                 status_text += f"🔄 <b>Стратегии:</b> {', '.join(active_strategies)}\n"
-            
+
             if last_activity:
                 status_text += f"⏰ <b>Последняя активность:</b> {last_activity}\n"
-            
+
             # Добавляем информацию о настройках риска
             if user_config:
                 risk_config = user_config.get('risk_management', {})
@@ -218,13 +218,13 @@ async def cmd_status(message: Message, state: FSMContext):
                     f"📉 Макс. просадка: {risk_config.get('max_daily_drawdown', 10)}%\n"
                     f"📊 Макс. сделок: {risk_config.get('max_concurrent_trades', 3)}\n"
                 )
-        
+
         await message.answer(
             status_text,
             reply_markup=get_quick_actions_keyboard(session_status.get('is_active', False) if session_status else False),
             parse_mode="HTML"
         )
-        
+
     except Exception as e:
         log_error(user_id, f"Ошибка в команде /status: {e}", module_name='basic_handlers')
         await message.answer("❌ Ошибка получения статуса")
@@ -233,16 +233,16 @@ async def cmd_status(message: Message, state: FSMContext):
 async def cmd_trade_start(message: Message, state: FSMContext):
     """Обработчик команды /trade_start"""
     user_id = message.from_user.id
-    
+
     try:
         await basic_handler.log_command_usage(user_id, "trade_start")
-        
+
         # Проверяем доступ пользователя
         user_profile = await db_manager.get_user(user_id)
         if not user_profile or not user_profile.is_active:
             await message.answer("🚫 У вас нет доступа к торговле")
             return
-        
+
         # Проверяем API ключи
         api_keys = await db_manager.get_api_keys(user_id, "bybit")
         if not api_keys:
@@ -253,19 +253,19 @@ async def cmd_trade_start(message: Message, state: FSMContext):
                 parse_mode="HTML"
             )
             return
-        
+
         # Проверяем существующую сессию
         session_status = await redis_manager.get_user_session(user_id)
         if session_status and session_status.get('is_active'):
             await message.answer("⚠️ Торговля уже запущена")
             return
-        
+
         # Публикуем событие запуска сессии
         if basic_handler.event_bus:
             await basic_handler.event_bus.publish(
                 UserSessionStartRequestedEvent(user_id=user_id)
             )
-        
+
         await message.answer(
             "🚀 <b>Запуск торговли...</b>\n\n"
             "⏳ Инициализация торговой сессии...\n"
@@ -274,10 +274,10 @@ async def cmd_trade_start(message: Message, state: FSMContext):
             "Это может занять несколько секунд.",
             parse_mode="HTML"
         )
-        
+
         # Ждем немного и показываем статус
         await asyncio.sleep(3)
-        
+
         await message.answer(
             "✅ <b>Торговля запущена!</b>\n\n"
             "🟢 Система активна и мониторит рынок\n"
@@ -287,9 +287,9 @@ async def cmd_trade_start(message: Message, state: FSMContext):
             reply_markup=get_quick_actions_keyboard(True),
             parse_mode="HTML"
         )
-        
+
         log_info(user_id, "Запуск торговли", module_name='basic_handlers')
-        
+
     except Exception as e:
         log_error(user_id, f"Ошибка в команде /trade_start: {e}", module_name='basic_handlers')
         await message.answer("❌ Ошибка запуска торговли")
@@ -298,22 +298,22 @@ async def cmd_trade_start(message: Message, state: FSMContext):
 async def cmd_trade_stop(message: Message, state: FSMContext):
     """Обработчик команды /trade_stop"""
     user_id = message.from_user.id
-    
+
     try:
         await basic_handler.log_command_usage(user_id, "trade_stop")
-        
+
         # Проверяем существующую сессию
         session_status = await redis_manager.get_user_session_status(user_id)
         if not session_status or not session_status.get('is_active'):
             await message.answer("⚠️ Торговля не запущена")
             return
-        
+
         # Публикуем событие остановки сессии
         if basic_handler.event_bus:
             await basic_handler.event_bus.publish(
                 UserSessionStopRequestedEvent(user_id=user_id)
             )
-        
+
         await message.answer(
             "🛑 <b>Остановка торговли...</b>\n\n"
             "⏳ Закрытие активных позиций...\n"
@@ -322,10 +322,10 @@ async def cmd_trade_stop(message: Message, state: FSMContext):
             "Это может занять несколько секунд.",
             parse_mode="HTML"
         )
-        
+
         # Ждем немного и показываем статус
         await asyncio.sleep(3)
-        
+
         await message.answer(
             "🛑 <b>Торговля остановлена!</b>\n\n"
             "🔴 Система деактивирована\n"
@@ -335,9 +335,9 @@ async def cmd_trade_stop(message: Message, state: FSMContext):
             reply_markup=get_quick_actions_keyboard(False),
             parse_mode="HTML"
         )
-        
+
         log_info(user_id, "Остановка торговли", module_name='basic_handlers')
-        
+
     except Exception as e:
         log_error(user_id, f"Ошибка в команде /trade_stop: {e}", module_name='basic_handlers')
         await message.answer("❌ Ошибка остановки торговли")
@@ -346,10 +346,10 @@ async def cmd_trade_stop(message: Message, state: FSMContext):
 async def cmd_emergency_stop(message: Message, state: FSMContext):
     """Обработчик команды экстренной остановки"""
     user_id = message.from_user.id
-    
+
     try:
         await basic_handler.log_command_usage(user_id, "emergency_stop")
-        
+
         # Экстренная остановка всех операций
         if basic_handler.event_bus:
             await basic_handler.event_bus.publish(
@@ -358,7 +358,7 @@ async def cmd_emergency_stop(message: Message, state: FSMContext):
                     reason="EMERGENCY_STOP"
                 )
             )
-        
+
         await message.answer(
             "🚨 <b>ЭКСТРЕННАЯ ОСТАНОВКА!</b>\n\n"
             "⚠️ Все торговые операции немедленно остановлены\n"
@@ -368,9 +368,9 @@ async def cmd_emergency_stop(message: Message, state: FSMContext):
             "Система полностью деактивирована.",
             parse_mode="HTML"
         )
-        
+
         log_warning(user_id, "Экстренная остановка", module_name='basic_handlers')
-        
+
     except Exception as e:
         log_error(user_id, f"Ошибка в команде /emergency_stop: {e}", module_name='basic_handlers')
         await message.answer("❌ Ошибка экстренной остановки")
@@ -379,19 +379,19 @@ async def cmd_emergency_stop(message: Message, state: FSMContext):
 async def cmd_stats(message: Message, state: FSMContext):
     """Обработчик команды /stats"""
     user_id = message.from_user.id
-    
+
     try:
         await basic_handler.log_command_usage(user_id, "stats")
-        
+
         # Получаем статистику пользователя
         user_profile = await db_manager.get_user(user_id)
         if not user_profile:
             await message.answer("❌ Профиль пользователя не найден")
             return
-        
+
         # Получаем последние сделки
         recent_trades = await db_manager.get_user_trades(user_id, limit=5)
-        
+
         stats_text = (
             f"📊 <b>Статистика торговли</b>\n\n"
             f"👤 <b>Пользователь:</b> {user_profile.username or 'Не указано'}\n"
@@ -401,7 +401,7 @@ async def cmd_stats(message: Message, state: FSMContext):
             f"🎯 <b>Win Rate:</b> {format_percentage(user_profile.win_rate)}\n"
             f"📉 <b>Макс. просадка:</b> {format_percentage(user_profile.max_drawdown)}\n\n"
         )
-        
+
         if recent_trades:
             stats_text += f"📋 <b>Последние сделки:</b>\n"
             for i, trade in enumerate(recent_trades, 1):
@@ -413,12 +413,12 @@ async def cmd_stats(message: Message, state: FSMContext):
                 )
         else:
             stats_text += "📋 <b>Сделок пока нет</b>\n"
-        
+
         await message.answer(
             stats_text,
             parse_mode="HTML"
         )
-        
+
     except Exception as e:
         log_error(user_id, f"Ошибка в команде /stats: {e}", module_name='basic_handlers')
         await message.answer("❌ Ошибка получения статистики")
@@ -427,11 +427,11 @@ async def cmd_stats(message: Message, state: FSMContext):
 async def cmd_settings(message: Message, state: FSMContext):
     """Обработчик команды /settings"""
     user_id = message.from_user.id
-    
+
     try:
         await basic_handler.log_command_usage(user_id, "settings")
         await state.set_state(UserStates.SETTINGS_MENU)
-        
+
         await message.answer(
             "⚙️ <b>Настройки бота</b>\n\n"
             "Выберите категорию настроек для изменения:\n\n"
@@ -443,27 +443,184 @@ async def cmd_settings(message: Message, state: FSMContext):
             reply_markup=get_main_menu_keyboard(False),
             parse_mode="HTML"
         )
-        
+
     except Exception as e:
         log_error(user_id, f"Ошибка в команде /settings: {e}", module_name='basic_handlers')
         await message.answer("❌ Ошибка открытия настроек")
+
+
+# --- Команды управления торговлей ---
+
+@router.message(Command("autotrade_start"))
+async def cmd_autotrade_start(message: Message, state: FSMContext):
+    """Обработчик команды /autotrade_start"""
+    user_id = message.from_user.id
+    await basic_handler.log_command_usage(user_id, "autotrade_start")
+
+    api_keys = await db_manager.get_api_keys(user_id, "bybit")
+    if not api_keys:
+        await message.answer(
+            "⚠️ <b>API ключи не настроены.</b>\nПерейдите в 'Настройки' -> 'API ключи' для их добавления.",
+            parse_mode="HTML")
+        return
+
+    session_status = await redis_manager.get_user_session(user_id)
+    if session_status and session_status.get('status') == 'active':
+        await message.answer("✅ Торговля уже запущена.")
+        return
+
+    if basic_handler.event_bus:
+        await basic_handler.event_bus.publish(UserSessionStartRequestedEvent(user_id=user_id))
+        await message.answer(
+            "🚀 <b>Запускаю автоматическую торговлю...</b>\nСистема инициализирует сессию и подключается к рынку.",
+            parse_mode="HTML")
+    else:
+        log_error(user_id, "Шина событий (event_bus) недоступна в basic_handler.", "basic_handlers")
+        await message.answer("❌ Системная ошибка: шина событий недоступна. Не могу запустить торговлю.")
+
+
+@router.message(Command("autotrade_stop"))
+async def cmd_autotrade_stop(message: Message, state: FSMContext):
+    """Обработчик команды /autotrade_stop"""
+    user_id = message.from_user.id
+    await basic_handler.log_command_usage(user_id, "autotrade_stop")
+
+    session_status = await redis_manager.get_user_session(user_id)
+    if not session_status or session_status.get('status') != 'active':
+        await message.answer("🔴 Торговля не запущена.")
+        return
+
+    if basic_handler.event_bus:
+        await basic_handler.event_bus.publish(
+            UserSessionStopRequestedEvent(user_id=user_id, reason="manual_stop_command"))
+        await message.answer(
+            "🛑 <b>Останавливаю автоматическую торговлю...</b>\nСистема завершит текущие операции и сохранит статистику.",
+            parse_mode="HTML")
+    else:
+        log_error(user_id, "Шина событий (event_bus) недоступна в basic_handler.", "basic_handlers")
+        await message.answer("❌ Системная ошибка: шина событий недоступна. Не могу остановить торговлю.")
+
+
+@router.message(Command("autotrade_status"))
+async def cmd_autotrade_status(message: Message, state: FSMContext):
+    """Обработчик команды /autotrade_status"""
+    user_id = message.from_user.id
+    await basic_handler.log_command_usage(user_id, "autotrade_status")
+
+    session_status = await redis_manager.get_user_session(user_id)
+    if not session_status:
+        await message.answer("🔴 <b>Статус: Неактивен</b>\nТорговля не запущена.", parse_mode="HTML")
+        return
+
+    status = session_status.get('status', 'unknown')
+    active_strategies = session_status.get('active_strategies', [])
+
+    status_text = f"<b>Статус торговли:</b> {'🟢 Активен' if status == 'active' else '🔴 Неактивен'}\n\n"
+    if active_strategies:
+        status_text += f"<b>Активные стратегии ({len(active_strategies)}):</b>\n"
+        for strategy in active_strategies:
+            s_type = strategy.get('strategy_type', 'N/A').replace('_', ' ').title()
+            s_symbol = strategy.get('symbol', 'N/A')
+            status_text += f"  - <code>{s_symbol}</code> ({s_type})\n"
+    else:
+        status_text += "Нет активных стратегий."
+
+    await message.answer(status_text, parse_mode="HTML")
+
+
+# --- Команды получения информации ---
+
+@router.message(Command("balance"))
+async def cmd_balance(message: Message, state: FSMContext):
+    """Обработчик команды /balance"""
+    user_id = message.from_user.id
+    await basic_handler.log_command_usage(user_id, "balance")
+
+    keys = await db_manager.get_api_keys(user_id, "bybit")
+    if not keys:
+        await message.answer("⚠️ API ключи не настроены. Не могу получить баланс.")
+        return
+
+    try:
+        api = BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1])
+        balance_data = await api.get_wallet_balance()
+
+        if balance_data and 'totalEquity' in balance_data:
+            total_equity = format_currency(balance_data['totalEquity'])
+            available_balance = format_currency(balance_data['totalAvailableBalance'])
+            unrealised_pnl = format_currency(balance_data['totalUnrealisedPnl'])
+
+            pnl_emoji = "📈" if balance_data['totalUnrealisedPnl'] >= 0 else "📉"
+
+            balance_text = (
+                f"💰 <b>Баланс аккаунта (Bybit)</b>\n\n"
+                f"<b>Общий капитал:</b> {total_equity}\n"
+                f"<b>Доступно для вывода:</b> {available_balance}\n"
+                f"<b>Нереализованный PnL:</b> {pnl_emoji} {unrealised_pnl}"
+            )
+            await message.answer(balance_text, parse_mode="HTML")
+        else:
+            await message.answer("❌ Не удалось получить данные о балансе. Проверьте права API ключей.")
+    except Exception as e:
+        log_error(user_id, f"Ошибка получения баланса: {e}", module_name='basic_handlers')
+        await message.answer("❌ Произошла ошибка при запросе баланса.")
+
+
+@router.message(Command("positions"))
+async def cmd_positions(message: Message, state: FSMContext):
+    """Обработчик команды /positions"""
+    user_id = message.from_user.id
+    await basic_handler.log_command_usage(user_id, "positions")
+
+    keys = await db_manager.get_api_keys(user_id, "bybit")
+    if not keys:
+        await message.answer("⚠️ API ключи не настроены. Не могу получить позиции.")
+        return
+
+    try:
+        api = BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1])
+        positions = await api.get_positions()
+
+        if not positions:
+            await message.answer("✅ У вас нет открытых позиций.")
+            return
+
+        positions_text = "📈 <b>Открытые позиции:</b>\n\n"
+        for pos in positions:
+            side_emoji = "🟢 LONG" if pos['side'] == 'Buy' else "🔴 SHORT"
+            pnl_emoji = "📈" if pos['unrealisedPnl'] >= 0 else "📉"
+
+            positions_text += (
+                f"<b>{pos['symbol']}</b> | {side_emoji}\n"
+                f"  - <b>Размер:</b> {pos['size']} {pos.get('baseCoin', '')}\n"
+                f"  - <b>Цена входа:</b> {format_currency(pos['avgPrice'])}\n"
+                f"  - <b>Цена маркировки:</b> {format_currency(pos['markPrice'])}\n"
+                f"  - <b>PnL:</b> {pnl_emoji} {format_currency(pos['unrealisedPnl'])} ({format_percentage(pos.get('percentage', 0) * 100)})\n"
+                f"  - <b>Плечо:</b> {pos['leverage']}x\n\n"
+            )
+
+        await message.answer(positions_text, parse_mode="HTML")
+    except Exception as e:
+        log_error(user_id, f"Ошибка получения позиций: {e}", module_name='basic_handlers')
+        await message.answer("❌ Произошла ошибка при запросе позиций.")
+
 
 # Обработчик неизвестных команд
 @router.message()
 async def handle_unknown_message(message: Message, state: FSMContext):
     """Обработчик неизвестных сообщений"""
     user_id = message.from_user.id
-    
+
     try:
         # Проверяем, находится ли пользователь в процессе настройки
         current_state = await state.get_state()
-        
+
         if current_state:
             # Пользователь в процессе настройки, не обрабатываем как неизвестную команду
             return
-        
+
         log_info(user_id, f"Неизвестное сообщение: {message.text}", module_name='basic_handlers')
-        
+
         await message.answer(
             "❓ <b>Неизвестная команда</b>\n\n"
             "Используйте /help для получения списка доступных команд\n"
@@ -471,7 +628,7 @@ async def handle_unknown_message(message: Message, state: FSMContext):
             reply_markup=get_main_menu_keyboard(False),
             parse_mode="HTML"
         )
-        
+
     except Exception as e:
         log_error(user_id, f"Ошибка обработки неизвестного сообщения: {e}", module_name='basic_handlers')
 
