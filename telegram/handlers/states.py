@@ -69,14 +69,7 @@ class UserStates(StatesGroup):
     IMPULSE_MAX_POSITION_TIME = State()
     IMPULSE_PARTIAL_CLOSE_PERCENT = State()
     IMPULSE_TREND_CONFIRMATION = State()
-    
-    # Состояния управления символами
-    WATCHLIST_MENU = State()
-    ADDING_SYMBOL = State()
-    REMOVING_SYMBOL = State()
-    ENTERING_SYMBOL = State()
-    CONFIRMING_SYMBOL_ACTION = State()
-    
+
     # Состояния статистики и мониторинга
     VIEWING_STATISTICS = State()
     VIEWING_TRADES_HISTORY = State()

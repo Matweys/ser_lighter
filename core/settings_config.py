@@ -115,7 +115,7 @@ class ExchangeConfig:
     account_type: AccountType = AccountType.UNIFIED
 
     # Лимиты
-    min_order_size: Decimal = Decimal('5')      # Минимальный размер ордера в USDT
+    min_order_size: Decimal = Decimal('10')      # Минимальный размер ордера в USDT
     max_order_size: Decimal = Decimal('10000')  # Максимальный размер ордера в USDT
     max_position_size: Decimal = Decimal('50000') # Максимальный размер позиции в USDT
 

@@ -23,17 +23,10 @@ from core.default_configs import DefaultConfigs
 class BotApplication:
     """
     Главный класс приложения, управляющий жизненным циклом пользовательских торговых сессий
-    
-    Принципы работы:
-    - Каждый пользователь получает изолированную UserSession
-    - Все настройки загружаются динамически из Redis
-    - Событийно-ориентированная архитектура через EventBus
-    - Автоматическое управление ресурсами и очистка
-    - Глобальный WebSocket менеджер для оптимизации соединений
-    - Автоматическое восстановление после перезапуска
     """
     
     def __init__(self):
+        self.event_bus = EventBus()
         self.active_sessions: Dict[int, UserSession] = {}
         self.session_tasks: Dict[int, asyncio.Task] = {}
         self._running = False
@@ -63,7 +56,7 @@ class BotApplication:
         
         try:
             # Запуск EventBus
-            await event_bus.start()
+            await self.event_bus.start()
 
             # Подписка на системные события
             event_bus.subscribe(EventType.USER_SESSION_STARTED, self._handle_session_start)
@@ -117,13 +110,7 @@ class BotApplication:
                 
                 # Остановка глобальных компонентов
                 await self._stop_global_components()
-                
-                # Отписка от событий
-                event_bus.unsubscribe(EventType.USER_SESSION_STARTED, self._handle_session_start)
-                event_bus.unsubscribe(EventType.USER_SESSION_STOPPED, self._handle_session_stop)
-                event_bus.unsubscribe(EventType.USER_SETTINGS_CHANGED, self._handle_settings_changed)
-                event_bus.unsubscribe(EventType.RISK_LIMIT_EXCEEDED, self._handle_risk_limit)
-                
+
                 # Остановка EventBus
                 await event_bus.stop()
                 

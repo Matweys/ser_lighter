@@ -256,4 +256,3 @@ class EventBus:
                 logger.error(f"Критическая ошибка в EventBus: {e}")
                 await asyncio.sleep(1)
 
-event_bus = EventBus()

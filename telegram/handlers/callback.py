@@ -30,6 +30,8 @@ from cache.redis_manager import redis_manager
 from core.functions import format_currency, format_percentage, validate_symbol
 from core.default_configs import DefaultConfigs
 from core.logger import log_info, log_error, log_warning
+from core.settings_config import DEFAULT_SYMBOLS
+
 
 router = Router()
 
@@ -607,48 +609,6 @@ async def callback_api_keys(callback: CallbackQuery, state: FSMContext):
         )
 
 
-@router.callback_query(F.data == "watchlist_settings")
-async def callback_watchlist_settings(callback: CallbackQuery, state: FSMContext):
-    """
-    Обработчик кнопки 'Watchlist' в настройках.
-    Отображает текущий список отслеживаемых пар и кнопки для управления им.
-    """
-    user_id = callback.from_user.id
-    await callback.answer("Загружаю список отслеживания...")
-
-    try:
-        from core.enums import ConfigType
-        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
-
-        # Если конфига нет, создаем его из шаблона по умолчанию
-        if not user_config:
-            user_config = DefaultConfigs.get_global_config()
-            await redis_manager.save_config(user_id, ConfigType.GLOBAL, user_config)
-
-        watchlist = user_config.get("watchlist_symbols", [])
-
-        if not watchlist:
-            text = "📋 <b>Список отслеживания пуст.</b>\n\nДобавьте торговые пары, за которыми бот будет следить и по которым будет открывать сделки."
-        else:
-            text = "📋 <b>Список отслеживаемых пар:</b>\n\n"
-            # Преобразуем список в строку с нумерацией
-            for i, symbol in enumerate(watchlist, 1):
-                text += f"{i}. <code>{symbol}</code>\n"
-
-        text += "\n\nВыберите действие:"
-
-        await callback.message.edit_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=get_watchlist_keyboard()  # Используем специальную клавиатуру для watchlist
-        )
-    except Exception as e:
-        log_error(user_id, f"Ошибка отображения watchlist: {e}", module_name='callback')
-        await callback.message.edit_text(
-            "❌ Ошибка загрузки списка отслеживания.",
-            reply_markup=get_back_keyboard("settings")
-        )
-
 
 @router.callback_query(F.data == "general_settings")
 async def callback_general_settings(callback: CallbackQuery, state: FSMContext):
@@ -827,20 +787,6 @@ async def callback_api_settings(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("❌ Ошибка загрузки информации о ключах.", reply_markup=get_back_keyboard("settings"))
 
 
-@router.callback_query(F.data == "remove_from_watchlist")
-async def callback_remove_from_watchlist(callback: CallbackQuery, state: FSMContext):
-    """Начинает процесс удаления символа из watchlist."""
-    user_id = callback.from_user.id
-    await state.set_state(UserStates.ENTERING_SYMBOL)
-    await state.update_data(action="remove")
-
-    await callback.message.edit_text(
-        "<b>Введите тикер торговой пары для удаления из списка.</b>\n\n"
-        "Например: <code>BTCUSDT</code>",
-        parse_mode="HTML",
-        reply_markup=get_back_keyboard("watchlist_settings")
-    )
-    log_info(user_id, "Пользователь начал удаление символа из watchlist.", module_name='callback')
 
 
 @router.callback_query(F.data == "show_watchlist")
@@ -988,6 +934,117 @@ async def callback_toggle_all_strategies(callback: CallbackQuery, state: FSMCont
     except Exception as e:
         log_error(user_id, f"Ошибка при переключении всех стратегий: {e}", "callback")
         await callback.answer("❌ Произошла ошибка.", show_alert=True)
+
+
+
+
+# --- ОБРАБОТЧИКИ НАСТРОЕК СТРАТЕГИЙ (массовое вкл/выкл) ---
+
+@router.callback_query(F.data.in_({"enable_all_strategies", "disable_all_strategies"}))
+async def callback_toggle_all_strategies(callback: CallbackQuery, state: FSMContext):
+    """Включает или отключает все стратегии."""
+    user_id = callback.from_user.id
+    enable = callback.data == "enable_all_strategies"
+    try:
+        current_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+        if not current_config:
+            await callback.answer("❌ Сначала зайдите в меню настроек.", show_alert=True)
+            return
+
+        all_strategy_types = list(DefaultConfigs.get_all_default_configs()["strategy_configs"].keys())
+        # Обновляем поле enabled_strategies в глобальном конфиге
+        current_config["enabled_strategies"] = all_strategy_types if enable else []
+        await redis_manager.save_config(user_id, ConfigType.GLOBAL, current_config)
+
+        status_text = "включены" if enable else "отключены"
+        await callback.answer(f"✅ Все стратегии {status_text}.", show_alert=True)
+        log_info(user_id, f"Все стратегии были {status_text}", "callback")
+
+        # Обновляем сообщение с меню, чтобы показать актуальное состояние
+        await callback_strategy_settings(callback, state)
+    except Exception as e:
+        log_error(user_id, f"Ошибка при переключении всех стратегий: {e}", "callback")
+        await callback.answer("❌ Произошла ошибка.", show_alert=True)
+
+
+async def send_or_edit_symbol_selection_menu(callback_or_message, state: FSMContext, is_edit: bool):
+    """Вспомогательная функция для отображения/обновления меню выбора символов."""
+    user_id = callback_or_message.from_user.id
+    try:
+        available_symbols = DEFAULT_SYMBOLS
+
+        # Получаем текущие выборы пользователя из Redis
+        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+        selected_symbols = set(user_config.get("watchlist_symbols", []) if user_config else [])
+
+        text = (
+            "<b>📈 Выбор торговых пар</b>\n\n"
+            "Выберите пары, по которым бот будет вести торговлю. "
+            "Нажмите на символ, чтобы добавить или убрать его (✅).\n\n"
+            "После выбора нажмите 'Сохранить'."
+        )
+
+        keyboard = get_symbol_selection_keyboard(available_symbols, selected_symbols)
+
+        if is_edit:
+            # Используем message из CallbackQuery для редактирования
+            await callback_or_message.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        else:
+            # Используем Message для отправки нового сообщения
+            await callback_or_message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка отображения меню выбора символов: {e}", "callback")
+        if is_edit:
+            await callback_or_message.answer("❌ Ошибка обновления меню.", show_alert=True)
+        else:
+            await callback_or_message.answer("❌ Ошибка открытия меню.")
+
+
+@router.callback_query(F.data == "select_trading_pairs")
+async def callback_select_trading_pairs(callback: CallbackQuery, state: FSMContext):
+    """Отображает меню выбора торговых пар."""
+    await callback.answer()
+    await send_or_edit_symbol_selection_menu(callback, state, is_edit=True)
+
+
+@router.callback_query(F.data.startswith("toggle_symbol_"))
+async def callback_toggle_symbol(callback: CallbackQuery, state: FSMContext):
+    """Обрабатывает нажатие на символ, добавляя/удаляя его из списка."""
+    user_id = callback.from_user.id
+    symbol_to_toggle = callback.data.replace("toggle_symbol_", "")
+
+    try:
+        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+        if not user_config:
+            user_config = DefaultConfigs.get_global_config()
+
+        selected_symbols = set(user_config.get("watchlist_symbols", []))
+
+        # Добавляем или удаляем символ
+        if symbol_to_toggle in selected_symbols:
+            selected_symbols.remove(symbol_to_toggle)
+        else:
+            selected_symbols.add(symbol_to_toggle)
+
+        # Сохраняем обновленный список в конфиг
+        user_config["watchlist_symbols"] = list(selected_symbols)
+        await redis_manager.save_config(user_id, ConfigType.GLOBAL, user_config)
+
+        # Обновляем клавиатуру, чтобы показать изменение
+        await send_or_edit_symbol_selection_menu(callback, state, is_edit=True)
+        await callback.answer()  # Ответ, чтобы убрать "часики" с кнопки
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка переключения символа {symbol_to_toggle}: {e}", "callback")
+        await callback.answer("❌ Произошла ошибка.", show_alert=True)
+
+
+@router.callback_query(F.data == "save_symbol_selection")
+async def callback_save_symbol_selection(callback: CallbackQuery, state: FSMContext):
+    """Сохраняет выбор и возвращает в меню настроек."""
+    await callback.answer("✅ Список торговых пар сохранен!", show_alert=True)
+    await callback_settings(callback, state)  # Возвращаемся в главное меню настроек
 
 
 

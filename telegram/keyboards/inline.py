@@ -4,6 +4,8 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from typing import List, Optional, Dict, Any
 from core.enums import StrategyType, PositionSide, NotificationType
+from typing import List, Set
+
 
 class KeyboardBuilder:
     """Профессиональный конструктор клавиатур"""
@@ -66,6 +68,35 @@ def get_main_menu_keyboard(is_trading_active: bool = False) -> InlineKeyboardMar
         ]
 
     return KeyboardBuilder.build_keyboard(buttons)
+
+
+def get_symbol_selection_keyboard(available_symbols: List[str], selected_symbols: Set[str]) -> InlineKeyboardMarkup:
+    """
+    Создает динамическую клавиатуру для выбора торговых пар.
+    Отмечает уже выбранные символы галочкой.
+    """
+    buttons = []
+    row = []
+    # Рекомендуется не более 3 кнопок в ряду для читаемости
+    buttons_in_row = 3
+
+    for symbol in available_symbols:
+        text = f"✅ {symbol}" if symbol in selected_symbols else symbol
+        callback_data = f"toggle_symbol_{symbol}"
+        row.append({"text": text, "callback_data": callback_data})
+
+        if len(row) == buttons_in_row:
+            buttons.append(row)
+            row = []
+
+    if row:  # Добавить оставшиеся кнопки, если их количество не кратно buttons_in_row
+        buttons.append(row)
+
+    # Добавляем кнопку для сохранения
+    buttons.append([{"text": "💾 Сохранить и вернуться", "callback_data": "save_symbol_selection"}])
+
+    return KeyboardBuilder.build_keyboard(buttons)
+
 
 def get_welcome_keyboard(is_trading_active: bool = False) -> InlineKeyboardMarkup:
     """Приветственная клавиатура для новых пользователей"""
@@ -164,7 +195,7 @@ def get_settings_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             {"text": "🔑 API ключи", "callback_data": "api_keys"},
-            {"text": "📋 Watchlist", "callback_data": "watchlist_settings"}
+            {"text": "📈 Торговые пары", "callback_data": "select_trading_pairs"}
         ],
         [
             {"text": "🌐 Общие", "callback_data": "general_settings"},
@@ -336,28 +367,6 @@ def get_symbol_selection_keyboard(symbols: List[str]) -> InlineKeyboardMarkup:
     
     return KeyboardBuilder.build_keyboard(buttons)
 
-def get_watchlist_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура управления watchlist"""
-    buttons = [
-        [
-            {"text": "📋 Показать список", "callback_data": "show_watchlist"},
-            {"text": "➕ Добавить символ", "callback_data": "add_to_watchlist"}
-        ],
-        [
-            {"text": "➖ Удалить символ", "callback_data": "remove_from_watchlist"},
-            {"text": "🔄 Обновить цены", "callback_data": "refresh_watchlist"}
-        ],
-        [
-            {"text": "📊 Популярные символы", "callback_data": "popular_symbols"},
-            {"text": "🔍 Поиск символа", "callback_data": "search_symbol"}
-        ],
-        [
-            {"text": "⚙️ Настройки", "callback_data": "settings"},
-            {"text": "🏠 Главное меню", "callback_data": "main_menu"}
-        ]
-    ]
-    
-    return KeyboardBuilder.build_keyboard(buttons)
 
 # Подтверждения
 def get_confirmation_keyboard(action: str, additional_data: str = "") -> InlineKeyboardMarkup:

@@ -33,8 +33,8 @@ class DefaultConfigs:
             "max_simultaneous_trades": 3,
             
             # Риск-менеджмент
-            "risk_per_trade_percent": 2.0,  # 2% риска на сделку
-            "global_daily_drawdown_percent": 5.0,  # 10% максимальная дневная просадка
+            "risk_per_trade_percent": 1.0,  # 2% риска на сделку
+            "global_daily_drawdown_percent": 2.0,  # 10% максимальная дневная просадка
             "max_portfolio_exposure_percent": 50.0,  # 50% максимальная экспозиция
             "stop_loss_percent": 1.0,  # 3% стоп-лосс
             "take_profit_percent": 6.0,  # 6% тейк-профит (R:R = 1:2)
