@@ -212,7 +212,6 @@ class StateManager:
                     UserStates.RISK_SETTINGS.state,
                     UserStates.STRATEGY_SETTINGS.state,
                     UserStates.GENERAL_SETTINGS.state,
-                    UserStates.NOTIFICATION_SETTINGS.state,
                     UserStates.MAIN_MENU.state
                 ],
                 UserStates.RISK_SETTINGS.state: [
