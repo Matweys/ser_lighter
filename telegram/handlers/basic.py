@@ -14,11 +14,13 @@ from database import db_trades
 from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent
 from core.enums import NotificationType, SessionStatus
 from ..keyboards.inline import (
-    get_main_menu_keyboard, 
-    get_welcome_keyboard,
+    get_main_menu_keyboard,
+    get_settings_keyboard,
     get_help_keyboard,
     get_quick_actions_keyboard,
-    get_confirmation_keyboard
+    get_confirmation_keyboard,
+    get_manual_trade_symbol_keyboard,
+    get_back_keyboard,
 )
 from telegram.handlers.states import UserStates
 from cache.redis_manager import redis_manager
@@ -64,7 +66,6 @@ async def cmd_start(message: Message, state: FSMContext):
         await basic_handler.log_command_usage(user_id, "start")
 
         # 1. Создаем или обновляем профиль пользователя в БД
-        from database.db_trades import UserProfile
         user_profile = UserProfile(
             user_id=user_id,
             username=username,
@@ -75,7 +76,6 @@ async def cmd_start(message: Message, state: FSMContext):
         await db_manager.create_user(user_profile)
 
         # 2. Проверяем и создаем конфигурации по умолчанию в Redis, если их нет
-        from core.enums import ConfigType
         global_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
         if not global_config:
             log_info(user_id, f"Создание конфигураций по умолчанию для нового пользователя {user_id}", module_name='basic_handlers')
