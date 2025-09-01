@@ -28,7 +28,7 @@ from ..keyboards.inline import (
     get_back_keyboard
 )
 from core.logger import log_info, log_error, log_warning
-
+from core.settings_config import system_config
 
 router = Router()
 
@@ -590,8 +590,11 @@ async def cmd_balance(message: Message, state: FSMContext):
         return
 
     try:
-        api = BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1])
-        balance_data = await api.get_wallet_balance()
+        exchange_config = system_config.get_exchange_config("bybit")
+        use_sandbox = exchange_config.sandbox if exchange_config else False
+
+        async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], testnet=use_sandbox) as api:
+            balance_data = await api.get_wallet_balance()
 
         if balance_data and 'totalEquity' in balance_data:
             total_equity = format_currency(balance_data['totalEquity'])
@@ -626,8 +629,11 @@ async def cmd_positions(message: Message, state: FSMContext):
         return
 
     try:
-        api = BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1])
-        positions = await api.get_positions()
+        exchange_config = system_config.get_exchange_config("bybit")
+        use_sandbox = exchange_config.sandbox if exchange_config else False
+
+        async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], testnet=use_sandbox) as api:
+            positions = await api.get_positions()
 
         if not positions:
             await message.answer("✅ У вас нет открытых позиций.")
@@ -642,9 +648,7 @@ async def cmd_positions(message: Message, state: FSMContext):
                 f"<b>{pos['symbol']}</b> | {side_emoji}\n"
                 f"  - <b>Размер:</b> {pos['size']} {pos.get('baseCoin', '')}\n"
                 f"  - <b>Цена входа:</b> {format_currency(pos['avgPrice'])}\n"
-                f"  - <b>Цена маркировки:</b> {format_currency(pos['markPrice'])}\n"
-                f"  - <b>PnL:</b> {pnl_emoji} {format_currency(pos['unrealisedPnl'])} ({format_percentage(pos.get('percentage', 0) * 100)})\n"
-                f"  - <b>Плечо:</b> {pos['leverage']}x\n\n"
+                f"  - <b>PnL:</b> {pnl_emoji} {format_currency(pos['unrealisedPnl'])} ({format_percentage(pos.get('percentage', 0) * 100)})\n\n"
             )
 
         await message.answer(positions_text, parse_mode="HTML")

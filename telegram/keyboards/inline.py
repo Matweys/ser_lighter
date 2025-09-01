@@ -49,20 +49,18 @@ def get_main_menu_keyboard(is_trading_active: bool = False) -> InlineKeyboardMar
             ]
         ]
     else:
+        # Меню для неактивной сессии (фокус на настройке)
+        trade_button = {"text": "🚀 Запустить торговлю", "callback_data": "start_trading"}
         buttons = [
             [
-                {"text": "🚀 Запустить торговлю", "callback_data": "start_trading"},
-                {"text": "📊 Статистика", "callback_data": "statistics"}
+                trade_button
             ],
             [
                 {"text": "⚙️ Настройки", "callback_data": "settings"},
                 {"text": "💰 Баланс", "callback_data": "show_balance"}
             ],
             [
-                {"text": "📋 Watchlist", "callback_data": "watchlist"},
-                {"text": "🔑 API ключи", "callback_data": "api_keys"}
-            ],
-            [
+                {"text": "📈 Статистика", "callback_data": "statistics"},
                 {"text": "ℹ️ Помощь", "callback_data": "help"}
             ]
         ]
@@ -165,7 +163,7 @@ def get_settings_keyboard() -> InlineKeyboardMarkup:
             {"text": "📊 Стратегии", "callback_data": "strategy_settings"}
         ],
         [
-            {"text": "🔑 API ключи", "callback_data": "api_settings"},
+            {"text": "🔑 API ключи", "callback_data": "api_keys"},
             {"text": "📋 Watchlist", "callback_data": "watchlist_settings"}
         ],
         [
@@ -389,19 +387,12 @@ def get_balance_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура для баланса"""
     buttons = [
         [
-            {"text": "🔄 Обновить", "callback_data": "refresh_balance"},
-            {"text": "📊 Детали", "callback_data": "balance_details"}
-        ],
-        [
-            {"text": "💰 История", "callback_data": "balance_history"},
-            {"text": "📈 Статистика", "callback_data": "statistics"}
-        ],
-        [
             {"text": "🏠 Главное меню", "callback_data": "main_menu"}
         ]
     ]
-    
+
     return KeyboardBuilder.build_keyboard(buttons)
+
 
 def get_positions_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура для позиций"""

@@ -18,7 +18,7 @@ from analysis.risk_manager import RiskManager
 from api.bybit_api import BybitAPI
 from websocket.websocket_manager import global_ws_manager, DataFeedHandler
 from database.db_trades import db_manager
-
+from core.settings_config import system_config
 # Импорт стратегий
 from strategies.base_strategy import create_strategy, BaseStrategy
 from strategies.bidirectional_grid_strategy import BidirectionalGridStrategy
@@ -328,10 +328,14 @@ class UserSession:
 
             api_key, secret_key, _ = keys
 
+            exchange_config = system_config.get_exchange_config("bybit")
+            use_sandbox = exchange_config.sandbox if exchange_config else False
+
             self.api = BybitAPI(
                 user_id=self.user_id,
                 api_key=api_key,
-                api_secret=secret_key
+                api_secret=secret_key,
+                testnet=use_sandbox
             )
 
             # Инициализация компонентов

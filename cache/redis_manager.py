@@ -10,7 +10,7 @@ import time
 from typing import Optional, Dict, Any, Set, List, Union
 from decimal import Decimal, getcontext
 from datetime import datetime, timedelta
-
+from core.functions import DecimalEncoder
 from core.logger import log_info, log_error, log_debug
 from core.enums import ConfigType, SystemConstants
 
@@ -335,18 +335,15 @@ class RedisManager:
                 # 4. Обработка числовых значений
                 else:
                     try:
-                        # Сначала пытаемся преобразовать в Decimal, если есть точка
-                        if "." in v or "e" in v.lower():
+                        # Сначала пытаемся преобразовать в int
+                        result[k] = int(v)
+                    except ValueError:
+                        try:
+                            # Если не получилось, пытаемся в Decimal
                             result[k] = Decimal(v)
-                        # Затем в int, если это целое число
-                        elif v.isdigit() or (v.startswith('-') and v[1:].isdigit()):
-                            result[k] = int(v)
-                        # Иначе оставляем как строку
-                        else:
+                        except Exception:
+                            # Если и это не удалось, оставляем как есть (строку)
                             result[k] = v
-                    except (ValueError, TypeError):
-                        # Если числовое преобразование не удалось, оставляем как строку
-                        result[k] = v
 
             # Кэширование результата
             if use_cache:
@@ -399,13 +396,8 @@ class RedisManager:
                 "timestamp": datetime.now().isoformat(),
                 "data": config_data
             }
-            
-            await self._safe_execute(
-                self.redis_client.publish, 
-                channel, 
-                json.dumps(message)
-            )
-            
+
+            await self._safe_execute(self.redis_client.publish,channel, json.dumps(message, cls=DecimalEncoder))
         except Exception as e:
             log_error(user_id, f"Ошибка уведомления об изменении конфигурации: {e}", module_name=__name__)
 
