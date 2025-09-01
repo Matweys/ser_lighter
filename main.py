@@ -12,7 +12,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 # --- 2. Корректные и единственные импорты ---
-from core.logger import log_info, log_error
+from core.logger import log_info, log_error, log_warning
 from core.settings_config import system_config # config теперь импортируется как system_config
 from database.db_trades import db_manager
 from cache.redis_manager import redis_manager
