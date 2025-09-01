@@ -19,7 +19,8 @@ from cache.redis_manager import redis_manager
 from core.bot_application import BotApplication
 from telegram.bot import bot_manager
 from telegram.handlers import basic, callback
-
+from core.default_configs import DefaultConfigs
+from core.enums import ConfigType
 # --- 3. Настройка точности ---
 getcontext().prec = 28
 

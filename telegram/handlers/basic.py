@@ -27,6 +27,7 @@ from ..keyboards.inline import (
     get_manual_trade_symbol_keyboard,
     get_back_keyboard
 )
+from core.logger import log_info, log_error, log_warning
 
 
 router = Router()

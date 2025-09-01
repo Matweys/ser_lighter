@@ -29,7 +29,7 @@ from .states import UserStates
 from cache.redis_manager import redis_manager
 from core.functions import format_currency, format_percentage, validate_symbol
 from core.default_configs import DefaultConfigs
-
+from core.logger import log_info, log_error, log_warning
 
 router = Router()
 
