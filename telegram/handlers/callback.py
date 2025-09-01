@@ -246,7 +246,7 @@ async def callback_risk_settings(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     
     try:
-        user_config = await redis_manager.get_user_config(user_id)
+        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
         risk_config = user_config.get('risk_management', {})
         
         text = (
@@ -278,7 +278,7 @@ async def callback_strategy_settings(callback: CallbackQuery, state: FSMContext)
     user_id = callback.from_user.id
     
     try:
-        user_config = await redis_manager.get_user_config(user_id)
+        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
         strategies_config = user_config.get('strategies', {})
         
         text = (
@@ -607,14 +607,173 @@ async def callback_api_keys(callback: CallbackQuery, state: FSMContext):
             reply_markup=get_back_keyboard("settings")
         )
 
+
+@router.callback_query(F.data == "watchlist_settings")
+async def callback_watchlist_settings(callback: CallbackQuery, state: FSMContext):
+    """
+    Обработчик кнопки 'Watchlist' в настройках.
+    Отображает текущий список отслеживаемых пар и кнопки для управления им.
+    """
+    user_id = callback.from_user.id
+    await callback.answer("Загружаю список отслеживания...")
+
+    try:
+        from core.enums import ConfigType
+        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+
+        # Если конфига нет, создаем его из шаблона по умолчанию
+        if not user_config:
+            user_config = DefaultConfigs.get_global_config()
+            await redis_manager.save_config(user_id, ConfigType.GLOBAL, user_config)
+
+        watchlist = user_config.get("watchlist_symbols", [])
+
+        if not watchlist:
+            text = "📋 <b>Список отслеживания пуст.</b>\n\nДобавьте торговые пары, за которыми бот будет следить и по которым будет открывать сделки."
+        else:
+            text = "📋 <b>Список отслеживаемых пар:</b>\n\n"
+            # Преобразуем список в строку с нумерацией
+            for i, symbol in enumerate(watchlist, 1):
+                text += f"{i}. <code>{symbol}</code>\n"
+
+        text += "\n\nВыберите действие:"
+
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=get_watchlist_keyboard()  # Используем специальную клавиатуру для watchlist
+        )
+    except Exception as e:
+        log_error(user_id, f"Ошибка отображения watchlist: {e}", module_name='callback')
+        await callback.message.edit_text(
+            "❌ Ошибка загрузки списка отслеживания.",
+            reply_markup=get_back_keyboard("settings")
+        )
+
+
+@router.callback_query(F.data == "notification_settings")
+async def callback_notification_settings(callback: CallbackQuery, state: FSMContext):
+    """
+    Обработчик кнопки 'Уведомления'.
+    Отображает текущие настройки уведомлений и кнопки для их изменения.
+    """
+    user_id = callback.from_user.id
+    await callback.answer()
+
+    try:
+        from core.enums import ConfigType
+        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+        if not user_config:
+            user_config = DefaultConfigs.get_global_config()
+
+        # Получаем текущие настройки уведомлений
+        notify_on_trade_open = user_config.get("notify_on_trade_open", True)
+        notify_on_trade_close = user_config.get("notify_on_trade_close", True)
+        notify_on_risk_warning = user_config.get("notify_on_risk_warning", True)
+
+        text = (
+            f"🔔 <b>Настройки уведомлений</b>\n\n"
+            f"Выберите, какие уведомления вы хотите получать:\n\n"
+            f"{'✅' if notify_on_trade_open else '❌'} - При открытии сделки\n"
+            f"{'✅' if notify_on_trade_close else '❌'} - При закрытии сделки\n"
+            f"{'✅' if notify_on_risk_warning else '❌'} - Предупреждения о рисках"
+        )
+
+        from ..keyboards.inline import get_notification_settings_keyboard
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=get_notification_settings_keyboard()
+        )
+    except Exception as e:
+        log_error(user_id, f"Ошибка в настройках уведомлений: {e}", module_name='callback')
+        await callback.message.edit_text(
+            "❌ Ошибка загрузки настроек уведомлений.",
+            reply_markup=get_back_keyboard("settings")
+        )
+
+
+@router.callback_query(F.data == "general_settings")
+async def callback_general_settings(callback: CallbackQuery, state: FSMContext):
+    """Обработчик кнопки 'Общие'."""
+    user_id = callback.from_user.id
+    await callback.answer()
+
+    # В будущем здесь можно будет настраивать, например, язык или часовой пояс
+    text = (
+        "🌐 <b>Общие настройки</b>\n\n"
+        "В данный момент здесь нет доступных для изменения параметров. "
+        "Этот раздел зарезервирован для будущих обновлений."
+    )
+    await callback.message.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=get_back_keyboard("settings")
+    )
+
+
+@router.callback_query(F.data == "reset_settings")
+async def callback_reset_settings(callback: CallbackQuery, state: FSMContext):
+    """
+    Обработчик кнопки 'Сбросить настройки'.
+    Показывает пользователю предупреждение и клавиатуру для подтверждения.
+    """
+    text = (
+        "⚠️ <b>Подтверждение действия</b> ⚠️\n\n"
+        "Вы уверены, что хотите сбросить ВСЕ ваши настройки к значениям по умолчанию?\n\n"
+        "Это действие затронет настройки риска, стратегий и список отслеживания. "
+        "API ключи останутся без изменений. Это действие необратимо."
+    )
+    await callback.message.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=get_confirmation_keyboard("do_reset_settings")
+    )
+
+
+@router.callback_query(F.data == "confirm_do_reset_settings")
+async def callback_confirm_reset_settings(callback: CallbackQuery, state: FSMContext):
+    """
+    Подтверждение и выполнение сброса настроек.
+    """
+    user_id = callback.from_user.id
+    await callback.answer("Сбрасываю настройки...", show_alert=True)
+
+    try:
+        # Получаем конфиг по умолчанию и сохраняем его для пользователя
+        default_config = DefaultConfigs.get_global_config()
+        from core.enums import ConfigType
+        await redis_manager.save_config(user_id, ConfigType.GLOBAL, default_config)
+
+        # Также сбрасываем конфиги для каждой стратегии
+        default_strategies = DefaultConfigs.get_all_default_configs().get("strategy_configs", {})
+        for strategy_type, strategy_config in default_strategies.items():
+            await redis_manager.save_config(user_id, f"strategy:{strategy_type}", strategy_config)
+
+        log_warning(user_id, "Пользователь сбросил все настройки к значениям по умолчанию.", module_name='callback')
+
+        await callback.message.edit_text(
+            "✅ <b>Настройки сброшены</b>\n\nВсе ваши конфигурации были возвращены к значениям по умолчанию.",
+            parse_mode="HTML",
+            reply_markup=get_back_keyboard("settings")
+        )
+    except Exception as e:
+        log_error(user_id, f"Ошибка при сбросе настроек: {e}", module_name='callback')
+        await callback.message.edit_text(
+            "❌ Произошла ошибка при сбросе настроек.",
+            reply_markup=get_back_keyboard("settings")
+        )
+
 @router.callback_query(F.data == "help")
 async def callback_help(callback: CallbackQuery, state: FSMContext):
     """Обработчик кнопки 'Помощь'"""
-    # Этот колбэк просто должен вызывать текстовую команду /help
-    # Для этого мы импортируем ее обработчик
-    from .basic import cmd_help
-    await cmd_help(callback.message, state)
-    await callback.answer() # Закрываем "часики" на кнопке
+    try:
+        from .basic import cmd_help
+        await cmd_help(callback.message, state)
+        await callback.answer()
+    except Exception as e:
+        log_error(callback.from_user.id, f"Ошибка при вызове /help из callback: {e}", module_name='callback')
+        await callback.answer("Не удалось загрузить справку.", show_alert=True)
 
 
 # Обработчик неизвестных callback
