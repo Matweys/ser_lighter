@@ -10,8 +10,9 @@ from decimal import Decimal, getcontext
 from datetime import datetime
 from core.logger import log_info, log_error, log_warning
 from core.events import (
-    event_bus, EventType, StrategyStartEvent, StrategyStopEvent,
-    SignalEvent, OrderFilledEvent, RiskLimitExceededEvent, UserSettingsChangedEvent
+    EventType, StrategyStartEvent, StrategyStopEvent,
+    SignalEvent, OrderFilledEvent, RiskLimitExceededEvent, UserSettingsChangedEvent,
+    EventBus
 )
 from analysis.meta_strategist import MetaStrategist
 from analysis.risk_manager import RiskManager
@@ -53,8 +54,9 @@ class UserSession:
     - Автоматическое управление жизненным циклом стратегий
     """
     
-    def __init__(self, user_id: int):
+    def __init__(self, user_id: int, event_bus: EventBus):
         self.user_id = user_id
+        self.event_bus = event_bus
         self.running = False
 
         # API клиент сессии
@@ -254,7 +256,7 @@ class UserSession:
                     symbol=symbol,
                     strategy_id=strategy.strategy_id  # <-- Добавлен обязательный параметр
                 )
-                await event_bus.publish(event)
+                await self.event_bus.publish(event)
                 log_info(self.user_id, f"Стратегия {strategy_id} запущена", module_name=__name__)
                 return True
             else:
@@ -311,7 +313,7 @@ class UserSession:
                 symbol=strategy.symbol,
                 strategy_type=strategy.strategy_type.value
             )
-            await event_bus.publish(event)
+            await self.event_bus.publish(event)
             log_info(self.user_id, f"Стратегия {strategy_id} остановлена: {reason}", module_name=__name__)
             return True
         except Exception as e:
@@ -439,16 +441,16 @@ class UserSession:
         """Подписка на события"""
         try:
             # Подписка на сигналы
-            event_bus.subscribe_user(self.user_id, self._handle_signal_event)
+            self.event_bus.subscribe_user(self.user_id, self._handle_signal_event)
 
             # Подписка на торговые события
-            event_bus.subscribe_user(self.user_id, self._handle_order_filled_event)
+            self.event_bus.subscribe_user(self.user_id, self._handle_order_filled_event)
 
             # Подписка на события риска
-            event_bus.subscribe_user(self.user_id, self._handle_risk_event)
+            self.event_bus.subscribe_user(self.user_id, self._handle_risk_event)
 
             # Подписка на изменение настроек
-            event_bus.subscribe_user(self.user_id, self._handle_settings_changed)
+            self.event_bus.subscribe_user(self.user_id, self._handle_settings_changed)
             
         except Exception as e:
             log_error(self.user_id, f"Ошибка подписки на события: {e}", module_name=__name__)
@@ -457,7 +459,7 @@ class UserSession:
         """Отписка от событий"""
         try:
             # Отписка пользователя от всех его персональных событий
-            event_bus.unsubscribe_user(self.user_id)
+            self.event_bus.unsubscribe_user(self.user_id)
         except Exception as e:
             log_error(self.user_id, f"Ошибка отписки от событий: {e}", module_name=__name__)
             
