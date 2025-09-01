@@ -169,15 +169,14 @@ def get_settings_keyboard() -> InlineKeyboardMarkup:
             {"text": "📋 Watchlist", "callback_data": "watchlist_settings"}
         ],
         [
-            {"text": "🔔 Уведомления", "callback_data": "notification_settings"},
-            {"text": "🌐 Общие", "callback_data": "general_settings"}
+            {"text": "🌐 Общие", "callback_data": "general_settings"},
+            {"text": "🔄 Сбросить настройки", "callback_data": "reset_settings"}
         ],
         [
-            {"text": "🔄 Сбросить настройки", "callback_data": "reset_settings"},
             {"text": "🏠 Главное меню", "callback_data": "main_menu"}
         ]
     ]
-    
+
     return KeyboardBuilder.build_keyboard(buttons)
 
 def get_risk_settings_keyboard() -> InlineKeyboardMarkup:
@@ -547,30 +546,5 @@ def get_emergency_keyboard() -> InlineKeyboardMarkup:
     
     return KeyboardBuilder.build_keyboard(buttons)
 
-def get_notification_settings_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура настроек уведомлений"""
-    buttons = [
-        [
-            {"text": "📈 Уведомления о прибыли", "callback_data": "notifications_profit"},
-            {"text": "📉 Уведомления о убытках", "callback_data": "notifications_loss"}
-        ],
-        [
-            {"text": "🔔 Системные уведомления", "callback_data": "notifications_system"},
-            {"text": "⚠️ Уведомления о рисках", "callback_data": "notifications_risk"}
-        ],
-        [
-            {"text": "📊 Ежедневные отчеты", "callback_data": "notifications_daily"},
-            {"text": "📈 Еженедельные отчеты", "callback_data": "notifications_weekly"}
-        ],
-        [
-            {"text": "🔕 Отключить все", "callback_data": "notifications_disable_all"},
-            {"text": "🔔 Включить все", "callback_data": "notifications_enable_all"}
-        ],
-        [
-            {"text": "⚙️ Настройки", "callback_data": "settings"},
-            {"text": "🏠 Главное меню", "callback_data": "main_menu"}
-        ]
-    ]
-    
-    return KeyboardBuilder.build_keyboard(buttons)
+
 

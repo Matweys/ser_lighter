@@ -215,8 +215,7 @@ class BotStatesManager:
                 # Публикуем событие запуска сессии
                 await self.event_bus.publish(UserSessionStartedEvent(
                     user_id=user_id,
-                    session_id=f"session_{user_id}_{int(datetime.now(timezone.utc).timestamp())}",
-                    metadata={'started_at': datetime.now(timezone.utc).isoformat()}
+                    timestamp=datetime.now(timezone.utc)
                 ))
 
                 log_info(user_id, "Пользовательская сессия успешно запущена", module_name='bot_states')
@@ -266,9 +265,8 @@ class BotStatesManager:
                 # Публикуем событие остановки сессии
                 await self.event_bus.publish(UserSessionStoppedEvent(
                     user_id=user_id,
-                    session_id=f"session_{user_id}",
                     reason="USER_REQUEST",
-                    metadata={'stopped_at': datetime.now(timezone.utc).isoformat()}
+                    timestamp=datetime.now(timezone.utc)
                 ))
 
                 log_info(user_id, "Пользовательская сессия остановлена", module_name='bot_states')

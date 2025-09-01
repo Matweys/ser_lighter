@@ -9,24 +9,25 @@ from typing import Optional, Dict, Any
 from datetime import datetime
 import asyncio
 
-from core.logger import log_info, log_error, log_warning
-from database import db_trades
+from database.db_trades import db_manager, UserProfile
 from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent
-from core.enums import NotificationType, SessionStatus
-from ..keyboards.inline import (
-    get_main_menu_keyboard,
-    get_settings_keyboard,
-    get_help_keyboard,
-    get_quick_actions_keyboard,
-    get_confirmation_keyboard,
-    get_manual_trade_symbol_keyboard,
-    get_back_keyboard,
-)
-from telegram.handlers.states import UserStates
+from .states import UserStates
 from cache.redis_manager import redis_manager
 from core.functions import format_currency, format_percentage
 from core.default_configs import DefaultConfigs
 from api.bybit_api import BybitAPI
+from core.enums import ConfigType
+from ..keyboards.inline import (
+    get_main_menu_keyboard,
+    get_welcome_keyboard,
+    get_help_keyboard,
+    get_quick_actions_keyboard,
+    get_confirmation_keyboard,
+    get_settings_keyboard,
+    get_manual_trade_symbol_keyboard,
+    get_back_keyboard
+)
+
 
 router = Router()
 
@@ -78,16 +79,23 @@ async def cmd_start(message: Message, state: FSMContext):
         # 2. Проверяем и создаем конфигурации по умолчанию в Redis, если их нет
         global_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
         if not global_config:
-            log_info(user_id, f"Создание конфигураций по умолчанию для нового пользователя {user_id}", module_name='basic_handlers')
-            # Глобальная конфигурация
-            default_global = DefaultConfigs.get_global_config()
-            await redis_manager.save_config(user_id, ConfigType.GLOBAL, default_global)
-            # Конфигурации для каждой стратегии
-            all_defaults = DefaultConfigs.get_all_default_configs()
-            for s_type, s_config in all_defaults["strategy_configs"].items():
-                 # Важно: имя типа конфига должно соответствовать логике
-                await redis_manager.save_config(user_id, ConfigType[f"STRATEGY_{s_type.upper()}"], s_config)
+            log_info(user_id, f"Копирование конфигов по умолчанию для нового пользователя {user_id}",
+                     module_name='basic_handlers')
+            template_user_id = 0
 
+            # Копируем глобальный конфиг
+            default_global = await redis_manager.get_config(template_user_id, ConfigType.GLOBAL)
+            if default_global:
+                await redis_manager.save_config(user_id, ConfigType.GLOBAL, default_global)
+
+            # Копируем конфиги стратегий
+            all_defaults = DefaultConfigs.get_all_default_configs()
+            for s_type in all_defaults["strategy_configs"].keys():
+                config_enum = getattr(ConfigType, f"STRATEGY_{s_type.upper()}", None)
+                if config_enum:
+                    default_strategy_config = await redis_manager.get_config(template_user_id, config_enum)
+                    if default_strategy_config:
+                        await redis_manager.save_config(user_id, config_enum, default_strategy_config)
 
         # 3. Очищаем FSM состояние
         await state.clear()

@@ -84,12 +84,6 @@ class UserStates(StatesGroup):
     VIEWING_ORDERS = State()
     EXPORTING_DATA = State()
     
-    # Состояния уведомлений
-    NOTIFICATION_SETTINGS = State()
-    SETTING_PROFIT_NOTIFICATIONS = State()
-    SETTING_LOSS_NOTIFICATIONS = State()
-    SETTING_SYSTEM_NOTIFICATIONS = State()
-    
     # Состояния подтверждения критических действий
     CONFIRMING_RESET_SETTINGS = State()
     CONFIRMING_DELETE_ACCOUNT = State()

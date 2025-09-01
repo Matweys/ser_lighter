@@ -91,60 +91,35 @@ async def setup_admin_user():
 
 
 async def initialize_default_configs():
-    """Инициализирует конфигурации по умолчанию для новых пользователей в Redis"""
+    """Сохраняет шаблоны конфигураций по умолчанию в Redis."""
     try:
-        # Глобальные настройки по умолчанию
-        default_global_config = {
-            "enabled_strategies": [],
-            "watchlist_symbols": ["BTCUSDT", "ETHUSDT"],
-            "max_simultaneous_trades": 2,
-            "global_daily_drawdown_percent": 5.0,
-            "risk_per_trade_percent": 1.0,
-            "analysis_config": {
-                "fast_ema": 20,
-                "slow_ema": 50,
-                "adx_period": 14,
-                "atr_period": 14,
-                "timeframes": ["15m", "1h", "4h"]
-            }
-        }
+        # Используем специальный user_id=0 для хранения шаблонов
+        template_user_id = 0
+        all_defaults = DefaultConfigs.get_all_default_configs()
 
-        # Настройки стратегий по умолчанию
-        default_strategies = {
-            "grid_scalping": {
-                "enabled": False,
-                "leverage": 3,
-                "initial_order_amount": 10.0,
-                "averaging_order_amount": 10.0,
-                "profit_percent": 1.0,
-                "drop_percent": 1.0,
-                "max_averaging": 5,
-                "stop_loss_percent": 1.0
-            },
-            "bidirectional_grid": {
-                "enabled": False,
-                "leverage": 3,
-                "order_amount": 10.0,
-                "grid_levels": 6,
-                "grid_step_percent": 1.0,
-                "profit_percent": 1.0
-            },
-            "impulse_trailing": {
-                "enabled": False,
-                "leverage": 5,
-                "order_amount": 50.0,
-                "initial_stop_loss_percent": 1.0,
-                "trailing_percent": 2.0,
-                "min_profit_percent": 1.0
-            }
-        }
+        # Сохраняем глобальный конфиг как хэш, используя save_config
+        await redis_manager.save_config(template_user_id, ConfigType.GLOBAL, all_defaults["global_config"])
 
-        # Используем метод cache_data для сохранения шаблонов.
-        # Устанавливаем TTL=None, чтобы данные не удалялись.
-        await redis_manager.cache_data("default:global_config",default_global_config,ttl=None)
-        for strategy_name, strategy_config in default_strategies.items():
-            await redis_manager.cache_data(f"default:strategy:{strategy_name}",strategy_config,ttl=None)
-        log_info(0, "Конфигурации по умолчанию инициализированы", module_name=__name__)
+        # Сохраняем конфиги стратегий
+        for s_type, s_config in all_defaults["strategy_configs"].items():
+            config_enum_name = f"STRATEGY_{s_type.upper()}"
+            # Проверяем наличие enum, чтобы избежать ошибок
+            if hasattr(ConfigType, config_enum_name):
+                config_enum = getattr(ConfigType, config_enum_name)
+                await redis_manager.save_config(template_user_id, config_enum, s_config)
+            else:
+                log_warning(0, f"Не найден ConfigType для стратегии {s_type}", module_name=__name__)
+
+        # Сохраняем конфиги компонентов
+        for c_type, c_config in all_defaults["component_configs"].items():
+             config_enum_name = f"COMPONENT_{c_type.upper()}"
+             if hasattr(ConfigType, config_enum_name):
+                config_enum = getattr(ConfigType, config_enum_name)
+                await redis_manager.save_config(template_user_id, config_enum, c_config)
+             else:
+                log_warning(0, f"Не найден ConfigType для компонента {c_type}", module_name=__name__)
+
+        log_info(0, "Шаблоны конфигураций по умолчанию сохранены в Redis.", module_name=__name__)
     except Exception as err:
         log_error(0, f"Ошибка инициализации конфигураций по умолчанию: {err}", module_name=__name__)
 

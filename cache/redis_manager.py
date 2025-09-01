@@ -570,16 +570,11 @@ class RedisManager:
     # КЭШИРОВАНИЕ ДАННЫХ
     # =============================================================================
 
-    async def cache_data(
-        self, 
-        key: str, 
-        data: Any, 
-        ttl: int = SystemConstants.CACHE_EXPIRY_SECONDS
-    ) -> bool:
-        """Кэширование данных с TTL"""
+    async def cache_data(self, key: str, data: Any, ttl: Optional[int] = SystemConstants.CACHE_EXPIRY_SECONDS) -> bool:
+        """Кэширование данных с TTL (с поддержкой постоянного хранения)"""
         try:
             cache_key = self._get_key("cache", key)
-            
+
             # Сериализация данных
             if isinstance(data, (dict, list)):
                 serialized_data = json.dumps(data, default=str)
@@ -587,13 +582,19 @@ class RedisManager:
                 serialized_data = str(data)
             else:
                 serialized_data = str(data)
-            
-            result = await self._safe_execute(
-                self.redis_client.setex, cache_key, ttl, serialized_data
-            )
-            
+
+            # Если ttl=None, используем команду SET для постоянного хранения.
+            # Иначе используем SETEX для временного кэша.
+            if ttl is None:
+                result = await self._safe_execute(
+                    self.redis_client.set, cache_key, serialized_data
+                )
+            else:
+                result = await self._safe_execute(
+                    self.redis_client.setex, cache_key, ttl, serialized_data
+                )
+
             return result is not None
-            
         except Exception as e:
             log_error(0, f"Ошибка кэширования данных {key}: {e}", module_name=__name__)
             return False

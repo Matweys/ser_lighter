@@ -9,9 +9,8 @@ from decimal import Decimal
 import json
 
 from ..bot import bot_manager
-from core.logger import log_info, log_error, log_warning
 from database.db_trades import db_manager
-from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent, UserSettingsChangedEvent
+from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent, UserSettingsChangedEvent, SignalEvent
 from core.enums import StrategyType, PositionSide, NotificationType, ConfigType
 from ..keyboards.inline import (
     get_main_menu_keyboard,
@@ -24,9 +23,10 @@ from ..keyboards.inline import (
     get_strategy_settings_keyboard,
     get_back_keyboard,
     get_balance_keyboard,
-    get_watchlist_keyboard
+    get_watchlist_keyboard,
+    get_notification_settings_keyboard
 )
-from telegram.handlers.states import UserStates
+from .states import UserStates
 from cache.redis_manager import redis_manager
 from core.functions import format_currency, format_percentage, validate_symbol
 from core.default_configs import DefaultConfigs
@@ -651,48 +651,6 @@ async def callback_watchlist_settings(callback: CallbackQuery, state: FSMContext
         )
 
 
-@router.callback_query(F.data == "notification_settings")
-async def callback_notification_settings(callback: CallbackQuery, state: FSMContext):
-    """
-    Обработчик кнопки 'Уведомления'.
-    Отображает текущие настройки уведомлений и кнопки для их изменения.
-    """
-    user_id = callback.from_user.id
-    await callback.answer()
-
-    try:
-        from core.enums import ConfigType
-        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
-        if not user_config:
-            user_config = DefaultConfigs.get_global_config()
-
-        # Получаем текущие настройки уведомлений
-        notify_on_trade_open = user_config.get("notify_on_trade_open", True)
-        notify_on_trade_close = user_config.get("notify_on_trade_close", True)
-        notify_on_risk_warning = user_config.get("notify_on_risk_warning", True)
-
-        text = (
-            f"🔔 <b>Настройки уведомлений</b>\n\n"
-            f"Выберите, какие уведомления вы хотите получать:\n\n"
-            f"{'✅' if notify_on_trade_open else '❌'} - При открытии сделки\n"
-            f"{'✅' if notify_on_trade_close else '❌'} - При закрытии сделки\n"
-            f"{'✅' if notify_on_risk_warning else '❌'} - Предупреждения о рисках"
-        )
-
-        from ..keyboards.inline import get_notification_settings_keyboard
-        await callback.message.edit_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=get_notification_settings_keyboard()
-        )
-    except Exception as e:
-        log_error(user_id, f"Ошибка в настройках уведомлений: {e}", module_name='callback')
-        await callback.message.edit_text(
-            "❌ Ошибка загрузки настроек уведомлений.",
-            reply_markup=get_back_keyboard("settings")
-        )
-
-
 @router.callback_query(F.data == "general_settings")
 async def callback_general_settings(callback: CallbackQuery, state: FSMContext):
     """Обработчик кнопки 'Общие'."""
@@ -838,6 +796,52 @@ async def callback_manual_select_strategy(callback: CallbackQuery, state: FSMCon
         log_error(user_id, "EventBus не доступен в callback_handler для ручного запуска", "callback")
 
     await state.clear()
+
+@router.callback_query(F.data == "api_settings")
+async def callback_api_settings(callback: CallbackQuery, state: FSMContext):
+    """Обработчик кнопки 'API ключи' в настройках"""
+    user_id = callback.from_user.id
+    await callback.answer()
+    try:
+        keys = await db_manager.get_api_keys(user_id, "bybit")
+        if keys:
+            api_key_short = keys[0][:4] + '...' + keys[0][-4:]
+            text = (
+                f"🔑 <b>Настроенные API ключи (Bybit)</b>\n\n"
+                f"<b>API Key:</b> <code>{api_key_short}</code>\n\n"
+                f"✅ Ключи настроены. Вы можете обновить их."
+            )
+        else:
+            text = (
+                f"🔑 <b>Настройка API ключей</b>\n\n"
+                f"🔴 Ключи не настроены.\n\n"
+                f"Для работы бота необходимо добавить API ключи от Bybit."
+            )
+        # TODO: Добавить клавиатуру для управления ключами (добавить/удалить)
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=get_back_keyboard("settings")
+        )
+    except Exception as e:
+        log_error(user_id, f"Ошибка отображения API ключей: {e}", module_name='callback')
+        await callback.message.edit_text("❌ Ошибка загрузки информации о ключах.", reply_markup=get_back_keyboard("settings"))
+
+
+@router.callback_query(F.data == "remove_from_watchlist")
+async def callback_remove_from_watchlist(callback: CallbackQuery, state: FSMContext):
+    """Начинает процесс удаления символа из watchlist."""
+    user_id = callback.from_user.id
+    await state.set_state(UserStates.ENTERING_SYMBOL)
+    await state.update_data(action="remove")
+
+    await callback.message.edit_text(
+        "<b>Введите тикер торговой пары для удаления из списка.</b>\n\n"
+        "Например: <code>BTCUSDT</code>",
+        parse_mode="HTML",
+        reply_markup=get_back_keyboard("watchlist_settings")
+    )
+    log_info(user_id, "Пользователь начал удаление символа из watchlist.", module_name='callback')
 
 
 @router.callback_query(F.data == "help")
