@@ -843,6 +843,32 @@ async def callback_remove_from_watchlist(callback: CallbackQuery, state: FSMCont
     log_info(user_id, "Пользователь начал удаление символа из watchlist.", module_name='callback')
 
 
+@router.callback_query(F.data == "show_watchlist")
+async def callback_show_watchlist(callback: CallbackQuery, state: FSMContext):
+    """Обработчик кнопки 'Показать список' в меню Watchlist"""
+    user_id = callback.from_user.id
+    await callback.answer()
+    try:
+        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+        watchlist = user_config.get("watchlist_symbols", []) if user_config else []
+
+        if not watchlist:
+            text = "📋 <b>Список отслеживания пуст.</b>"
+        else:
+            text = "📋 <b>Список отслеживаемых пар:</b>\n\n"
+            for i, symbol in enumerate(watchlist, 1):
+                text += f"{i}. <code>{symbol}</code>\n"
+
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=get_watchlist_keyboard()
+        )
+    except Exception as e:
+        log_error(user_id, f"Ошибка отображения watchlist: {e}", module_name='callback')
+        await callback.message.edit_text("❌ Ошибка загрузки списка отслеживания.")
+
+
 @router.callback_query(F.data == "help")
 async def callback_help(callback: CallbackQuery, state: FSMContext):
     """Обработчик кнопки 'Помощь'"""

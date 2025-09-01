@@ -94,31 +94,21 @@ async def setup_admin_user():
 async def initialize_default_configs():
     """Сохраняет шаблоны конфигураций по умолчанию в Redis."""
     try:
-        # Используем специальный user_id=0 для хранения шаблонов
-        template_user_id = 0
+        template_user_id = 0  # Используем user_id=0 для хранения шаблонов
         all_defaults = DefaultConfigs.get_all_default_configs()
 
-        # Сохраняем глобальный конфиг как хэш, используя save_config
+        # Сохраняем глобальный конфиг
         await redis_manager.save_config(template_user_id, ConfigType.GLOBAL, all_defaults["global_config"])
 
-        # Сохраняем конфиги стратегий
+        # Сохраняем конфиги стратегий, используя новые, конкретные типы
         for s_type, s_config in all_defaults["strategy_configs"].items():
-            config_enum_name = f"STRATEGY_{s_type.upper()}"
-            # Проверяем наличие enum, чтобы избежать ошибок
-            if hasattr(ConfigType, config_enum_name):
-                config_enum = getattr(ConfigType, config_enum_name)
-                await redis_manager.save_config(template_user_id, config_enum, s_config)
-            else:
-                log_warning(0, f"Не найден ConfigType для стратегии {s_type}", module_name=__name__)
+            config_enum = getattr(ConfigType, f"STRATEGY_{s_type.upper()}")
+            await redis_manager.save_config(template_user_id, config_enum, s_config)
 
         # Сохраняем конфиги компонентов
         for c_type, c_config in all_defaults["component_configs"].items():
-             config_enum_name = f"COMPONENT_{c_type.upper()}"
-             if hasattr(ConfigType, config_enum_name):
-                config_enum = getattr(ConfigType, config_enum_name)
-                await redis_manager.save_config(template_user_id, config_enum, c_config)
-             else:
-                log_warning(0, f"Не найден ConfigType для компонента {c_type}", module_name=__name__)
+            config_enum = getattr(ConfigType, f"COMPONENT_{c_type.upper()}")
+            await redis_manager.save_config(template_user_id, config_enum, c_config)
 
         log_info(0, "Шаблоны конфигураций по умолчанию сохранены в Redis.", module_name=__name__)
     except Exception as err:

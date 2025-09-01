@@ -83,6 +83,7 @@ async def cmd_start(message: Message, state: FSMContext):
             log_info(user_id, f"Копирование конфигов по умолчанию для нового пользователя {user_id}",
                      module_name='basic_handlers')
             template_user_id = 0
+            all_defaults = DefaultConfigs.get_all_default_configs()
 
             # Копируем глобальный конфиг
             default_global = await redis_manager.get_config(template_user_id, ConfigType.GLOBAL)
@@ -90,13 +91,18 @@ async def cmd_start(message: Message, state: FSMContext):
                 await redis_manager.save_config(user_id, ConfigType.GLOBAL, default_global)
 
             # Копируем конфиги стратегий
-            all_defaults = DefaultConfigs.get_all_default_configs()
             for s_type in all_defaults["strategy_configs"].keys():
-                config_enum = getattr(ConfigType, f"STRATEGY_{s_type.upper()}", None)
-                if config_enum:
-                    default_strategy_config = await redis_manager.get_config(template_user_id, config_enum)
-                    if default_strategy_config:
-                        await redis_manager.save_config(user_id, config_enum, default_strategy_config)
+                config_enum = getattr(ConfigType, f"STRATEGY_{s_type.upper()}")
+                default_strategy_config = await redis_manager.get_config(template_user_id, config_enum)
+                if default_strategy_config:
+                    await redis_manager.save_config(user_id, config_enum, default_strategy_config)
+
+            # Копируем конфиги компонентов
+            for c_type in all_defaults["component_configs"].keys():
+                config_enum = getattr(ConfigType, f"COMPONENT_{c_type.upper()}")
+                default_component_config = await redis_manager.get_config(template_user_id, config_enum)
+                if default_component_config:
+                    await redis_manager.save_config(user_id, config_enum, default_component_config)
 
         # 3. Очищаем FSM состояние
         await state.clear()

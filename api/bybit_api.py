@@ -7,7 +7,7 @@ import aiohttp
 from typing import Dict, Any, Optional, List
 from decimal import Decimal, getcontext
 from core.logger import log_info, log_error
-
+from core.functions import to_decimal
 # Настройка точности для Decimal
 getcontext().prec = 28
 
@@ -216,12 +216,12 @@ class BybitAPI:
                 # Конвертация в Decimal для точности
                 return {
                     "symbol": ticker_data.get("symbol"),
-                    "lastPrice": Decimal(str(ticker_data.get("lastPrice", "0"))),
-                    "bid1Price": Decimal(str(ticker_data.get("bid1Price", "0"))),
-                    "ask1Price": Decimal(str(ticker_data.get("ask1Price", "0"))),
-                    "volume24h": Decimal(str(ticker_data.get("volume24h", "0"))),
-                    "turnover24h": Decimal(str(ticker_data.get("turnover24h", "0"))),
-                    "price24hPcnt": Decimal(str(ticker_data.get("price24hPcnt", "0")))
+                    "lastPrice": to_decimal(ticker_data.get("lastPrice", "0")),
+                    "bid1Price": to_decimal(ticker_data.get("bid1Price", "0")),
+                    "ask1Price": to_decimal(ticker_data.get("ask1Price", "0")),
+                    "volume24h": to_decimal(ticker_data.get("volume24h", "0")),
+                    "turnover24h": to_decimal(ticker_data.get("turnover24h", "0")),
+                    "price24hPcnt": to_decimal(ticker_data.get("price24hPcnt", "0"))
                 }
                 
         except Exception as e:
@@ -244,12 +244,12 @@ class BybitAPI:
                 # Конвертация в Decimal
                 bids = []
                 asks = []
-                
+
                 for bid in result.get("b", []):
-                    bids.append([Decimal(str(bid[0])), Decimal(str(bid[1]))])
-                    
+                    bids.append([to_decimal(bid[0]), to_decimal(bid[1])])
+
                 for ask in result.get("a", []):
-                    asks.append([Decimal(str(ask[0])), Decimal(str(ask[1]))])
+                    asks.append([to_decimal(ask[0]), to_decimal(ask[1])])
                 
                 return {
                     "symbol": symbol,
@@ -292,12 +292,12 @@ class BybitAPI:
                 for candle in result["list"]:
                     candles.append({
                         "start_time": int(candle[0]),
-                        "open": Decimal(str(candle[1])),
-                        "high": Decimal(str(candle[2])),
-                        "low": Decimal(str(candle[3])),
-                        "close": Decimal(str(candle[4])),
-                        "volume": Decimal(str(candle[5])),
-                        "turnover": Decimal(str(candle[6]))
+                        "open": to_decimal(candle[1]),
+                        "high": to_decimal(candle[2]),
+                        "low": to_decimal(candle[3]),
+                        "close": to_decimal(candle[4]),
+                        "volume": to_decimal(candle[5]),
+                        "turnover": to_decimal(candle[6])
                     })
                     
                 # Сортировка по времени (от старых к новым)
@@ -339,12 +339,12 @@ class BybitAPI:
                         "symbol": symbol_name,
                         "baseCoin": instrument.get("baseCoin"),
                         "quoteCoin": instrument.get("quoteCoin"),
-                        "minOrderQty": Decimal(str(instrument.get("lotSizeFilter", {}).get("minOrderQty", "0"))),
-                        "maxOrderQty": Decimal(str(instrument.get("lotSizeFilter", {}).get("maxOrderQty", "0"))),
-                        "qtyStep": Decimal(str(instrument.get("lotSizeFilter", {}).get("qtyStep", "0"))),
-                        "minPrice": Decimal(str(instrument.get("priceFilter", {}).get("minPrice", "0"))),
-                        "maxPrice": Decimal(str(instrument.get("priceFilter", {}).get("maxPrice", "0"))),
-                        "tickSize": Decimal(str(instrument.get("priceFilter", {}).get("tickSize", "0"))),
+                        "minOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("minOrderQty", "0")),
+                        "maxOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("maxOrderQty", "0")),
+                        "qtyStep": to_decimal(instrument.get("lotSizeFilter", {}).get("qtyStep", "0")),
+                        "minPrice": to_decimal(instrument.get("priceFilter", {}).get("minPrice", "0")),
+                        "maxPrice": to_decimal(instrument.get("priceFilter", {}).get("maxPrice", "0")),
+                        "tickSize": to_decimal(instrument.get("priceFilter", {}).get("tickSize", "0")),
                         "status": instrument.get("status")
                     }
                     
@@ -383,18 +383,18 @@ class BybitAPI:
                     coin_name = coin.get("coin")
                     coins[coin_name] = {
                         "coin": coin_name,
-                        "walletBalance": Decimal(str(coin.get("walletBalance", "0"))),
-                        "availableBalance": Decimal(str(coin.get("availableToWithdraw", "0"))),
-                        "unrealisedPnl": Decimal(str(coin.get("unrealisedPnl", "0"))),
-                        "totalEquity": Decimal(str(coin.get("equity", "0")))
+                        "walletBalance": to_decimal(coin.get("walletBalance", "0")),
+                        "availableBalance": to_decimal(coin.get("availableToWithdraw", "0")),
+                        "unrealisedPnl": to_decimal(coin.get("unrealisedPnl", "0")),
+                        "totalEquity": to_decimal(coin.get("equity", "0"))
                     }
                     
                 return {
                     "accountType": account.get("accountType"),
-                    "totalWalletBalance": Decimal(str(account.get("totalWalletBalance", "0"))),
-                    "totalAvailableBalance": Decimal(str(account.get("totalAvailableBalance", "0"))),
-                    "totalUnrealisedPnl": Decimal(str(account.get("totalUnrealisedPnl", "0"))),
-                    "totalEquity": Decimal(str(account.get("totalEquity", "0"))),
+                    "totalWalletBalance": to_decimal(account.get("totalWalletBalance", "0")),
+                    "totalAvailableBalance": to_decimal(account.get("totalAvailableBalance", "0")),
+                    "totalUnrealisedPnl": to_decimal(account.get("totalUnrealisedPnl", "0")),
+                    "totalEquity": to_decimal(account.get("totalEquity", "0")),
                     "coins": coins
                 }
         except Exception as e:
@@ -497,11 +497,11 @@ class BybitAPI:
                         "symbol": order.get("symbol"),
                         "side": order.get("side"),
                         "orderType": order.get("orderType"),
-                        "qty": Decimal(str(order.get("qty", "0"))),
-                        "price": Decimal(str(order.get("price", "0"))),
-                        "leavesQty": Decimal(str(order.get("leavesQty", "0"))),
-                        "cumExecQty": Decimal(str(order.get("cumExecQty", "0"))),
-                        "avgPrice": Decimal(str(order.get("avgPrice", "0"))),
+                        "qty": to_decimal(order.get("qty", "0")),
+                        "price": to_decimal(order.get("price", "0")),
+                        "leavesQty": to_decimal(order.get("leavesQty", "0")),
+                        "cumExecQty": to_decimal(order.get("cumExecQty", "0")),
+                        "avgPrice": to_decimal(order.get("avgPrice", "0")),
                         "orderStatus": order.get("orderStatus"),
                         "timeInForce": order.get("timeInForce"),
                         "createdTime": order.get("createdTime"),
@@ -537,14 +537,14 @@ class BybitAPI:
                             "symbol": position.get("symbol"),
                             "side": position.get("side"),
                             "size": size,
-                            "avgPrice": Decimal(str(position.get("avgPrice", "0"))),
-                            "markPrice": Decimal(str(position.get("markPrice", "0"))),
-                            "unrealisedPnl": Decimal(str(position.get("unrealisedPnl", "0"))),
-                            "percentage": Decimal(str(position.get("unrealisedPnlPcnt", "0"))),
-                            "leverage": Decimal(str(position.get("leverage", "0"))),
-                            "positionValue": Decimal(str(position.get("positionValue", "0"))),
+                            "avgPrice": to_decimal(position.get("avgPrice", "0")),
+                            "markPrice": to_decimal(position.get("markPrice", "0")),
+                            "unrealisedPnl": to_decimal(position.get("unrealisedPnl", "0")),
+                            "percentage": to_decimal(position.get("unrealisedPnlPcnt", "0")),
+                            "leverage": to_decimal(position.get("leverage", "0")),
+                            "positionValue": to_decimal(position.get("positionValue", "0")),
                             "riskId": position.get("riskId"),
-                            "riskLimitValue": Decimal(str(position.get("riskLimitValue", "0"))),
+                            "riskLimitValue": to_decimal(position.get("riskLimitValue", "0")),
                             "createdTime": position.get("createdTime"),
                             "updatedTime": position.get("updatedTime")
                         })

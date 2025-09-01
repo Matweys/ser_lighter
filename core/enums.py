@@ -204,8 +204,16 @@ class OrderPriority(IntEnum):
 class ConfigType(Enum):
     """Типы конфигураций"""
     GLOBAL = "global_config"
-    STRATEGY = "strategy_config"
-    COMPONENT = "component_config"
+
+    # Типы для каждой стратегии
+    STRATEGY_BIDIRECTIONAL_GRID = "strategy_bidirectional_grid"
+    STRATEGY_GRID_SCALPING = "strategy_grid_scalping"
+    STRATEGY_IMPULSE_TRAILING = "strategy_impulse_trailing"
+
+    # Типы для каждого компонента
+    COMPONENT_META_STRATEGIST = "component_meta_strategist"
+    COMPONENT_RISK_MANAGER = "component_risk_manager"
+
     USER_SETTINGS = "user_settings"
 
 
