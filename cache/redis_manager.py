@@ -296,59 +296,65 @@ class RedisManager:
             
         return False
 
-    async def get_config(
-        self, 
-        user_id: int, 
-        config_type: ConfigType,
-        use_cache: bool = True
-    ) -> Optional[Dict[str, Any]]:
-        """Получение конфигурации пользователя"""
+    async def get_config(self, user_id: int, config_type: ConfigType, use_cache: bool = True) -> Optional[Dict[str, Any]]:
+        """Получение конфигурации пользователя с улучшенной десериализацией"""
         try:
             cache_key = f"{user_id}:{config_type.value}"
-            
+
             # Проверка кэша
             if use_cache and cache_key in self._config_cache:
                 cache_time = self._cache_timestamps.get(cache_key, 0)
                 if time.time() - cache_time < SystemConstants.CONFIG_CACHE_SECONDS:
                     return self._config_cache[cache_key].copy()
-            
+
             key = self._get_key("user", user_id, "config", config_type.value)
             config_data = await self._safe_execute(self.redis_client.hgetall, key)
-            
+
             if not config_data:
                 return None
-                
+
             # Десериализация данных
             result = {}
             for k, v in config_data.items():
-                if k in ["updated_at", "config_type"]:
+                if v is None:
+                    result[k] = None
+                    continue
+
+                # 1. Обработка предопределенных ключей
+                if k in ["updated_at", "config_type", "strategy_name", "symbol"]:
                     result[k] = v
-                elif k.endswith("_enabled") or k.startswith("is_"):
+                # 2. Обработка булевых значений
+                elif v.lower() in ["true", "false"]:
                     result[k] = v.lower() == "true"
-                elif k.endswith("_config") or k.endswith("_data"):
+                # 3. Обработка JSON-объектов
+                elif k.endswith("_config") or k.endswith("_data") or k.endswith("_symbols") or v.startswith(('[', '{')):
                     try:
                         result[k] = json.loads(v)
                     except json.JSONDecodeError:
-                        result[k] = v
+                        result[k] = v  # Оставляем как строку, если не JSON
+                # 4. Обработка числовых значений
                 else:
-                    # Попытка конвертации в числовые типы
                     try:
+                        # Сначала пытаемся преобразовать в Decimal, если есть точка
                         if "." in v or "e" in v.lower():
                             result[k] = Decimal(v)
-                        elif v.isdigit() or (v.startswith("-") and v[1:].isdigit()):
+                        # Затем в int, если это целое число
+                        elif v.isdigit() or (v.startswith('-') and v[1:].isdigit()):
                             result[k] = int(v)
+                        # Иначе оставляем как строку
                         else:
                             result[k] = v
                     except (ValueError, TypeError):
+                        # Если числовое преобразование не удалось, оставляем как строку
                         result[k] = v
-            
+
             # Кэширование результата
             if use_cache:
                 self._config_cache[cache_key] = result.copy()
                 self._cache_timestamps[cache_key] = time.time()
-                
+
             return result
-            
+
         except Exception as e:
             log_error(user_id, f"Ошибка получения конфигурации {config_type.value}: {e}", module_name=__name__)
             return None

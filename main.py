@@ -35,40 +35,59 @@ async def set_commands():
         BotCommand(command="/positions", description="📈 Открытые позиции"),
         BotCommand(command="/stop_all", description="🚫 Остановить ВСЕ и закрыть позиции"),
         BotCommand(command="/balance", description="💰 Баланс"),
-        BotCommand(command="/parameters", description="⚙️ Настроить параметры"),
-        BotCommand(command="/settings", description="🔧 Настройки стратегий"),
+        BotCommand(command="/settings", description="⚙️ Настройки бота"),
         BotCommand(command="/help", description="ℹ️ Помощь"),
     ]
 
     await bot_manager.bot.set_my_commands(commands)
 
 async def setup_admin_user():
-    """Проверяет, существуют ли админы из конфига в БД, и добавляет их, если нет."""
-    # ИСПРАВЛЕНИЕ: Получаем список ID из правильного места: system_config.telegram.admin_ids
+    """
+    Проверяет, существуют ли админы из конфига в БД, добавляет их, если нет,
+    и сохраняет их API ключи из .env в базу данных.
+    """
     admin_ids = system_config.telegram.admin_ids
     if not admin_ids:
         log_warning(0, "В конфигурации не указаны ID администраторов (ADMIN_IDS).", module_name=__name__)
         return
 
-    # ИСПРАВЛЕНИЕ: Проходим по всему списку администраторов
-    for admin_id in admin_ids:
-        admin_exists = await db_manager.get_user(admin_id)
+    # Получаем конфигурацию биржи Bybit из системного конфига
+    bybit_config = system_config.get_exchange_config("bybit")
+    if not (bybit_config and bybit_config.api_key and bybit_config.secret_key):
+        log_warning(0, "API ключи для Bybit не найдены в .env. Ключи администратора не будут сохранены.", module_name=__name__)
+        return
 
-        if not admin_exists:
-            log_info(0, f"Администратор с ID {admin_id} не найден в БД. Добавление...", module_name=__name__)
-            try:
+    for admin_id in admin_ids:
+        try:
+            # 1. Создаем или обновляем профиль администратора
+            admin_exists = await db_manager.get_user(admin_id)
+            if not admin_exists:
+                log_info(0, f"Администратор с ID {admin_id} не найден в БД. Добавление...", module_name=__name__)
                 from database.db_trades import UserProfile
                 admin_profile = UserProfile(
                     user_id=admin_id,
-                    username=f"admin_{admin_id}", # Делаем username уникальным
+                    username=f"admin_{admin_id}",
                     is_active=True,
-                    is_premium=True # Администраторы должны иметь премиум-доступ
+                    is_premium=True
                 )
                 await db_manager.create_user(admin_profile)
                 log_info(0, f"Администратор с ID {admin_id} успешно добавлен в БД.", module_name=__name__)
-            except Exception as err:
-                log_error(0, f"Не удалось добавить администратора {admin_id} в БД: {err}", module_name=__name__)
 
+            # 2. Сохраняем API ключи для администратора
+            log_info(0, f"Сохранение API ключей для администратора {admin_id}...", module_name=__name__)
+            success = await db_manager.save_api_keys(
+                user_id=admin_id,
+                exchange="bybit",
+                api_key=bybit_config.api_key,
+                secret_key=bybit_config.secret_key
+            )
+            if success:
+                log_info(0, f"API ключи для администратора {admin_id} успешно сохранены/обновлены.", module_name=__name__)
+            else:
+                log_error(0, f"Не удалось сохранить API ключи для администратора {admin_id}.", module_name=__name__)
+
+        except Exception as err:
+            log_error(0, f"Ошибка при настройке администратора {admin_id}: {err}", module_name=__name__)
 
 
 async def initialize_default_configs():

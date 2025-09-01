@@ -764,6 +764,82 @@ async def callback_confirm_reset_settings(callback: CallbackQuery, state: FSMCon
             reply_markup=get_back_keyboard("settings")
         )
 
+@router.callback_query(F.data.startswith("manual_symbol_"))
+async def callback_manual_select_symbol(callback: CallbackQuery, state: FSMContext):
+    """Обрабатывает выбор символа для ручного запуска."""
+    user_id = callback.from_user.id
+    symbol = callback.data.split("_")[-1]
+
+    await state.update_data(manual_symbol=symbol)
+
+    await callback.message.edit_text(
+        f"🛠️ <b>Ручной запуск стратегии</b>\n\n"
+        f"<b>Символ:</b> <code>{symbol}</code>\n"
+        f"<b>Шаг 2:</b> Теперь выберите стратегию, которую хотите запустить.",
+        parse_mode="HTML",
+        reply_markup=get_strategy_selection_keyboard() # Используем существующую клавиатуру
+    )
+
+@router.callback_query(F.data.startswith("strategy_"))
+async def callback_manual_select_strategy(callback: CallbackQuery, state: FSMContext):
+    """Обрабатывает выбор стратегии для ручного запуска."""
+    user_id = callback.from_user.id
+    strategy_type = callback.data.replace("strategy_", "")
+
+    user_data = await state.get_data()
+    symbol = user_data.get("manual_symbol")
+
+    if not symbol:
+        await callback.answer("❌ Ошибка: символ не выбран. Начните заново с /manual.", show_alert=True)
+        await state.clear()
+        return
+
+    # Проверяем, запущена ли уже такая стратегия
+    session_status = await redis_manager.get_user_session(user_id)
+    if session_status:
+        strategy_id = f"{strategy_type}_{symbol}"
+        active_strategies = [s.get('id') for s in session_status.get('active_strategies', [])]
+        if strategy_id in active_strategies:
+            await callback.answer(f"⚠️ Стратегия {strategy_type} для {symbol} уже запущена.", show_alert=True)
+            return
+
+    # Запускаем событие, которое обработает UserSession
+    from core.events import SignalEvent
+    # Для ручного запуска создаем минимально необходимые данные
+    mock_signal_data = {
+        'symbol': symbol,
+        'strategy_type': strategy_type,
+        'signal_strength': 100, # Максимальная сила для ручного запуска
+        'market_condition': 'MANUAL_TRIGGER',
+        'direction': 'MANUAL'
+    }
+
+    if callback_handler.event_bus:
+        await callback_handler.event_bus.publish(
+            SignalEvent(
+                user_id=user_id,
+                symbol=symbol,
+                strategy_type=strategy_type,
+                signal_strength=100,
+                analysis_data=mock_signal_data
+            )
+        )
+        await callback.message.edit_text(
+            f"✅ <b>Запрос на запуск отправлен!</b>\n\n"
+            f"<b>Стратегия:</b> {strategy_type}\n"
+            f"<b>Символ:</b> <code>{symbol}</code>\n\n"
+            f"Используйте /status для отслеживания состояния.",
+            parse_mode="HTML",
+            reply_markup=get_back_keyboard("main_menu")
+        )
+        log_info(user_id, f"Ручной запуск стратегии {strategy_type} для {symbol}", module_name='callback')
+    else:
+        await callback.answer("❌ Системная ошибка: шина событий недоступна.", show_alert=True)
+        log_error(user_id, "EventBus не доступен в callback_handler для ручного запуска", "callback")
+
+    await state.clear()
+
+
 @router.callback_query(F.data == "help")
 async def callback_help(callback: CallbackQuery, state: FSMContext):
     """Обработчик кнопки 'Помощь'"""

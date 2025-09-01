@@ -10,7 +10,7 @@ from datetime import datetime
 import asyncio
 
 from core.logger import log_info, log_error, log_warning
-from database.db_trades import db_manager
+from database import db_trades
 from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent
 from core.enums import NotificationType, SessionStatus
 from ..keyboards.inline import (
@@ -56,15 +56,15 @@ def set_event_bus(event_bus: EventBus):
 async def cmd_start(message: Message, state: FSMContext):
     """Обработчик команды /start"""
     user_id = message.from_user.id
-    username = message.from_user.username or "Пользователь"
-    first_name = message.from_user.first_name or ""
+    username = message.from_user.username or f"user_{user_id}"
+    first_name = message.from_user.first_name or "Пользователь"
     last_name = message.from_user.last_name or ""
 
     try:
         await basic_handler.log_command_usage(user_id, "start")
 
-        # Создаем или обновляем профиль пользователя
-        from core.database.db_trades import UserProfile
+        # 1. Создаем или обновляем профиль пользователя в БД
+        from database.db_trades import UserProfile
         user_profile = UserProfile(
             user_id=user_id,
             username=username,
@@ -72,57 +72,59 @@ async def cmd_start(message: Message, state: FSMContext):
             last_name=last_name,
             is_active=True
         )
-
         await db_manager.create_user(user_profile)
 
-        # Создаем конфигурацию по умолчанию если её нет
-        user_config = await redis_manager.get_user_config(user_id)
-        if not user_config:
-            log_info(user_id, f"Создание конфигурации по умолчанию для нового пользователя {user_id}", module_name='basic_handlers')
-            await DefaultConfigs.create_default_user_config(user_id)
+        # 2. Проверяем и создаем конфигурации по умолчанию в Redis, если их нет
+        from core.enums import ConfigType
+        global_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+        if not global_config:
+            log_info(user_id, f"Создание конфигураций по умолчанию для нового пользователя {user_id}", module_name='basic_handlers')
+            # Глобальная конфигурация
+            default_global = DefaultConfigs.get_global_config()
+            await redis_manager.save_config(user_id, ConfigType.GLOBAL, default_global)
+            # Конфигурации для каждой стратегии
+            all_defaults = DefaultConfigs.get_all_default_configs()
+            for s_type, s_config in all_defaults["strategy_configs"].items():
+                 # Важно: имя типа конфига должно соответствовать логике
+                await redis_manager.save_config(user_id, ConfigType[f"STRATEGY_{s_type.upper()}"], s_config)
 
-        # Очищаем состояние
+
+        # 3. Очищаем FSM состояние
         await state.clear()
         await state.set_state(UserStates.MAIN_MENU)
 
-        # Получаем статус сессии
-        session_status = await redis_manager.get_user_session(user_id)
-        is_active = session_status.get('is_active', False) if session_status else False
+        # 4. Получаем актуальные данные для приветственного сообщения
+        session_data = await redis_manager.get_user_session(user_id)
+        is_active = session_data and session_data.get('status') == 'active'
 
-        # Получаем статистику пользователя
-        user_data = await db_manager.get_user(user_id)
-        total_profit = user_data.total_profit if user_data else 0
-        total_trades = user_data.total_trades if user_data else 0
+        user_db_data = await db_manager.get_user(user_id)
+        total_profit = user_db_data.total_profit if user_db_data else 0
+        total_trades = user_db_data.total_trades if user_db_data else 0
 
         welcome_text = (
             f"👋 <b>Добро пожаловать, {first_name}!</b>\n\n"
             f"🤖 <b>Профессиональный торговый бот</b>\n"
-            f"Ваш персональный помощник для торговли криптовалютными фьючерсами\n\n"
+            f"Ваш персональный помощник для торговли криптовалютными фьючерсами.\n\n"
             f"📊 <b>Ваша статистика:</b>\n"
             f"💰 Общая прибыль: {format_currency(total_profit)}\n"
             f"📈 Всего сделок: {total_trades}\n"
-            f"🔄 Статус: {'🟢 Активен' if is_active else '🔴 Неактивен'}\n\n"
-            f"<b>Основные возможности:</b>\n"
-            f"🚀 Автоматическая торговля с ИИ анализом\n"
-            f"📊 Множественные торговые стратегии\n"
-            f"🛡️ Профессиональный риск-менеджмент\n"
-            f"📈 Детальная статистика и аналитика\n\n"
+            f"🔄 Статус торговли: {'🟢 Активен' if is_active else '🔴 Неактивен'}\n\n"
             f"Выберите действие в меню ниже:"
         )
 
         await message.answer(
             welcome_text,
-            reply_markup=get_welcome_keyboard(is_active),
+            reply_markup=get_main_menu_keyboard(is_active), # Используем основную клавиатуру
             parse_mode="HTML"
         )
 
         log_info(user_id, f"Пользователь {user_id} ({username}) запустил бота", module_name='basic_handlers')
 
     except Exception as e:
-        log_error(user_id, f"Ошибка в команде /start: {e}", module_name='basic_handlers')
+        log_error(user_id, f"Ошибка в команде /start: {e}", module_name='basic_handlers', extra_data={"traceback": str(e.__traceback__)})
         await message.answer(
-            "❌ Произошла ошибка при запуске бота. Попробуйте позже.",
-            reply_markup=get_main_menu_keyboard(False)
+            "❌ Произошла критическая ошибка при инициализации вашего профиля. Пожалуйста, сообщите администратору.",
+            reply_markup=None
         )
 
 @router.message(Command("help"))
@@ -428,23 +430,20 @@ async def cmd_stats(message: Message, state: FSMContext):
 async def cmd_settings(message: Message, state: FSMContext):
     """Обработчик команды /settings"""
     user_id = message.from_user.id
-
     try:
         await basic_handler.log_command_usage(user_id, "settings")
         await state.set_state(UserStates.SETTINGS_MENU)
 
-        await message.answer(
+        text = (
             "⚙️ <b>Настройки бота</b>\n\n"
-            "Выберите категорию настроек для изменения:\n\n"
-            "🛡️ <b>Риск-менеджмент</b> - настройки управления рисками\n"
-            "📊 <b>Стратегии</b> - параметры торговых стратегий\n"
-            "🔑 <b>API ключи</b> - настройка доступа к бирже\n"
-            "📋 <b>Watchlist</b> - список отслеживаемых символов\n"
-            "🔔 <b>Уведомления</b> - настройки оповещений",
-            reply_markup=get_main_menu_keyboard(False),
-            parse_mode="HTML"
+            "Здесь вы можете управлять всеми аспектами работы бота, от управления рисками до параметров конкретных стратегий."
         )
 
+        await message.answer(
+            text,
+            reply_markup=get_settings_keyboard(), # ИСПРАВЛЕНО: используется правильная клавиатура
+            parse_mode="HTML"
+        )
     except Exception as e:
         log_error(user_id, f"Ошибка в команде /settings: {e}", module_name='basic_handlers')
         await message.answer("❌ Ошибка открытия настроек")
@@ -529,6 +528,39 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
     await message.answer(status_text, parse_mode="HTML")
 
 
+@router.message(Command("manual"))
+async def cmd_manual(message: Message, state: FSMContext):
+    """Обработчик команды /manual для ручного запуска стратегии."""
+    user_id = message.from_user.id
+    await basic_handler.log_command_usage(user_id, "manual")
+
+    try:
+        from core.enums import ConfigType
+        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+        watchlist = user_config.get("watchlist_symbols", [])
+
+        if not watchlist:
+            await message.answer(
+                "⚠️ <b>Список отслеживания пуст.</b>\n\n"
+                "Сначала добавьте торговые пары в 'Настройки' -> 'Watchlist', чтобы можно было запустить стратегию вручную.",
+                parse_mode="HTML",
+                reply_markup=get_back_keyboard("main_menu")
+            )
+            return
+
+        await state.set_state(UserStates.SELECTING_STRATEGY_TYPE)
+        await message.answer(
+            "🛠️ <b>Ручной запуск стратегии</b>\n\n"
+            "<b>Шаг 1:</b> Выберите торговую пару из вашего списка отслеживания.",
+            parse_mode="HTML",
+            reply_markup=get_manual_trade_symbol_keyboard(watchlist)
+        )
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка в команде /manual: {e}", module_name='basic_handlers')
+        await message.answer("❌ Ошибка при попытке ручного запуска.")
+
+
 # --- Команды получения информации ---
 
 @router.message(Command("balance"))
@@ -604,14 +636,6 @@ async def cmd_positions(message: Message, state: FSMContext):
     except Exception as e:
         log_error(user_id, f"Ошибка получения позиций: {e}", module_name='basic_handlers')
         await message.answer("❌ Произошла ошибка при запросе позиций.")
-
-
-@router.message(Command("parameters"))
-async def cmd_parameters(message: Message, state: FSMContext):
-    """Обработчик команды /parameters, перенаправляет на /settings"""
-    await basic_handler.log_command_usage(message.from_user.id, "parameters")
-    # Эта команда по сути дублирует /settings, поэтому просто вызовем ее обработчик
-    await cmd_settings(message, state)
 
 
 @router.message(Command("stop_all"))

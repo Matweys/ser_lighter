@@ -91,6 +91,22 @@ def get_welcome_keyboard(is_trading_active: bool = False) -> InlineKeyboardMarku
 
     return KeyboardBuilder.build_keyboard(buttons)
 
+def get_manual_trade_symbol_keyboard(symbols: List[str]) -> InlineKeyboardMarkup:
+    """Клавиатура выбора символа для ручной торговли."""
+    buttons = []
+    row = []
+    for symbol in symbols:
+        row.append({"text": symbol, "callback_data": f"manual_symbol_{symbol}"})
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+
+    buttons.append([{"text": "❌ Отменить", "callback_data": "cancel"}])
+    return KeyboardBuilder.build_keyboard(buttons)
+
+
 def get_help_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура справки"""
     buttons = [
