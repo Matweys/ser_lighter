@@ -10,8 +10,8 @@ from decimal import Decimal
 from datetime import datetime
 
 from core.logger import log_info, log_error
-from core.events import (event_bus, EventType, BaseEvent, UserSessionStartedEvent, UserSessionStoppedEvent,
-    UserSettingsChangedEvent, RiskLimitExceededEvent
+from core.events import (EventType, BaseEvent, UserSessionStartedEvent, UserSessionStoppedEvent,
+    UserSettingsChangedEvent, RiskLimitExceededEvent, EventBus
 )
 
 from cache.redis_manager import redis_manager
