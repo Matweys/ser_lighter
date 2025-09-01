@@ -142,6 +142,13 @@ async def lifespan_context():
         bot_app = BotApplication()
         await bot_app.start()
 
+        # --- ВАЖНО: "Пробрасываем" EventBus в обработчики ---
+        if bot_app.event_bus:
+            basic.set_event_bus(bot_app.event_bus)
+            callback.set_event_bus(bot_app.event_bus)
+            log_info(0, "Шина событий (EventBus) успешно передана в обработчики.", module_name="main")
+        # --------------------------------------------------
+
         log_info(0, "=== БОТ УСПЕШНО ЗАПУЩЕН ===", module_name=__name__)
         yield bot_app
     finally:

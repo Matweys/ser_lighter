@@ -869,6 +869,128 @@ async def callback_show_watchlist(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("❌ Ошибка загрузки списка отслеживания.")
 
 
+# --- ОБРАБОТЧИКИ НАСТРОЕК РИСКА ---
+
+@router.callback_query(F.data.startswith("set_"))
+async def callback_set_risk_parameter(callback: CallbackQuery, state: FSMContext):
+    """Общий обработчик для кнопок установки параметров риска."""
+    user_id = callback.from_user.id
+    param_map = {
+        "set_risk_per_trade": {"state": UserStates.SETTING_RISK_PER_TRADE,
+                               "text": "риск на сделку в % (например, 1.5)"},
+        "set_max_drawdown": {"state": UserStates.SETTING_MAX_DAILY_DRAWDOWN,
+                             "text": "макс. дневную просадку в % (например, 5)"},
+        "set_max_trades": {"state": UserStates.SETTING_MAX_CONCURRENT_TRADES,
+                           "text": "макс. кол-во одновременных сделок (например, 3)"},
+        "set_stop_loss": {"state": UserStates.SETTING_STOP_LOSS_PERCENT, "text": "стоп-лосс в % (например, 2)"},
+        "set_take_profit": {"state": UserStates.SETTING_TAKE_PROFIT_PERCENT, "text": "тейк-профит в % (например, 4)"},
+    }
+    action = callback.data
+    if action in param_map:
+        info = param_map[action]
+        await state.set_state(info["state"])
+        await state.update_data(message_to_delete=callback.message.message_id)
+        await callback.message.edit_text(
+            f"Введите новое значение для параметра '<b>{info['text']}</b>':",
+            parse_mode="HTML",
+            reply_markup=get_back_keyboard("risk_settings")
+        )
+        log_info(user_id, f"Начал изменение параметра {action}", "callback")
+
+
+async def process_risk_setting_input(message: Message, state: FSMContext, key: str, validator):
+    """Общая функция для обработки и сохранения настроек риска."""
+    user_id = message.from_user.id
+    is_valid, value = validator(message.text)
+
+    if not is_valid:
+        await message.answer("❌ Некорректное значение. Попробуйте еще раз.")
+        return
+
+    try:
+        current_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+        if not current_config:
+            current_config = DefaultConfigs.get_global_config()
+
+        current_config[key] = value
+
+        await redis_manager.save_config(user_id, ConfigType.GLOBAL, current_config)
+        log_info(user_id, f"Обновлен параметр риска: {key} = {value}", "callback")
+
+        state_data = await state.get_data()
+        await bot_manager.bot.delete_message(user_id, state_data.get("message_to_delete"))
+        await message.delete()
+        await state.clear()
+
+        # Обновляем и показываем меню настроек риска
+        # Создаем mock CallbackQuery из Message для передачи в handler
+        mock_callback = CallbackQuery(id="mock", from_user=message.from_user, chat_instance="", message=message)
+        await callback_risk_settings(mock_callback, state)
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка сохранения настройки {key}: {e}", "callback")
+        await message.answer("❌ Произошла ошибка при сохранении настройки.")
+
+
+@router.message(UserStates.SETTING_RISK_PER_TRADE)
+async def process_risk_per_trade(message: Message, state: FSMContext):
+    await process_risk_setting_input(message, state, "risk_per_trade_percent", state_validator.validate_risk_per_trade)
+
+
+@router.message(UserStates.SETTING_MAX_DAILY_DRAWDOWN)
+async def process_max_drawdown(message: Message, state: FSMContext):
+    await process_risk_setting_input(message, state, "global_daily_drawdown_percent",
+                                     state_validator.validate_max_daily_drawdown)
+
+
+@router.message(UserStates.SETTING_MAX_CONCURRENT_TRADES)
+async def process_max_trades(message: Message, state: FSMContext):
+    await process_risk_setting_input(message, state, "max_simultaneous_trades",
+                                     state_validator.validate_max_concurrent_trades)
+
+
+@router.message(UserStates.SETTING_STOP_LOSS_PERCENT)
+async def process_stop_loss(message: Message, state: FSMContext):
+    await process_risk_setting_input(message, state, "stop_loss_percent",
+                                     state_validator.validate_risk_per_trade)  # Используем тот же валидатор
+
+
+@router.message(UserStates.SETTING_TAKE_PROFIT_PERCENT)
+async def process_take_profit(message: Message, state: FSMContext):
+    await process_risk_setting_input(message, state, "take_profit_percent",
+                                     state_validator.validate_risk_per_trade)  # Используем тот же валидатор
+
+
+# --- ОБРАБОТЧИКИ НАСТРОЕК СТРАТЕГИЙ ---
+
+@router.callback_query(F.data.in_({"enable_all_strategies", "disable_all_strategies"}))
+async def callback_toggle_all_strategies(callback: CallbackQuery, state: FSMContext):
+    """Включает или отключает все стратегии."""
+    user_id = callback.from_user.id
+    enable = callback.data == "enable_all_strategies"
+
+    try:
+        current_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+        if not current_config:
+            await callback.answer("❌ Сначала зайдите в меню настроек.", show_alert=True)
+            return
+
+        all_strategy_types = list(DefaultConfigs.get_all_default_configs()["strategy_configs"].keys())
+        current_config["enabled_strategies"] = all_strategy_types if enable else []
+
+        await redis_manager.save_config(user_id, ConfigType.GLOBAL, current_config)
+
+        status_text = "включены" if enable else "отключены"
+        await callback.answer(f"✅ Все стратегии {status_text}.", show_alert=True)
+        log_info(user_id, f"Все стратегии были {status_text}", "callback")
+        await callback_strategy_settings(callback, state)  # Обновляем меню
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка при переключении всех стратегий: {e}", "callback")
+        await callback.answer("❌ Произошла ошибка.", show_alert=True)
+
+
+
 @router.callback_query(F.data == "help")
 async def callback_help(callback: CallbackQuery, state: FSMContext):
     """Обработчик кнопки 'Помощь'"""

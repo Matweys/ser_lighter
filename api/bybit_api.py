@@ -152,17 +152,17 @@ class BybitAPI:
                         # Публичные GET запросы с параметрами
                         query_string = "&".join([f"{k}={v}" for k, v in params.items()])
                         url += f"?{query_string}"
-                    async with self.session.get(url, headers=headers) as response:
-                        result = await response.json()
-                elif method == "POST":
-                    async with self.session.post(url, headers=headers, json=params) as response:
-                        result = await response.json()
+                        async with self.session.get(url, headers=headers) as response:
+                            result = await response.json(content_type=None) if response.content else None
+                    elif method == "POST":
+                        async with self.session.post(url, headers=headers, json=params) as response:
+                            result = await response.json(content_type=None) if response.content else None
                 else:
                     log_error(self.user_id, f"Неподдерживаемый HTTP метод: {method}", module_name="bybit_api")
                     return None
                 
                 # Проверка ответа
-                if result.get("retCode") == 0:
+                if result and result.get("retCode") == 0:
                     return result.get("result", {})
                 else:
                     error_msg = result.get("retMsg", "Unknown error")
