@@ -145,8 +145,7 @@ class BybitAPI:
                         "X-BAPI-TIMESTAMP": timestamp,
                         "X-BAPI-RECV-WINDOW": "5000"
                     })
-                
-                # Выполнение запроса
+
                     # Выполнение запроса
                     if method == "GET":
                         async with self.session.get(url, headers=headers) as response:
@@ -157,21 +156,21 @@ class BybitAPI:
                     else:
                         log_error(self.user_id, f"Неподдерживаемый HTTP метод: {method}", module_name="bybit_api")
                         return None
-                
-                # Проверка ответа
-                if result and result.get("retCode") == 0:
-                    return result.get("result", {})
-                else:
-                    if result:
-                        error_msg = result.get("retMsg", "Unknown error")
-                        log_error(self.user_id, f"API ошибка: {error_msg} (код: {result.get('retCode')})",
-                                  module_name="bybit_api")
+
+                    # Проверка ответа
+                    if result and result.get("retCode") == 0:
+                        return result.get("result", {})
                     else:
-                        log_error(self.user_id, "API ошибка: получен пустой ответ от сервера", module_name="bybit_api")
-                    
-                    # Некоторые ошибки не требуют повтора
-                    if result.get("retCode") in [10001, 10003, 10004]:  # Auth errors
-                        return None
+                        ret_code = result.get("retCode", -1) if result else -1
+                        error_msg = result.get("retMsg",
+                                               "получен пустой ответ от сервера") if result else "получен пустой ответ от сервера"
+
+                        log_error(self.user_id, f"API ошибка: {error_msg} (код: {ret_code})",
+                                  module_name="bybit_api")
+
+                        # Некоторые ошибки не требуют повтора
+                        if ret_code in [10001, 10003, 10004]:  # Auth errors
+                            return None
                         
                     if attempt < self.max_retries:
                         await asyncio.sleep(self.retry_delay * (attempt + 1))

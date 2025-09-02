@@ -20,13 +20,18 @@ from core.events import (
 )
 from cache.redis_manager import redis_manager
 from database.db_trades import db_manager
+from core.settings_config import system_config
+
 
 # Настройка точности для Decimal
 getcontext().prec = 28
 
+# Определяем, используется ли песочница, на основе глобальной конфигурации
+IS_SANDBOX = system_config.get_exchange_config("bybit").sandbox if system_config.get_exchange_config("bybit") else False
+
 # WebSocket URLs
-WS_URL_PUBLIC = "wss://stream.bybit.com/v5/public/linear"
-WS_URL_PRIVATE = "wss://stream.bybit.com/v5/private"
+WS_URL_PUBLIC = "wss://stream-testnet.bybit.com/v5/public/linear" if IS_SANDBOX else "wss://stream.bybit.com/v5/public/linear"
+WS_URL_PRIVATE = "wss://stream-testnet.bybit.com/v5/private" if IS_SANDBOX else "wss://stream.bybit.com/v5/private"
 
 
 class GlobalWebSocketManager:

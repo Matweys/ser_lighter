@@ -348,7 +348,6 @@ class UserSession:
             self.data_feed_handler = DataFeedHandler(self.user_id, self.event_bus, self.global_ws_manager)
 
             # Создаем независимый анализатор
-            from core.meta_strategist import MarketAnalyzer
             market_analyzer = MarketAnalyzer(self.user_id, self.api)
 
             # Передаем анализатор и шину событий в MetaStrategist как зависимости
