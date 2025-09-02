@@ -14,6 +14,8 @@ from core.events import (
     EventType, OrderFilledEvent, PositionClosedEvent,
     RiskLimitExceededEvent, DrawdownWarningEvent, EventBus
 )
+from core.enums import ConfigType
+
 
 # Настройка точности для Decimal
 getcontext().prec = 28
@@ -347,16 +349,16 @@ class RiskManager:
             f"Позиция закрыта: {event.symbol} PnL={event.realized_pnl:.2f}",
             module_name=__name__
         )
-        
+
     async def _load_user_config(self):
         """Загрузка конфигурации пользователя"""
         try:
-            self.user_config = await redis_manager.get_json(f"user:{self.user_id}:global_config")
+            self.user_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
             self.last_config_update = datetime.now()
-            
+
             if not self.user_config:
                 log_error(self.user_id, "Конфигурация пользователя не найдена", module_name=__name__)
-                
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка загрузки конфигурации: {e}", module_name=__name__)
             
@@ -364,15 +366,15 @@ class RiskManager:
         """Обеспечение актуальности конфигурации"""
         if datetime.now() - self.last_config_update > self.config_cache_duration:
             await self._load_user_config()
-            
+
     async def _initialize_daily_stats(self):
         """Инициализация дневной статистики"""
         try:
             balance = await self.get_account_balance()
             self.daily_stats["start_balance"] = balance
-            
-            # Загрузка сохраненной статистики из Redis
-            saved_stats = await redis_manager.get_json(f"user:{self.user_id}:daily_stats")
+
+            # Загрузка сохраненной статистики из Redis (используем get_cached_data)
+            saved_stats = await redis_manager.get_cached_data(f"user:{self.user_id}:daily_stats")
             if saved_stats:
                 # Проверяем, что статистика за сегодня
                 today = datetime.now().date().isoformat()

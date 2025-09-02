@@ -29,7 +29,7 @@ from cache.redis_manager import redis_manager
 from core.functions import format_currency, format_percentage, validate_symbol
 from core.default_configs import DefaultConfigs
 from core.logger import log_info, log_error, log_warning
-from core.settings_config import DEFAULT_SYMBOLS
+from core.settings_config import DEFAULT_SYMBOLS, system_config
 from api.bybit_api import BybitAPI
 
 router = Router()
@@ -492,7 +492,7 @@ async def callback_cancel(callback: CallbackQuery, state: FSMContext):
 async def callback_show_balance(callback: CallbackQuery, state: FSMContext):
     """Обработчик кнопки 'Баланс'"""
     user_id = callback.from_user.id
-    await callback.answer("Запрашиваю баланс...")  # Быстрый ответ пользователю
+    await callback.answer("Запрашиваю баланс...")
 
     keys = await db_manager.get_api_keys(user_id, "bybit")
     if not keys:
@@ -504,12 +504,9 @@ async def callback_show_balance(callback: CallbackQuery, state: FSMContext):
         return
 
     try:
-        # Создаем временный экземпляр API для запроса
-        # Явно получаем флаг 'sandbox' из глобальной конфигурации
         exchange_config = system_config.get_exchange_config("bybit")
         use_sandbox = exchange_config.sandbox if exchange_config else False
 
-        # Используем контекстный менеджер и передаем флаг testnet
         async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], testnet=use_sandbox) as api:
             balance_data = await api.get_wallet_balance()
 
@@ -531,8 +528,9 @@ async def callback_show_balance(callback: CallbackQuery, state: FSMContext):
                 reply_markup=get_balance_keyboard()
             )
         else:
+            error_message = balance_data.get("retMsg", "Проверьте права ваших API ключей")
             await callback.message.edit_text(
-                "❌ Не удалось получить данные о балансе. Проверьте права ваших API ключей.",
+                f"❌ Не удалось получить данные о балансе: {error_message}",
                 reply_markup=get_back_keyboard("main_menu")
             )
     except Exception as e:
@@ -991,6 +989,41 @@ async def callback_save_symbol_selection(callback: CallbackQuery, state: FSMCont
     await callback.answer("✅ Список торговых пар сохранен!", show_alert=True)
     await callback_settings(callback, state)  # Возвращаемся в главное меню настроек
 
+
+@router.callback_query(F.data.startswith("enable_strategy_") | F.data.startswith("disable_strategy_"))
+async def callback_toggle_strategy(callback: CallbackQuery, state: FSMContext):
+    """Включает или отключает конкретную стратегию."""
+    user_id = callback.from_user.id
+    parts = callback.data.split("_")
+    action = parts[0]
+    strategy_type = "_".join(parts[2:])
+    enable = action == "enable"
+
+    try:
+        current_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+        if not current_config:
+            await callback.answer("❌ Сначала зайдите в меню настроек.", show_alert=True)
+            return
+
+        enabled_strategies = set(current_config.get("enabled_strategies", []))
+
+        if enable:
+            enabled_strategies.add(strategy_type)
+        else:
+            enabled_strategies.discard(strategy_type)
+
+        current_config["enabled_strategies"] = list(enabled_strategies)
+        await redis_manager.save_config(user_id, ConfigType.GLOBAL, current_config)
+
+        status_text = "включена" if enable else "отключена"
+        await callback.answer(f"✅ Стратегия {strategy_type} {status_text}.", show_alert=True)
+        log_info(user_id, f"Стратегия {strategy_type} была {status_text}", "callback")
+
+        # Обновляем меню, чтобы показать изменения
+        await callback_strategy_settings(callback, state)
+    except Exception as e:
+        log_error(user_id, f"Ошибка при переключении стратегии {strategy_type}: {e}", "callback")
+        await callback.answer("❌ Произошла ошибка.", show_alert=True)
 
 
 @router.callback_query(F.data == "help")

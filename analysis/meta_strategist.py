@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from api.bybit_api import BybitAPI
 from core.logger import log_info, log_error
 from core.events import EventType, NewCandleEvent, SignalEvent, UserSettingsChangedEvent, EventBus
-from cache.redis_manager import redis_manager
+from cache.redis_manager import redis_manager, ConfigType
 
 # Настройка точности для Decimal
 getcontext().prec = 28
@@ -84,11 +84,11 @@ class MarketAnalyzer:
                 'reason': f'Ошибка анализа: {str(e)}',
                 'signal_strength': 0
             }
-            
+
     async def _get_analysis_config(self, user_id: int) -> Dict[str, Any]:
         """Загрузка персональных настроек анализа пользователя"""
         try:
-            global_config = await redis_manager.get_json(f"user:{user_id}:global_config")
+            global_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
             if global_config and "analysis_config" in global_config:
                 return global_config["analysis_config"]
             else:
@@ -390,11 +390,11 @@ class MetaStrategist:
             
         log_info(self.user_id, "Перезагрузка конфигурации после изменения настроек", module_name=__name__)
         await self._load_user_config()
-        
+
     async def _load_user_config(self):
         """Загрузка конфигурации пользователя"""
         try:
-            self.user_config = await redis_manager.get_json(f"user:{self.user_id}:global_config")
+            self.user_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
             if not self.user_config:
                 log_error(self.user_id, "Конфигурация пользователя не найдена", module_name=__name__)
                 raise ValueError("Конфигурация пользователя не найдена")

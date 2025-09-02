@@ -20,7 +20,7 @@ from cache.redis_manager import redis_manager
 from core.user_session import UserSession
 from websocket.websocket_manager import GlobalWebSocketManager
 from core.default_configs import DefaultConfigs
-
+from core.enums import ConfigType
 
 class BotApplication:
     """
@@ -345,35 +345,35 @@ class BotApplication:
     async def _initialize_user_configs(user_id: int):
         """Инициализация конфигураций пользователя по умолчанию"""
         try:
-            # Проверка существования конфигураций
-            global_config = await redis_manager.get_json(f"user:{user_id}:global_config")
-            
+            global_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+
             if not global_config:
-                # Создание конфигураций по умолчанию
                 default_configs = DefaultConfigs.get_all_default_configs()
-                
-                # Сохранение глобальной конфигурации
-                await redis_manager.set_json(
-                    f"user:{user_id}:global_config",
+
+                await redis_manager.save_config(
+                    user_id,
+                    ConfigType.GLOBAL,
                     default_configs["global_config"]
                 )
-                
-                # Сохранение конфигураций стратегий
+
                 for strategy_type, strategy_config in default_configs["strategy_configs"].items():
-                    await redis_manager.set_json(
-                        f"user:{user_id}:strategy_config:{strategy_type}",
+                    config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
+                    await redis_manager.save_config(
+                        user_id,
+                        config_enum,
                         strategy_config
                     )
-                    
-                # Сохранение конфигураций компонентов
+
                 for component_type, component_config in default_configs["component_configs"].items():
-                    await redis_manager.set_json(
-                        f"user:{user_id}:component_config:{component_type}",
+                    config_enum = getattr(ConfigType, f"COMPONENT_{component_type.upper()}")
+                    await redis_manager.save_config(
+                        user_id,
+                        config_enum,
                         component_config
                     )
-                    
+
                 log_info(user_id, "Конфигурации по умолчанию созданы", module_name=__name__)
-                
+
         except Exception as e:
             log_error(user_id, f"Ошибка инициализации конфигураций: {e}", module_name=__name__)
             raise

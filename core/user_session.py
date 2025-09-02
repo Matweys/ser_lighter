@@ -14,6 +14,7 @@ from core.events import (
     SignalEvent, OrderFilledEvent, RiskLimitExceededEvent, UserSettingsChangedEvent,
     EventBus
 )
+from cache.redis_manager import redis_manager, ConfigType
 from analysis.meta_strategist import MetaStrategist
 from analysis.risk_manager import RiskManager
 from api.bybit_api import BybitAPI
@@ -88,87 +89,87 @@ class UserSession:
         
         # Задачи компонентов
         self._component_tasks: List[asyncio.Task] = []
-        
+
     async def start(self) -> bool:
         """
         Запуск пользовательской сессии
-        
+
         Returns:
             bool: True если сессия запущена успешно
         """
         if self.running:
             return True
-            
+
         log_info(self.user_id, "Запуск пользовательской сессии...", module_name=__name__)
-        
+
         try:
             # Загрузка конфигураций пользователя
-            global_config = await redis_manager.get_json(f"user:{self.user_id}:global_config")
+            global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
             if not global_config:
                 log_error(self.user_id, "Конфигурация пользователя не найдена", module_name=__name__)
                 return False
-                
+
             # Инициализация компонентов
             await self._initialize_components()
-            
+
             # Подписка на события
             await self._subscribe_to_events()
-            
+
             # Запуск компонентов
             await self._start_components()
-            
+
             # Запуск стратегий (если включены)
             await self._start_enabled_strategies()
-            
+
+            self.running = True
+
             # Сохранение состояния сессии в Redis
             await self._save_session_state()
-            
-            self.running = True
-            
+
             log_info(self.user_id, "Пользовательская сессия запущена", module_name=__name__)
             return True
-            
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка запуска сессии: {e}", module_name=__name__)
             await self.stop("Startup error")
             return False
-            
+
     async def stop(self, reason: str = "Manual stop"):
         """
         Остановка пользовательской сессии
-        
+
         Args:
             reason: Причина остановки
         """
         if not self.running:
             return
-            
+
         log_info(self.user_id, f"Остановка пользовательской сессии: {reason}", module_name=__name__)
-        
+
         try:
             async with self.lock:
                 self.running = False
-                
+
                 # Остановка всех стратегий
                 await self._stop_all_strategies("Session stopping")
-                
+
                 # Остановка компонентов
                 await self._stop_components()
-                
+
                 # Отписка от событий
                 await self._unsubscribe_from_events()
-                
+
                 # Сохранение финальной статистики
                 await self._save_final_stats()
-                
+
                 # Удаление состояния сессии из Redis
-                await redis_manager.delete(f"user:{self.user_id}:session")
-                
+                await redis_manager.delete_user_session(self.user_id)
+
             log_info(self.user_id, "Пользовательская сессия остановлена", module_name=__name__)
-            
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка остановки сессии: {e}", module_name=__name__)
-            
+
     async def get_status(self) -> Dict[str, Any]:
         """
         Получение статуса сессии
@@ -409,24 +410,24 @@ class UserSession:
             
         except Exception as e:
             log_error(self.user_id, f"Ошибка остановки компонентов: {e}", module_name=__name__)
-            
+
     async def _start_enabled_strategies(self):
         """Запуск включенных стратегий"""
         try:
-            global_config = await redis_manager.get_json(f"user:{self.user_id}:global_config")
+            global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
             if not global_config:
                 return
-                
+
             enabled_strategies = global_config.get("enabled_strategies", [])
             watchlist_symbols = global_config.get("watchlist_symbols", [])
-            
+
             for strategy_type in enabled_strategies:
                 for symbol in watchlist_symbols:
                     await self.start_strategy(strategy_type, symbol)
-                    
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка запуска включенных стратегий: {e}", module_name=__name__)
-            
+
     async def _stop_all_strategies(self, reason: str):
         """Остановка всех стратегий"""
         try:
@@ -465,7 +466,7 @@ class UserSession:
             self.event_bus.unsubscribe_user(self.user_id)
         except Exception as e:
             log_error(self.user_id, f"Ошибка отписки от событий: {e}", module_name=__name__)
-            
+
     async def _save_session_state(self):
         """Сохранение состояния сессии в Redis"""
         try:
@@ -475,12 +476,13 @@ class UserSession:
                 "start_time": self.session_stats["start_time"].isoformat(),
                 "active_strategies": list(self.active_strategies.keys())
             }
-            
-            await redis_manager.set_json(f"user:{self.user_id}:session", session_state)
-            
+
+            # Используем специальный метод для создания/обновления сессии
+            await redis_manager.create_user_session(self.user_id, session_state)
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка сохранения состояния сессии: {e}", module_name=__name__)
-            
+
     async def _save_final_stats(self):
         """Сохранение финальной статистики"""
         try:
@@ -489,9 +491,10 @@ class UserSession:
                 "end_time": datetime.now().isoformat(),
                 "total_runtime": str(datetime.now() - self.session_stats["start_time"])
             }
-            
-            await redis_manager.set_json(f"user:{self.user_id}:session_stats", final_stats)
-            
+
+            # Кэшируем статистику на 7 дней
+            await redis_manager.cache_data(f"user:{self.user_id}:session_stats", final_stats, ttl=86400 * 7)
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка сохранения финальной статистики: {e}", module_name=__name__)
             
