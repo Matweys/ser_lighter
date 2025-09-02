@@ -11,7 +11,7 @@ from api.bybit_api import BybitAPI
 from .base_strategy import BaseStrategy
 from core.enums import StrategyType, OrderType
 from core.logger import log_info, log_error
-from core.events import PriceUpdateEvent, OrderFilledEvent, PositionUpdateEvent
+from core.events import PriceUpdateEvent, OrderFilledEvent, PositionUpdateEvent, EventBus
 
 # Настройка точности для Decimal
 getcontext().prec = 28
