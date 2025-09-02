@@ -142,7 +142,7 @@ class BotApplication:
                 await self._initialize_user_configs(user_id)
                 
                 # Создание сессии
-                session = UserSession(user_id, self.event_bus)
+                session = UserSession(user_id, self.event_bus, self.global_websocket_manager)
                 
                 # Запуск сессии
                 if await session.start():
@@ -265,7 +265,7 @@ class BotApplication:
         """Инициализация глобальных компонентов"""
         try:
             # Инициализация глобального WebSocket менеджера
-            self.global_websocket_manager = GlobalWebSocketManager()
+            self.global_websocket_manager = GlobalWebSocketManager(self.event_bus)
             await self.global_websocket_manager.start()
             
             log_info(0, "Глобальные компоненты инициализированы", module_name=__name__)
@@ -305,7 +305,7 @@ class BotApplication:
                         continue
 
                     # Создание и запуск сессии
-                    session = UserSession(user_id, self.event_bus)
+                    session = UserSession(user_id, self.event_bus, self.global_websocket_manager)
                     if await session.start():
                         self.active_sessions[user_id] = session
                         restored_count += 1

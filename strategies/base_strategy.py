@@ -36,7 +36,7 @@ class BaseStrategy(ABC):
     - Мониторинг состояния и статистики
     """
     
-    def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, config: Optional[Dict] = None):
+    def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, event_bus: EventBus, config: Optional[Dict] = None):
         """
         Инициализация базовой стратегии
         
@@ -49,6 +49,7 @@ class BaseStrategy(ABC):
         self.symbol = symbol
         self.signal_data = signal_data
         self.api: BybitAPI = api
+        self.event_bus = event_bus
         self.config: Dict[str, Any] = config or {}
         # Состояние стратегии
         self.is_running = False
@@ -270,16 +271,16 @@ class BaseStrategy(ABC):
         """Подписка на события"""
         try:
             # Подписка на обновления цен
-            event_bus.subscribe(EventType.PRICE_UPDATE, self._handle_price_update_wrapper)
+            self.event_bus.subscribe(EventType.PRICE_UPDATE, self._handle_price_update_wrapper)
             
             # Подписка на исполнение ордеров
-            event_bus.subscribe(EventType.ORDER_FILLED, self._handle_order_filled_wrapper)
+            self.event_bus.subscribe(EventType.ORDER_FILLED, self._handle_order_filled_wrapper)
             
             # Подписка на обновления позиций
-            event_bus.subscribe(EventType.POSITION_UPDATE, self._handle_position_update)
+            self.event_bus.subscribe(EventType.POSITION_UPDATE, self._handle_position_update)
             
             # Подписка на изменения настроек
-            event_bus.subscribe(EventType.USER_SETTINGS_CHANGED, self._handle_settings_changed)
+            self.event_bus.subscribe(EventType.USER_SETTINGS_CHANGED, self._handle_settings_changed)
             
             log_info(self.user_id, "Подписка на события выполнена", module_name=__name__)
             
@@ -289,10 +290,10 @@ class BaseStrategy(ABC):
     async def _unsubscribe_from_events(self):
         """Отписка от событий"""
         try:
-            event_bus.unsubscribe(EventType.PRICE_UPDATE, self._handle_price_update_wrapper)
-            event_bus.unsubscribe(EventType.ORDER_FILLED, self._handle_order_filled_wrapper)
-            event_bus.unsubscribe(EventType.POSITION_UPDATE, self._handle_position_update)
-            event_bus.unsubscribe(EventType.USER_SETTINGS_CHANGED, self._handle_settings_changed)
+            self.self.event_bus.unsubscribe(EventType.PRICE_UPDATE, self._handle_price_update_wrapper)
+            self.self.event_bus.unsubscribe(EventType.ORDER_FILLED, self._handle_order_filled_wrapper)
+            self.event_bus.unsubscribe(EventType.POSITION_UPDATE, self._handle_position_update)
+            self.event_bus.unsubscribe(EventType.USER_SETTINGS_CHANGED, self._handle_settings_changed)
             
             log_info(self.user_id, "Отписка от событий выполнена", module_name=__name__)
             
@@ -706,7 +707,7 @@ class BaseStrategy(ABC):
         return f"<{self.__class__.__name__}: {self.strategy_type.value}, {self.symbol}, user={self.user_id}>"
 
 
-def create_strategy(strategy_type: str, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, config: Dict[str, Any]) -> Optional['BaseStrategy']:
+def create_strategy(strategy_type: str, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, event_bus: EventBus, config: Dict[str, Any]) -> Optional['BaseStrategy']:
     """
     Фабричная функция для создания стратегий.
     """
@@ -726,5 +727,5 @@ def create_strategy(strategy_type: str, user_id: int, symbol: str, signal_data: 
         return None
 
     # Передаем все необходимые аргументы в конструктор
-    return strategy_class(user_id, symbol, signal_data, api, config)
+    return strategy_class(user_id, symbol, signal_data, api, event_bus, config)
 

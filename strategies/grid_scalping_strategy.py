@@ -27,9 +27,10 @@ class GridScalpingStrategy(BaseStrategy):
     - Быстрое исполнение и закрытие позиций
     - Работа в условиях низкой волатильности
     """
-    
-    def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, config: Optional[Dict] = None):
-        super().__init__(user_id, symbol, signal_data, api, config)
+
+    def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, event_bus: EventBus,
+                 config: Optional[Dict] = None):
+        super().__init__(user_id, symbol, signal_data, api, event_bus, config)
         
         # Параметры скальпинга (загружаются из конфигурации)
         self.scalp_levels: int = 3

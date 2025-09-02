@@ -17,7 +17,7 @@ from core.events import (
 from analysis.meta_strategist import MetaStrategist
 from analysis.risk_manager import RiskManager
 from api.bybit_api import BybitAPI
-from websocket.websocket_manager import global_ws_manager, DataFeedHandler
+from websocket.websocket_manager import GlobalWebSocketManager, DataFeedHandler
 from database.db_trades import db_manager
 from core.settings_config import system_config
 # Импорт стратегий
@@ -54,9 +54,10 @@ class UserSession:
     - Автоматическое управление жизненным циклом стратегий
     """
     
-    def __init__(self, user_id: int, event_bus: EventBus):
+    def __init__(self, user_id: int, event_bus: EventBus, global_ws_manager: GlobalWebSocketManager):
         self.user_id = user_id
         self.event_bus = event_bus
+        self.global_ws_manager = global_ws_manager
         self.running = False
 
         # API клиент сессии
@@ -231,7 +232,8 @@ class UserSession:
                 symbol=symbol,
                 signal_data=config or {},  # Передаем config как signal_data
                 api=self.api,
-                config=config
+                config=config,
+                event_bus=self.event_bus
             )
 
             if not strategy:
@@ -342,7 +344,7 @@ class UserSession:
 
             # Инициализация компонентов
             self.risk_manager = RiskManager(self.user_id, self.api, self.event_bus)
-            self.data_feed_handler = DataFeedHandler(self.user_id)
+            self.data_feed_handler = DataFeedHandler(self.user_id, self.event_bus, self.global_ws_manager)
 
             # Создаем независимый анализатор
             from core.meta_strategist import MarketAnalyzer

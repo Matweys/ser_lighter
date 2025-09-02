@@ -27,9 +27,10 @@ class BidirectionalGridStrategy(BaseStrategy):
     - Автоматическое восстановление сетки после исполнения ордеров
     - Адаптивные уровни прибыли на основе рыночных условий
     """
-    
-    def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, config: Optional[Dict] = None):
-        super().__init__(user_id, symbol, signal_data, api, config)
+
+    def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, event_bus: EventBus,
+                 config: Optional[Dict] = None):
+        super().__init__(user_id, symbol, signal_data, api, event_bus, config)
         
         # Параметры сетки (загружаются из конфигурации)
         self.grid_levels: int = 5

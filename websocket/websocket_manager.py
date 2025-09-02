@@ -15,8 +15,8 @@ import time
 
 from core.logger import log_error, log_info
 from core.events import (
-    event_bus, EventType, NewCandleEvent, PriceUpdateEvent, OrderUpdateEvent,
-    OrderFilledEvent, PositionUpdateEvent, PositionClosedEvent
+    EventType, NewCandleEvent, PriceUpdateEvent, OrderUpdateEvent,
+    OrderFilledEvent, PositionUpdateEvent, PositionClosedEvent, EventBus
 )
 from cache.redis_manager import redis_manager
 from database.db_trades import db_manager
@@ -35,8 +35,9 @@ class GlobalWebSocketManager:
     Управляет одним публичным соединением для всех пользователей
     """
     
-    def __init__(self):
+    def __init__(self, event_bus: EventBus):
         self.public_connection: Optional[websockets.WebSocketClientProtocol] = None
+        self.event_bus = event_bus
         self.running = False
         
         # Отслеживание подписок
@@ -248,7 +249,7 @@ class GlobalWebSocketManager:
                         symbol=symbol,
                         price=price
                     )
-                    await event_bus.publish(price_event)
+                    await self.event_bus.publish(price_event)
                     
         except Exception as e:
             log_error(0, f"Ошибка обработки тикера {symbol}: {e}", module_name=__name__)
@@ -284,7 +285,7 @@ class GlobalWebSocketManager:
                         interval=interval,
                         candle_data=candle_decimal
                     )
-                    await event_bus.publish(candle_event)
+                    await self.event_bus.publish(candle_event)
                     
         except Exception as e:
             log_error(0, f"Ошибка обработки свечи {symbol}: {e}", module_name=__name__)
@@ -296,8 +297,10 @@ class DataFeedHandler:
     Управляет подписками на рыночные данные и приватные события
     """
     
-    def __init__(self, user_id: int):
+    def __init__(self, user_id: int, event_bus: EventBus, global_ws_manager: "GlobalWebSocketManager"):
         self.user_id = user_id
+        self.event_bus = event_bus
+        self.global_ws_manager = global_ws_manager
         self.running = False
         
         # Приватное WebSocket соединение
@@ -498,7 +501,7 @@ class DataFeedHandler:
                     user_id=self.user_id,
                     order_data=order
                 )
-                await event_bus.publish(order_event)
+                await self.event_bus.publish(order_event)
                 
                 # Специальное событие для исполненных ордеров
                 if order.get("orderStatus") == "Filled":
@@ -511,7 +514,7 @@ class DataFeedHandler:
                         price=Decimal(str(order.get("avgPrice", "0"))),
                         fee=Decimal(str(order.get("cumExecFee", "0")))
                     )
-                    await event_bus.publish(filled_event)
+                    await self.event_bus.publish(filled_event)
                     
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки ордера: {e}", module_name=__name__)
@@ -529,28 +532,14 @@ class DataFeedHandler:
                     mark_price=Decimal(str(position.get("markPrice", "0"))),
                     unrealized_pnl=Decimal(str(position.get("unrealisedPnl", "0")))
                 )
-                await event_bus.publish(position_event)
+                await self.event_bus.publish(position_event)
                 
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки позиции: {e}", module_name=__name__)
 
 
-# Глобальный экземпляр WebSocket менеджера
-global_ws_manager = GlobalWebSocketManager()
+        # Глобальный экземпляр WebSocket менеджера
+        await self.global_ws_manager.unsubscribe_user(self.user_id)
 
 
-async def start_websocket_manager():
-    """Запуск глобального WebSocket менеджера"""
-    await global_ws_manager.start()
-
-
-async def stop_websocket_manager():
-    """Остановка глобального WebSocket менеджера"""
-    await global_ws_manager.stop()
-
-
-# Для совместимости с существующим кодом
-def start_websocket_manager_task():
-    """Создание задачи для запуска WebSocket менеджера"""
-    asyncio.create_task(start_websocket_manager())
 

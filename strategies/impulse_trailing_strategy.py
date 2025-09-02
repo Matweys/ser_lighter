@@ -27,9 +27,10 @@ class ImpulseTrailingStrategy(BaseStrategy):
     - Частичное закрытие позиций при достижении целей
     - Адаптивные параметры на основе волатильности
     """
-    
-    def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, config: Optional[Dict] = None):
-        super().__init__(user_id, symbol, signal_data, api, config)
+
+    def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, event_bus: EventBus,
+                 config: Optional[Dict] = None):
+        super().__init__(user_id, symbol, signal_data, api, event_bus, config)
         
         # Параметры трейлинга (загружаются из конфигурации)
         self.initial_stop_percent: Decimal = Decimal('2.0')      # Начальный стоп-лосс
