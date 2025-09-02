@@ -68,10 +68,10 @@ class BybitAPI:
         """Обеспечение активной HTTP сессии"""
         if not self.session or self.session.closed:
             timeout = aiohttp.ClientTimeout(total=30, connect=10)
+            # Убираем глобальный Content-Type, будем добавлять его только для POST запросов
             self.session = aiohttp.ClientSession(
                 timeout=timeout,
                 headers={
-                    "Content-Type": "application/json",
                     "User-Agent": "Manus-Trading-Bot/1.0"
                 }
             )
@@ -104,8 +104,14 @@ class BybitAPI:
             await asyncio.sleep(self.rate_limit_delay - time_since_last)
             
         self.last_request_time = time.time()
-    
-    async def _make_request(self, method: str, endpoint: str, params: Dict[str, Any] = None, private: bool = True) -> Optional[Dict[str, Any]]:
+
+    async def _make_request(
+            self,
+            method: str,
+            endpoint: str,
+            params: Dict[str, Any] = None,
+            private: bool = True
+    ) -> Optional[Dict[str, Any]]:
         """Выполнение HTTP запроса к API с retry механизмом"""
         if params is None:
             params = {}
@@ -120,18 +126,15 @@ class BybitAPI:
                 url = f"{self.base_url}{endpoint}"
                 headers = {}
 
+                # --- 1. Логика аутентификации (только для приватных запросов) ---
                 if private:
-                    # Приватные запросы требуют подписи
                     if method == "GET":
-                        # Используем стандартный urlencode для формирования query string
                         sorted_params = sorted(params.items())
-                        query_string = urlencode(sorted_params)
-                        signature_params = query_string
+                        signature_params = urlencode(sorted_params)
                     else:  # POST
                         signature_params = json.dumps(params) if params else ""
 
                     signature = self._generate_signature(signature_params, timestamp)
-
                     headers.update({
                         "X-BAPI-API-KEY": self.api_key,
                         "X-BAPI-SIGN": signature,
@@ -140,56 +143,52 @@ class BybitAPI:
                         "X-BAPI-RECV-WINDOW": "5000"
                     })
 
-                    # Выполнение запроса
-                    if method == "GET":
-                        # Передаем параметры напрямую в aiohttp, не меняя URL вручную
-                        async with self.session.get(url, headers=headers, params=params) as response:
-                            result = await response.json(content_type=None) if response.content else None
-                    elif method == "POST":
-                        async with self.session.post(url, headers=headers, json=params) as response:
-                            result = await response.json(content_type=None) if response.content else None
-                    else:
-                        log_error(self.user_id, f"Неподдерживаемый HTTP метод: {method}", module_name="bybit_api")
+                if method == "POST":
+                    headers["Content-Type"] = "application/json"
+
+                    # --- 2. Логика выполнения запроса (для всех типов) ---
+                if method == "GET":
+                    async with self.session.get(url, headers=headers, params=params) as response:
+                        response_result = await response.json(content_type=None) if response.content else None
+                elif method == "POST":
+                    async with self.session.post(url, headers=headers, json=params) as response:
+                        response_result = await response.json(content_type=None) if response.content else None
+                else:
+                    log_error(self.user_id, f"Неподдерживаемый HTTP метод: {method}", module_name="bybit_api")
+                    return None
+
+                    # --- 3. Логика обработки ответа ---
+                if response_result and response_result.get("retCode") == 0:
+                    return response_result.get("result", {})
+                else:
+                    ret_code = response_result.get("retCode", -1) if response_result else -1
+                    error_msg = response_result.get("retMsg",
+                                                    "получен пустой ответ от сервера") if response_result else "получен пустой ответ от сервера"
+
+                    log_error(self.user_id, f"API ошибка: {error_msg} (код: {ret_code})", module_name="bybit_api")
+
+                    if ret_code in [10001, 10003, 10004]:  # Auth errors
                         return None
 
-                    # Проверка ответа
-                    if result and result.get("retCode") == 0:
-                        return result.get("result", {})
+                    if attempt < self.max_retries:
+                        await asyncio.sleep(self.retry_delay * (attempt + 1))
+                        continue
                     else:
-                        ret_code = result.get("retCode", -1) if result else -1
-                        error_msg = result.get("retMsg",
-                                               "получен пустой ответ от сервера") if result else "получен пустой ответ от сервера"
+                        return {}  # Возвращаем пустой словарь, чтобы избежать AttributeError
 
-                        log_error(self.user_id, f"API ошибка: {error_msg} (код: {ret_code})",
-                                  module_name="bybit_api")
-
-                        # Некоторые ошибки не требуют повтора
-                        if ret_code in [10001, 10003, 10004]:  # Auth errors
-                            return None
-
-                        if attempt < self.max_retries:
-                            await asyncio.sleep(self.retry_delay * (attempt + 1))
-                            continue
-                        else:
-                            # Возвращаем пустой словарь вместо None, чтобы избежать AttributeError
-                            return {}
-                        
             except asyncio.TimeoutError:
                 log_error(self.user_id, f"Таймаут запроса (попытка {attempt + 1})", module_name="bybit_api")
                 if attempt < self.max_retries:
                     await asyncio.sleep(self.retry_delay * (attempt + 1))
-                    continue
                 else:
-                    return None
-                    
+                    return None  # Возвращаем None при таймауте
             except Exception as e:
                 log_error(self.user_id, f"Ошибка запроса (попытка {attempt + 1}): {e}", module_name="bybit_api")
                 if attempt < self.max_retries:
                     await asyncio.sleep(self.retry_delay * (attempt + 1))
-                    continue
                 else:
-                    return None
-                    
+                    return None  # Возвращаем None при других исключениях
+
         return None
     
     # =============================================================================

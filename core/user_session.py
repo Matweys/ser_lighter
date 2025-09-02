@@ -445,18 +445,9 @@ class UserSession:
     async def _subscribe_to_events(self):
         """Подписка на события"""
         try:
-            # Подписка на сигналы
-            self.event_bus.subscribe_user(self.user_id, self._handle_signal_event)
-
-            # Подписка на торговые события
-            self.event_bus.subscribe_user(self.user_id, self._handle_order_event)
-
-            # Подписка на события риска
-            self.event_bus.subscribe_user(self.user_id, self._handle_risk_event)
-
-            # Подписка на изменение настроек
-            self.event_bus.subscribe_user(self.user_id, self._handle_settings_changed)
-            
+            # Подписываем один универсальный обработчик для пользователя
+            self.event_bus.subscribe_user(self.user_id, self._user_event_handler)
+            log_info(self.user_id, "Успешная подписка на пользовательские события.", module_name=__name__)
         except Exception as e:
             log_error(self.user_id, f"Ошибка подписки на события: {e}", module_name=__name__)
             
@@ -500,33 +491,39 @@ class UserSession:
             log_error(self.user_id, f"Ошибка сохранения финальной статистики: {e}", module_name=__name__)
             
     # Обработчики событий
-    async def _handle_signal_event(self, event: BaseEvent):
-        """Обработчик событий сигналов от MetaStrategist"""
-        if not isinstance(event, SignalEvent) or event.user_id != self.user_id:
+    async def _user_event_handler(self, event: BaseEvent):
+        """Единый обработчик, который распределяет события по нужным методам."""
+        if not self.running:
             return
-
-        self.session_stats["total_signals"] += 1
-        log_info(self.user_id, f"Получен сигнал: {event.strategy_type} для {event.symbol}", module_name=__name__)
 
         try:
-            # Проверяем, можем ли мы открыть новую сделку
-            if not await self.risk_manager.can_open_new_trade(event.symbol):
-                log_warning(self.user_id, f"Открытие новой сделки для {event.symbol} отклонено риск-менеджером.",
-                            module_name=__name__)
-                return
-
-            # Запуск стратегии на основе сигнала
-            await self.start_strategy(event.strategy_type, event.symbol, event.analysis_data)
-
+            if isinstance(event, SignalEvent):
+                await self._handle_signal_event(event)
+            elif isinstance(event, OrderFilledEvent):
+                await self._handle_order_event(event)
+            elif isinstance(event, RiskLimitExceededEvent):
+                await self._handle_risk_event(event)
+            elif isinstance(event, UserSettingsChangedEvent):
+                await self._handle_settings_changed(event)
         except Exception as e:
-            log_error(self.user_id, f"Ошибка обработки сигнала для {event.symbol}: {e}", module_name=__name__)
+            log_error(self.user_id,
+                      f"Ошибка в главном обработчике событий для события типа {type(event).__name__}: {e}",
+                      module_name=__name__)
 
-    async def _handle_order_event(self, event: BaseEvent):
-        """Обработчик событий исполненных ордеров для глобальной статистики сессии"""
-        if not isinstance(event, OrderFilledEvent) or event.user_id != self.user_id:
+    async def _handle_signal_event(self, event: SignalEvent):
+        """Обработчик событий сигналов от MetaStrategist"""
+        self.session_stats["total_signals"] += 1
+        log_info(self.user_id, f"Получен сигнал: {event.strategy_type} для {event.symbol}", module_name=__name__)
+        if not await self.risk_manager.can_open_new_trade(event.symbol):
+            log_warning(self.user_id, f"Открытие новой сделки для {event.symbol} отклонено риск-менеджером.",
+                        module_name=__name__)
             return
+        await self.start_strategy(event.strategy_type, event.symbol, event.analysis_data)
 
-        pnl = event.fee # Пример, реальный PnL рассчитывается при закрытии позиции
+    async def _handle_order_event(self, event: OrderFilledEvent):
+        """Обработчик событий исполненных ордеров для глобальной статистики сессии"""
+        # Эта логика должна быть в стратегии, но для общей статистики сессии можно оставить здесь
+        pnl = event.fee  # Пример, реальный PnL рассчитывается при закрытии позиции
         if pnl > 0:
             self.session_stats["successful_trades"] += 1
         else:
@@ -534,17 +531,13 @@ class UserSession:
         self.session_stats["total_pnl"] += pnl
         pass
 
-    async def _handle_risk_event(self, event: BaseEvent):
+    async def _handle_risk_event(self, event: RiskLimitExceededEvent):
         """Обработчик событий риска"""
-        if not isinstance(event, RiskLimitExceededEvent) or event.user_id != self.user_id:
-            return
-
         self.session_stats["risk_violations"] += 1
         log_error(self.user_id, f"Превышен лимит риска: {event.limit_type}", module_name=__name__)
-
-        # Экстренная остановка при критических нарушениях
         if event.action_required == "stop_trading":
             await self.stop(f"Risk limit exceeded: {event.limit_type}")
+
 
     async def _handle_settings_changed(self, event: UserSettingsChangedEvent):
         """Обработчик изменения настроек пользователя"""
