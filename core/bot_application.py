@@ -59,10 +59,10 @@ class BotApplication:
             await self.event_bus.start()
 
             # Подписка на системные события
-            event_bus.subscribe(EventType.USER_SESSION_STARTED, self._handle_session_start)
-            event_bus.subscribe(EventType.USER_SESSION_STOPPED, self._handle_session_stop)
-            event_bus.subscribe(EventType.USER_SETTINGS_CHANGED, self._handle_settings_changed)
-            event_bus.subscribe(EventType.RISK_LIMIT_EXCEEDED, self._handle_risk_limit)
+            self.event_bus.subscribe(EventType.USER_SESSION_STARTED, self._handle_session_start)
+            self.event_bus.subscribe(EventType.USER_SESSION_STOPPED, self._handle_session_stop)
+            self.event_bus.subscribe(EventType.USER_SETTINGS_CHANGED, self._handle_settings_changed)
+            self.event_bus.subscribe(EventType.RISK_LIMIT_EXCEEDED, self._handle_risk_limit)
             
             # Инициализация глобальных компонентов
             await self._initialize_global_components()
