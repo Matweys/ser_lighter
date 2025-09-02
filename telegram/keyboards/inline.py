@@ -339,34 +339,6 @@ def get_strategy_selection_keyboard() -> InlineKeyboardMarkup:
     
     return KeyboardBuilder.build_keyboard(buttons)
 
-# Управление символами
-def get_symbol_selection_keyboard(symbols: List[str]) -> InlineKeyboardMarkup:
-    """Клавиатура выбора символа"""
-    buttons = []
-    
-    # Добавляем символы по 2 в ряд
-    for i in range(0, len(symbols), 2):
-        row = []
-        for j in range(2):
-            if i + j < len(symbols):
-                symbol = symbols[i + j]
-                row.append({"text": symbol, "callback_data": f"select_symbol_{symbol}"})
-        buttons.append(row)
-    
-    # Добавляем кнопки управления
-    buttons.extend([
-        [
-            {"text": "➕ Добавить символ", "callback_data": "add_symbol"},
-            {"text": "➖ Удалить символ", "callback_data": "remove_symbol"}
-        ],
-        [
-            {"text": "🔄 Обновить список", "callback_data": "refresh_symbols"},
-            {"text": "🏠 Главное меню", "callback_data": "main_menu"}
-        ]
-    ])
-    
-    return KeyboardBuilder.build_keyboard(buttons)
-
 
 # Подтверждения
 def get_confirmation_keyboard(action: str, additional_data: str = "") -> InlineKeyboardMarkup:

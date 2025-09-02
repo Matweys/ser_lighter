@@ -8,11 +8,11 @@ import json
 
 from core.logger import log_info, log_error, log_warning
 from core.events import EventBus, EventType, UserSessionStartedEvent, UserSessionStoppedEvent, SystemStatusEvent
-from core.enums import SessionStatus, StrategyStatus, SystemConstants
+from core.enums import SessionStatus, StrategyStatus, SystemConstants, ConfigType
 from cache.redis_manager import redis_manager
 from core.user_session import UserSession
 from core.default_configs import DefaultConfigs
-
+from websocket.websocket_manager import GlobalWebSocketManager
 
 
 
@@ -35,8 +35,9 @@ class BotStatesManager:
     Профессиональный менеджер состояний бота для управления пользовательскими сессиями
     """
 
-    def __init__(self, event_bus: EventBus):
+    def __init__(self, event_bus: EventBus, global_ws_manager: GlobalWebSocketManager):
         self.event_bus = event_bus
+        self.global_ws_manager = global_ws_manager
         self.user_sessions: Dict[int, UserSession] = {}
         self.session_info: Dict[int, SessionInfo] = {}
         self.is_running = False
@@ -183,18 +184,18 @@ class BotStatesManager:
                     await self._stop_user_session(user_id)
 
             # Проверяем конфигурацию пользователя
-            user_config = await redis_manager.get_user_config(user_id)
+            user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
             if not user_config:
                 log_info(user_id, "Создание конфигурации по умолчанию для пользователя", module_name='bot_states')
                 await DefaultConfigs.create_default_user_config(user_id)
-                user_config = await redis_manager.get_user_config(user_id)
+                user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
 
             if not user_config:
                 log_error(user_id, "Не удалось получить конфигурацию для пользователя", module_name='bot_states')
                 return False
 
             # Создаем и запускаем пользовательскую сессию
-            user_session = UserSession(user_id)
+            user_session = UserSession(user_id, self.event_bus, self.global_ws_manager)
 
             if await user_session.start():
                 self.user_sessions[user_id] = user_session
@@ -520,6 +521,6 @@ class BotStatesManager:
 
 
 # Функция для создания менеджера состояний
-def create_bot_states_manager(event_bus: EventBus) -> BotStatesManager:
+def create_bot_states_manager(event_bus: EventBus, global_ws_manager: GlobalWebSocketManager) -> BotStatesManager:
     """Создание экземпляра менеджера состояний"""
-    return BotStatesManager(event_bus)
+    return BotStatesManager(event_bus, global_ws_manager)

@@ -227,17 +227,15 @@ class BaseStrategy(ABC):
         """Загрузка конфигурации стратегии"""
         try:
             # Загрузка глобальной конфигурации пользователя
-            global_config = await redis_manager.get_user_config(self.user_id, "global")
+            global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
             
             if not global_config:
                 log_error(self.user_id, "Глобальная конфигурация не найдена", module_name=__name__)
                 return
                 
             # Загрузка конфигурации конкретной стратегии
-            strategy_config = await redis_manager.get_user_config(
-                self.user_id, 
-                f"strategy:{self.strategy_type.value}"
-            )
+            strategy_config_enum = ConfigType[f"STRATEGY_{self.strategy_type.value.upper()}"]
+            strategy_config = await redis_manager.get_config(self.user_id, strategy_config_enum)
             
             if not strategy_config:
                 log_error(self.user_id,f"Конфигурация стратегии {self.strategy_type.value} не найдена", module_name=__name__)

@@ -322,7 +322,7 @@ async def callback_configure_strategy(callback: CallbackQuery, state: FSMContext
             return
         
         strategy_info = callback_handler.strategy_descriptions[strategy_type]
-        user_config = await redis_manager.get_user_config(user_id)
+        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
         strategy_config = user_config.get('strategies', {}).get(strategy_type, {})
         
         # Сохраняем тип стратегии в состоянии
