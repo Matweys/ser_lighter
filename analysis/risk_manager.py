@@ -11,8 +11,8 @@ from api.bybit_api import BybitAPI
 from cache.redis_manager import redis_manager
 from core.logger import log_info, log_error
 from core.events import (
-    event_bus, EventType, OrderFilledEvent, PositionClosedEvent,
-    RiskLimitExceededEvent, DrawdownWarningEvent
+    EventType, OrderFilledEvent, PositionClosedEvent,
+    RiskLimitExceededEvent, DrawdownWarningEvent, EventBus
 )
 
 # Настройка точности для Decimal
@@ -30,9 +30,10 @@ class RiskManager:
     - Автоматическое управление рисками в реальном времени
     """
     
-    def __init__(self, user_id: int, bybit_api: BybitAPI):
+    def __init__(self, user_id: int, bybit_api: BybitAPI, event_bus: EventBus):
         self.user_id = user_id
         self.api = bybit_api
+        self.event_bus = event_bus
         self.running = False
 
         # Кэш для оптимизации
@@ -67,8 +68,8 @@ class RiskManager:
             await self._initialize_daily_stats()
             
             # Подписка на события
-            event_bus.subscribe(EventType.ORDER_FILLED, self._handle_order_filled)
-            event_bus.subscribe(EventType.POSITION_CLOSED, self._handle_position_closed)
+            self.event_bus.subscribe(EventType.ORDER_FILLED, self._handle_order_filled)
+            self.event_bus.subscribe(EventType.POSITION_CLOSED, self._handle_position_closed)
             
             self.running = True
             log_info(self.user_id, "RiskManager запущен", module_name=__name__)
@@ -435,7 +436,7 @@ class RiskManager:
             current_drawdown = await self._calculate_current_drawdown_percent()
             
             if current_drawdown >= max_drawdown:
-                await event_bus.publish(RiskLimitExceededEvent(
+                await self.event_bus.publish(RiskLimitExceededEvent(
                     user_id=self.user_id,
                     limit_type="daily_drawdown",
                     current_value=current_drawdown,
@@ -447,7 +448,7 @@ class RiskManager:
             # Предупреждение при 80% от лимита
             warning_threshold = max_drawdown * Decimal('0.8')
             if current_drawdown >= warning_threshold:
-                await event_bus.publish(DrawdownWarningEvent(
+                await self.event_bus.publish(DrawdownWarningEvent(
                     user_id=self.user_id,
                     current_drawdown_percent=current_drawdown,
                     warning_threshold_percent=warning_threshold,

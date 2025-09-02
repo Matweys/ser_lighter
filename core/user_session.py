@@ -341,7 +341,7 @@ class UserSession:
             )
 
             # Инициализация компонентов
-            self.risk_manager = RiskManager(self.user_id, self.api)
+            self.risk_manager = RiskManager(self.user_id, self.api, self.event_bus)
             self.data_feed_handler = DataFeedHandler(self.user_id)
 
             # Создаем независимый анализатор
