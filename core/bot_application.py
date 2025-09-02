@@ -63,7 +63,10 @@ class BotApplication:
             self.event_bus.subscribe(EventType.USER_SESSION_STOPPED, self._handle_session_stop)
             self.event_bus.subscribe(EventType.USER_SETTINGS_CHANGED, self._handle_settings_changed)
             self.event_bus.subscribe(EventType.RISK_LIMIT_EXCEEDED, self._handle_risk_limit)
-            
+
+            self.event_bus.subscribe(EventType.USER_SESSION_START_REQUESTED, self._handle_session_start_request)
+            self.event_bus.subscribe(EventType.USER_SESSION_STOP_REQUESTED, self._handle_session_stop_request)
+
             # Инициализация глобальных компонентов
             await self._initialize_global_components()
             
@@ -461,3 +464,19 @@ class BotApplication:
         if event.user_id in self.active_sessions:
             await self.stop_user_session(event.user_id, f"Risk limit exceeded: {event.limit_type}")
 
+    async def _handle_session_start_request(self, event: UserSessionStartRequestedEvent):
+        """Обработчик запроса на запуск сессии от пользователя"""
+        log_info(event.user_id, "Получен запрос на запуск сессии...", module_name=__name__)
+        if event.user_id not in self.active_sessions:
+            await self.create_user_session(event.user_id)
+        else:
+            log_warning(event.user_id, "Попытка запустить уже активную сессию.", module_name=__name__)
+
+    async def _handle_session_stop_request(self, event: UserSessionStopRequestedEvent):
+        """Обработчик запроса на остановку сессии от пользователя"""
+        log_info(event.user_id, f"Получен запрос на остановку сессии (причина: {event.reason})...",
+                 module_name=__name__)
+        if event.user_id in self.active_sessions:
+            await self.stop_user_session(event.user_id, event.reason)
+        else:
+            log_warning(event.user_id, "Попытка остановить уже неактивную сессию.", module_name=__name__)

@@ -162,8 +162,12 @@ class BybitAPI:
                 if result and result.get("retCode") == 0:
                     return result.get("result", {})
                 else:
-                    error_msg = result.get("retMsg", "Unknown error")
-                    log_error(self.user_id, f"API ошибка: {error_msg} (код: {result.get('retCode')})", module_name="bybit_api")
+                    if result:
+                        error_msg = result.get("retMsg", "Unknown error")
+                        log_error(self.user_id, f"API ошибка: {error_msg} (код: {result.get('retCode')})",
+                                  module_name="bybit_api")
+                    else:
+                        log_error(self.user_id, "API ошибка: получен пустой ответ от сервера", module_name="bybit_api")
                     
                     # Некоторые ошибки не требуют повтора
                     if result.get("retCode") in [10001, 10003, 10004]:  # Auth errors

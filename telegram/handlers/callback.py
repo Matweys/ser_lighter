@@ -30,7 +30,7 @@ from core.functions import format_currency, format_percentage, validate_symbol
 from core.default_configs import DefaultConfigs
 from core.logger import log_info, log_error, log_warning
 from core.settings_config import DEFAULT_SYMBOLS
-
+from api.bybit_api import BybitAPI
 
 router = Router()
 
@@ -505,9 +505,13 @@ async def callback_show_balance(callback: CallbackQuery, state: FSMContext):
 
     try:
         # Создаем временный экземпляр API для запроса
-        from api.bybit_api import BybitAPI
-        api = BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1])
-        balance_data = await api.get_wallet_balance()
+        # Явно получаем флаг 'sandbox' из глобальной конфигурации
+        exchange_config = system_config.get_exchange_config("bybit")
+        use_sandbox = exchange_config.sandbox if exchange_config else False
+
+        # Используем контекстный менеджер и передаем флаг testnet
+        async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], testnet=use_sandbox) as api:
+            balance_data = await api.get_wallet_balance()
 
         if balance_data and 'totalEquity' in balance_data:
             total_equity = format_currency(balance_data['totalEquity'])
