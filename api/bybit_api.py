@@ -361,20 +361,27 @@ class BybitAPI:
     # =============================================================================
     # ПРИВАТНЫЕ МЕТОДЫ API (ТОРГОВЛЯ)
     # =============================================================================
-    
+
     async def get_wallet_balance(self, account_type: str = "UNIFIED") -> Optional[Dict[str, Any]]:
-        """Получение баланса кошелька"""
+        """Получение баланса кошелька с фолбэком на CONTRACT аккаунт для testnet."""
         try:
-            params = {
-                "accountType": account_type
-            }
-            
+            # Первая попытка: запросить указанный тип аккаунта (по умолчанию UNIFIED)
+            params = {"accountType": account_type}
             result = await self._make_request("GET", "/v5/account/wallet-balance", params)
-            
-            if result and "list" in result and result["list"]:
+
+            # Если результат пустой и мы в testnet, пробуем тип CONTRACT
+            is_empty_result = not (result and result.get("list"))
+            if is_empty_result and self.testnet:
+                log_warning(self.user_id, f"Баланс для аккаунта {account_type} не найден в testnet, пробую CONTRACT...",
+                            module_name="bybit_api")
+                params = {"accountType": "CONTRACT"}
+                result = await self._make_request("GET", "/v5/account/wallet-balance", params)
+
+            # Парсим результат
+            if result and result.get("list"):
                 account = result["list"][0]
                 coins = {}
-                
+
                 for coin in account.get("coin", []):
                     coin_name = coin.get("coin")
                     coins[coin_name] = {
@@ -384,7 +391,7 @@ class BybitAPI:
                         "unrealisedPnl": to_decimal(coin.get("unrealisedPnl", "0")),
                         "totalEquity": to_decimal(coin.get("equity", "0"))
                     }
-                    
+
                 return {
                     "accountType": account.get("accountType"),
                     "totalWalletBalance": to_decimal(account.get("totalWalletBalance", "0")),

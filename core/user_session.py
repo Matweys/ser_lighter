@@ -546,3 +546,37 @@ class UserSession:
         if event.action_required == "stop_trading":
             await self.stop(f"Risk limit exceeded: {event.limit_type}")
 
+    async def _handle_settings_changed(self, event: UserSettingsChangedEvent):
+        """Обработчик изменения настроек пользователя"""
+        if event.user_id != self.user_id:
+            return
+
+        log_info(self.user_id, "Получено событие изменения настроек. Перезагрузка конфигураций...",
+                 module_name=__name__)
+        try:
+            # Получаем старый watchlist для сравнения
+            old_watchlist = set()
+            if self.meta_strategist and self.meta_strategist.user_config:
+                old_watchlist = set(self.meta_strategist.user_config.get("watchlist_symbols", []))
+
+            # Передаем событие в дочерние компоненты, у которых есть свой обработчик
+            if self.meta_strategist:
+                await self.meta_strategist.on_settings_changed(event)
+
+            # Обновляем watchlist в DataFeedHandler
+            if self.data_feed_handler:
+                new_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
+                new_watchlist = set(new_config.get("watchlist_symbols", []))
+
+                added = new_watchlist - old_watchlist
+                removed = old_watchlist - new_watchlist
+
+                for symbol in added:
+                    await self.global_ws_manager.subscribe_symbol(self.user_id, symbol)
+                for symbol in removed:
+                    await self.global_ws_manager.unsubscribe_symbol(self.user_id, symbol)
+
+            log_info(self.user_id, "Конфигурации и подписки обновлены после изменения настроек.", module_name=__name__)
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка обработки изменения настроек: {e}", module_name=__name__)

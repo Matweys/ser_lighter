@@ -338,7 +338,15 @@ class MetaStrategist:
             
         self.running = False
         log_info(self.user_id, "MetaStrategist остановлен", module_name=__name__)
-        
+
+    async def on_settings_changed(self, event: UserSettingsChangedEvent):
+        """
+        Публичный метод для обработки события изменения настроек.
+        Вызывает внутренний защищенный обработчик.
+        """
+        await self._handle_settings_changed(event)
+
+
     async def _handle_new_candle(self, event: NewCandleEvent):
         """Обработчик события новой свечи"""
         # Фильтруем события только для нашего пользователя
