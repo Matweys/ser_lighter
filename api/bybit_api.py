@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional, List
 from decimal import Decimal, getcontext
 from core.logger import log_info, log_error, log_warning
 from core.functions import to_decimal
+from urllib.parse import urlencode
 # Настройка точности для Decimal
 getcontext().prec = 28
 
@@ -122,11 +123,9 @@ class BybitAPI:
                 if private:
                     # Приватные запросы требуют подписи
                     if method == "GET":
-                        # ВАЖНО: Сортируем параметры по алфавиту для корректной подписи
+                        # Используем стандартный urlencode для формирования query string
                         sorted_params = sorted(params.items())
-                        query_string = "&".join([f"{k}={v}" for k, v in sorted_params])
-                        if query_string:
-                            url += f"?{query_string}"
+                        query_string = urlencode(sorted_params)
                         signature_params = query_string
                     else:  # POST
                         signature_params = json.dumps(params) if params else ""
@@ -143,7 +142,8 @@ class BybitAPI:
 
                     # Выполнение запроса
                     if method == "GET":
-                        async with self.session.get(url, headers=headers) as response:
+                        # Передаем параметры напрямую в aiohttp, не меняя URL вручную
+                        async with self.session.get(url, headers=headers, params=params) as response:
                             result = await response.json(content_type=None) if response.content else None
                     elif method == "POST":
                         async with self.session.post(url, headers=headers, json=params) as response:

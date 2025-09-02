@@ -233,16 +233,16 @@ class GlobalWebSocketManager:
                 
         except Exception as e:
             log_error(0, f"Ошибка парсинга публичного сообщения: {e}", module_name=__name__)
-            
-    async def _handle_ticker_update(self, symbol: str, ticker_data: List[Dict]):
+
+    async def _handle_ticker_update(self, symbol: str, ticker_data: Dict[str, Any]):
         """Обработка обновления тикера"""
         try:
+            # Данные тикера приходят как объект, а не список
             if not ticker_data:
                 return
-                
-            ticker = ticker_data[0]
-            price = Decimal(str(ticker.get("lastPrice", "0")))
-            
+
+            price = Decimal(str(ticker_data.get("lastPrice", "0")))
+
             if price <= 0:
                 return
                 
