@@ -386,14 +386,11 @@ class DataFeedHandler:
             global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
             if not global_config:
                 return
-                
+
             watchlist = global_config.get("watchlist_symbols", [])
-            
             for symbol in watchlist:
-                await global_ws_manager.subscribe_symbol(self.user_id, symbol)
-                
+                await self.global_ws_manager.subscribe_symbol(self.user_id, symbol)
             log_info(self.user_id, f"Подписка на watchlist: {watchlist}", module_name=__name__)
-            
         except Exception as e:
             log_error(self.user_id, f"Ошибка подписки на watchlist: {e}", module_name=__name__)
             

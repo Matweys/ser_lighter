@@ -6,7 +6,7 @@ import asyncio
 import aiohttp
 from typing import Dict, Any, Optional, List
 from decimal import Decimal, getcontext
-from core.logger import log_info, log_error
+from core.logger import log_info, log_error, log_warning
 from core.functions import to_decimal
 # Настройка точности для Decimal
 getcontext().prec = 28
