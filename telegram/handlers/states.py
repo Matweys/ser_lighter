@@ -31,7 +31,6 @@ class UserStates(StatesGroup):
     RISK_SETTINGS = State()
     STRATEGY_SETTINGS = State()
     GENERAL_SETTINGS = State()
-    WATCHLIST_MENU = State()
 
     # Состояния настройки риск-менеджмента
     SETTING_RISK_PER_TRADE = State()
@@ -200,7 +199,6 @@ class StateManager:
                     UserStates.SETTINGS_MENU.state,
                     UserStates.STARTING_TRADING.state,
                     UserStates.VIEWING_STATISTICS.state,
-                    UserStates.WATCHLIST_MENU.state
                 ],
                 UserStates.SETTINGS_MENU.state: [
                     UserStates.RISK_SETTINGS.state,

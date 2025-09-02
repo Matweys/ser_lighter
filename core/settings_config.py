@@ -353,7 +353,7 @@ class ConfigLoader:
                 default_leverage=self.env.int("BINANCE_DEFAULT_LEVERAGE", 1),
                 max_leverage=self.env.int("BINANCE_MAX_LEVERAGE", 20),
             )
-            config.add_exchange_config("binance", binance_config)
+            system_config_obj.add_exchange_config("binance", binance_config)
 
 def load_system_config(env_file: str = ".env") -> SystemConfig:
     """Загрузка системной конфигурации"""

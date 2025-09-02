@@ -25,7 +25,7 @@ from ..keyboards.inline import (
     get_balance_keyboard,
     get_watchlist_keyboard
 )
-from .states import UserStates
+from .states import UserStates, state_validator
 from cache.redis_manager import redis_manager
 from core.functions import format_currency, format_percentage, validate_symbol
 from core.default_configs import DefaultConfigs
@@ -96,7 +96,8 @@ async def callback_main_menu(callback: CallbackQuery, state: FSMContext):
         
         # Получаем статус сессии
         session_status = await redis_manager.get_user_session(user_id)
-        is_active = session_status.get('is_active', False) if session_status else False
+        # Проверяем ключ 'running', который реально сохраняется в UserSession
+        is_active = session_status.get('running', False) if session_status else False
         
         status_text = "🟢 Активен" if is_active else "🔴 Неактивен"
         
@@ -146,7 +147,7 @@ async def callback_start_trading(callback: CallbackQuery, state: FSMContext):
         
         # Проверяем существующую сессию
         session_status = await redis_manager.get_user_session(user_id)
-        if session_status and session_status.get('is_active'):
+        if session_status and session_status.get('running'):
             await callback.answer("⚠️ Торговля уже запущена", show_alert=True)
             return
         
@@ -179,7 +180,7 @@ async def callback_stop_trading(callback: CallbackQuery, state: FSMContext):
     try:
         # Проверяем существующую сессию
         session_status = await redis_manager.get_user_session(user_id)
-        if not session_status or not session_status.get('is_active'):
+        if not session_status or not session_status.get('running'):
             await callback.answer("⚠️ Торговля не запущена", show_alert=True)
             return
         
@@ -392,7 +393,7 @@ async def callback_statistics(callback: CallbackQuery, state: FSMContext):
         )
 
         # Используем данные из сессии Redis для отображения статуса
-        if session_status and session_status.get('status') == 'active':
+        if session_status and session_status.get('running'):
             active_strategies = session_status.get('active_strategies', [])
             text += f"🟢 <b>Статус:</b> Активен\n"
             text += f"📊 <b>Активных стратегий:</b> {len(active_strategies)}\n"
@@ -415,7 +416,7 @@ async def callback_statistics(callback: CallbackQuery, state: FSMContext):
                 )
         else:
             text += "Сделок пока нет\n"
-        is_active_session = session_status.get('status') == 'active' if session_status else False
+        is_active_session = session_status.get('running', False) if session_status else False
         await callback.message.edit_text(
             text,
             reply_markup=get_main_menu_keyboard(is_active_session),
@@ -535,38 +536,6 @@ async def callback_show_balance(callback: CallbackQuery, state: FSMContext):
         log_error(user_id, f"Ошибка получения баланса по кнопке: {e}", module_name='callback')
         await callback.message.edit_text(
             "❌ Произошла ошибка при запросе баланса.",
-            reply_markup=get_back_keyboard("main_menu")
-        )
-
-
-@router.callback_query(F.data == "watchlist")
-async def callback_watchlist(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки 'Watchlist'"""
-    user_id = callback.from_user.id
-    await callback.answer("Загружаю список отслеживания...")
-
-    try:
-        from core.enums import ConfigType
-        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
-        watchlist = user_config.get("watchlist_symbols", [])
-
-        if not watchlist:
-            text = "📋 <b>Список отслеживания пуст.</b>\n\nДобавьте торговые пары, за которыми бот будет следить и по которым будет открывать сделки."
-        else:
-            text = "📋 <b>Список отслеживаемых пар:</b>\n\n"
-            # Преобразуем список в строку с нумерацией
-            for i, symbol in enumerate(watchlist, 1):
-                text += f"{i}. <code>{symbol}</code>\n"
-
-        await callback.message.edit_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=get_watchlist_keyboard()
-        )
-    except Exception as e:
-        log_error(user_id, f"Ошибка отображения watchlist: {e}", module_name='callback')
-        await callback.message.edit_text(
-            "❌ Ошибка загрузки списка отслеживания.",
             reply_markup=get_back_keyboard("main_menu")
         )
 
@@ -786,33 +755,6 @@ async def callback_api_settings(callback: CallbackQuery, state: FSMContext):
         log_error(user_id, f"Ошибка отображения API ключей: {e}", module_name='callback')
         await callback.message.edit_text("❌ Ошибка загрузки информации о ключах.", reply_markup=get_back_keyboard("settings"))
 
-
-
-
-@router.callback_query(F.data == "show_watchlist")
-async def callback_show_watchlist(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки 'Показать список' в меню Watchlist"""
-    user_id = callback.from_user.id
-    await callback.answer()
-    try:
-        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
-        watchlist = user_config.get("watchlist_symbols", []) if user_config else []
-
-        if not watchlist:
-            text = "📋 <b>Список отслеживания пуст.</b>"
-        else:
-            text = "📋 <b>Список отслеживаемых пар:</b>\n\n"
-            for i, symbol in enumerate(watchlist, 1):
-                text += f"{i}. <code>{symbol}</code>\n"
-
-        await callback.message.edit_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=get_watchlist_keyboard()
-        )
-    except Exception as e:
-        log_error(user_id, f"Ошибка отображения watchlist: {e}", module_name='callback')
-        await callback.message.edit_text("❌ Ошибка загрузки списка отслеживания.")
 
 
 # --- ОБРАБОТЧИКИ НАСТРОЕК РИСКА ---
