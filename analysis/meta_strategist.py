@@ -21,10 +21,9 @@ getcontext().prec = 28
 class MarketAnalyzer:
     """
     Профессиональный анализатор рынка с многотаймфреймовым анализом
-    Полностью stateless, все настройки загружаются динамически из Redis
     """
-    
-    def __init__(self):
+
+    def __init__(self, user_id: int, bybit_api: BybitAPI):
         self.user_id = user_id
         self.api = bybit_api
         self.default_timeframes = ["15m", "1h", "4h"]
@@ -32,25 +31,25 @@ class MarketAnalyzer:
     async def get_klines(self, symbol: str, timeframe: str, limit: int) -> List:
         """Получение исторических данных через API"""
         try:
+            # Используем self.api, который теперь корректно инициализирован
             return await self.api.get_klines(symbol=symbol, interval=timeframe, limit=limit)
         except Exception as e:
             log_error(self.user_id, f"Ошибка получения klines: {e}", module_name=__name__)
             return []
 
-    async def get_market_analysis(self, user_id: int, symbol: str) -> Dict[str, Any]:
+    async def get_market_analysis(self, symbol: str) -> Dict[str, Any]:
         """
         Проводит многомерный анализ рынка с персональными настройками пользователя
-        
+
         Args:
-            user_id: ID пользователя
             symbol: Торговый символ
-            
+
         Returns:
             Dict с результатами анализа
         """
         try:
-            # Загружаем персональные настройки анализа
-            analysis_config = await self._get_analysis_config(user_id)
+            # Загружаем персональные настройки анализа, используя self.user_id
+            analysis_config = await self._get_analysis_config(self.user_id)
             
             # Анализ по каждому таймфрейму
             timeframe_analyses = {}
@@ -367,7 +366,7 @@ class MetaStrategist:
             log_info(self.user_id, f"Анализ рынка для {event.symbol} по новой свече", module_name=__name__)
             
             # Проводим анализ рынка
-            analysis = await self.analyzer.get_market_analysis(self.user_id, event.symbol)
+            analysis = await self.analyzer.get_market_analysis(event.symbol)
             
             # Обновляем время последнего анализа
             self.last_analysis_time[event.symbol] = now

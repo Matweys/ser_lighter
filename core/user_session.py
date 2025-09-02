@@ -16,8 +16,8 @@ from core.events import (
 )
 from cache.redis_manager import redis_manager, ConfigType
 from analysis.meta_strategist import MetaStrategist
+from analysis.meta_strategist import MarketAnalyzer
 from analysis.risk_manager import RiskManager
-from analysis.market_analyzer import MarketAnalyzer
 from api.bybit_api import BybitAPI
 from websocket.websocket_manager import GlobalWebSocketManager, DataFeedHandler
 from database.db_trades import db_manager
@@ -350,7 +350,7 @@ class UserSession:
             self.data_feed_handler = DataFeedHandler(self.user_id, self.event_bus, self.global_ws_manager)
 
             # Создаем независимый анализатор
-            market_analyzer = MarketAnalyzer(self.user_id, self.api)
+            market_analyzer = MarketAnalyzer(user_id=self.user_id, bybit_api=self.api)
 
             # Передаем анализатор и шину событий в MetaStrategist как зависимости
             self.meta_strategist = MetaStrategist(
@@ -500,9 +500,9 @@ class UserSession:
             log_error(self.user_id, f"Ошибка сохранения финальной статистики: {e}", module_name=__name__)
             
     # Обработчики событий
-    async def _handle_signal_event(self, event: SignalEvent):
+    async def _handle_signal_event(self, event: BaseEvent):
         """Обработчик событий сигналов от MetaStrategist"""
-        if event.user_id != self.user_id:
+        if not isinstance(event, SignalEvent) or event.user_id != self.user_id:
             return
 
         self.session_stats["total_signals"] += 1
@@ -521,12 +521,11 @@ class UserSession:
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки сигнала для {event.symbol}: {e}", module_name=__name__)
 
-    async def _handle_order_event(self, event: OrderFilledEvent):
+    async def _handle_order_event(self, event: BaseEvent):
         """Обработчик событий исполненных ордеров для глобальной статистики сессии"""
-        if event.user_id != self.user_id:
+        if not isinstance(event, OrderFilledEvent) or event.user_id != self.user_id:
             return
 
-        #Эта логика должна быть в стратегии, но для общей статистики сессии можно оставить здесь
         pnl = event.fee # Пример, реальный PnL рассчитывается при закрытии позиции
         if pnl > 0:
             self.session_stats["successful_trades"] += 1
@@ -535,12 +534,13 @@ class UserSession:
         self.session_stats["total_pnl"] += pnl
         pass
 
-    async def _handle_risk_event(self, event: RiskLimitExceededEvent):
+    async def _handle_risk_event(self, event: BaseEvent):
         """Обработчик событий риска"""
-        if event.user_id != self.user_id:
+        if not isinstance(event, RiskLimitExceededEvent) or event.user_id != self.user_id:
             return
+
         self.session_stats["risk_violations"] += 1
-        log_error(self.user_id,f"Превышен лимит риска: {event.limit_type}", module_name=__name__)
+        log_error(self.user_id, f"Превышен лимит риска: {event.limit_type}", module_name=__name__)
 
         # Экстренная остановка при критических нарушениях
         if event.action_required == "stop_trading":
