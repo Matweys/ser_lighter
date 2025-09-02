@@ -12,7 +12,7 @@ from core.logger import log_info, log_error, log_warning
 from core.events import (
     EventType, StrategyStartEvent, StrategyStopEvent,
     SignalEvent, OrderFilledEvent, RiskLimitExceededEvent, UserSettingsChangedEvent,
-    EventBus
+    EventBus, BaseEvent
 )
 from cache.redis_manager import redis_manager, ConfigType
 from analysis.meta_strategist import MetaStrategist
