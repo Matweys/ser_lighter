@@ -528,6 +528,11 @@ def log_event(
 # УТИЛИТЫ ЛОГИРОВАНИЯ
 # =============================================================================
 
+def get_logger(name: str) -> logging.Logger:
+    """Получение логгера по имени из глобального менеджера"""
+    return trading_logger.get_logger(name)
+
+
 def set_log_level(logger_name: str, level: str):
     """Установка уровня логирования для конкретного логгера"""
     logger = trading_logger.get_logger(logger_name)
