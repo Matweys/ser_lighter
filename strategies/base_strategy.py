@@ -12,9 +12,9 @@ from datetime import datetime, timedelta
 from core.logger import log_info, log_error, log_warning
 from core.enums import StrategyType, PositionSide
 from core.events import (
-    event_bus, EventType, BaseEvent, SignalEvent, PriceUpdateEvent,
+    EventType, BaseEvent, SignalEvent, PriceUpdateEvent,
     OrderFilledEvent, PositionUpdateEvent, PositionClosedEvent,
-    UserSettingsChangedEvent
+    UserSettingsChangedEvent, EventBus
 )
 from cache.redis_manager import redis_manager
 from api.bybit_api import BybitAPI
