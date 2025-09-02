@@ -18,7 +18,7 @@ from core.events import (
     EventType, NewCandleEvent, PriceUpdateEvent, OrderUpdateEvent,
     OrderFilledEvent, PositionUpdateEvent, PositionClosedEvent, EventBus
 )
-from cache.redis_manager import redis_manager
+from cache.redis_manager import redis_manager, ConfigType
 from database.db_trades import db_manager
 from core.settings_config import system_config
 
@@ -379,11 +379,11 @@ class DataFeedHandler:
                 log_info(self.user_id, "API ключи не найдены", module_name=__name__)
         except Exception as e:
             log_error(self.user_id, f"Ошибка загрузки API ключей: {e}", module_name=__name__)
-            
+
     async def _subscribe_to_watchlist(self):
         """Подписка на символы из watchlist пользователя"""
         try:
-            global_config = await redis_manager.get_json(f"user:{self.user_id}:global_config")
+            global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
             if not global_config:
                 return
                 

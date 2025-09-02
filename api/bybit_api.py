@@ -104,40 +104,35 @@ class BybitAPI:
             
         self.last_request_time = time.time()
     
-    async def _make_request(
-        self, 
-        method: str, 
-        endpoint: str, 
-        params: Dict[str, Any] = None,
-        private: bool = True
-    ) -> Optional[Dict[str, Any]]:
+    async def _make_request(self, method: str, endpoint: str, params: Dict[str, Any] = None, private: bool = True) -> Optional[Dict[str, Any]]:
         """Выполнение HTTP запроса к API с retry механизмом"""
         if params is None:
             params = {}
-            
+
         await self._ensure_session()
-        
+
         for attempt in range(self.max_retries + 1):
             try:
                 await self._rate_limit()
-                
+
                 timestamp = str(int(time.time() * 1000))
                 url = f"{self.base_url}{endpoint}"
-                
                 headers = {}
-                
+
                 if private:
                     # Приватные запросы требуют подписи
                     if method == "GET":
-                        query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+                        # ВАЖНО: Сортируем параметры по алфавиту для корректной подписи
+                        sorted_params = sorted(params.items())
+                        query_string = "&".join([f"{k}={v}" for k, v in sorted_params])
                         if query_string:
                             url += f"?{query_string}"
                         signature_params = query_string
-                    else:
+                    else:  # POST
                         signature_params = json.dumps(params) if params else ""
-                    
+
                     signature = self._generate_signature(signature_params, timestamp)
-                    
+
                     headers.update({
                         "X-BAPI-API-KEY": self.api_key,
                         "X-BAPI-SIGN": signature,

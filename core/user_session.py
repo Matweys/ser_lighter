@@ -449,7 +449,7 @@ class UserSession:
             self.event_bus.subscribe_user(self.user_id, self._handle_signal_event)
 
             # Подписка на торговые события
-            self.event_bus.subscribe_user(self.user_id, self._handle_order_filled_event)
+            self.event_bus.subscribe_user(self.user_id, self._handle_order_event)
 
             # Подписка на события риска
             self.event_bus.subscribe_user(self.user_id, self._handle_risk_event)

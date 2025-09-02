@@ -344,6 +344,16 @@ async def callback_statistics(callback: CallbackQuery, state: FSMContext):
         log_error(user_id, f"Ошибка получения статистики: {e}", module_name='callback')
         await callback.answer("❌ Ошибка загрузки статистики", show_alert=True)
 
+
+@router.callback_query(F.data == "show_status")
+async def callback_show_status(callback: CallbackQuery, state: FSMContext):
+    """Обработчик кнопки 'Статус'"""
+    # Этот обработчик вызывает уже существующую логику для команды /status
+    from .basic import cmd_status
+    await callback.answer()
+    await cmd_status(callback.message, state)
+
+
 # Подтверждение действий
 @router.callback_query(F.data.startswith("confirm_"))
 async def callback_confirm_action(callback: CallbackQuery, state: FSMContext):
