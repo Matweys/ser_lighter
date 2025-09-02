@@ -31,7 +31,8 @@ class UserStates(StatesGroup):
     RISK_SETTINGS = State()
     STRATEGY_SETTINGS = State()
     GENERAL_SETTINGS = State()
-    
+    WATCHLIST_MENU = State()
+
     # Состояния настройки риск-менеджмента
     SETTING_RISK_PER_TRADE = State()
     SETTING_MAX_DAILY_DRAWDOWN = State()
