@@ -17,10 +17,12 @@ from core.events import (
 from cache.redis_manager import redis_manager, ConfigType
 from analysis.meta_strategist import MetaStrategist
 from analysis.risk_manager import RiskManager
+from analysis.market_analyzer import MarketAnalyzer
 from api.bybit_api import BybitAPI
 from websocket.websocket_manager import GlobalWebSocketManager, DataFeedHandler
 from database.db_trades import db_manager
 from core.settings_config import system_config
+
 # Импорт стратегий
 from strategies.base_strategy import create_strategy, BaseStrategy
 from strategies.bidirectional_grid_strategy import BidirectionalGridStrategy

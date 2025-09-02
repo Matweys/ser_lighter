@@ -29,44 +29,25 @@ class KeyboardBuilder:
         return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 # Главные меню
-def get_main_menu_keyboard(is_trading_active: bool = False) -> InlineKeyboardMarkup:
+def get_main_menu_keyboard() -> InlineKeyboardMarkup:
     """Главное меню бота"""
-    if is_trading_active:
-        buttons = [
-            [
-                {"text": "🛑 Остановить торговлю", "callback_data": "stop_trading"},
-                {"text": "📊 Статистика", "callback_data": "statistics"}
-            ],
-            [
-                {"text": "💰 Баланс", "callback_data": "show_balance"},
-                {"text": "📈 Позиции", "callback_data": "show_positions"}
-            ],
-            [
-                {"text": "📋 Ордера", "callback_data": "show_orders"},
-                {"text": "📊 Статус", "callback_data": "show_status"}
-            ],
-            [
-                {"text": "⚙️ Настройки", "callback_data": "settings"},
-                {"text": "ℹ️ Помощь", "callback_data": "help"}
-            ]
+    buttons = [
+        [
+            {"text": "📊 Статистика", "callback_data": "statistics"},
+            {"text": "💰 Баланс", "callback_data": "show_balance"}
+        ],
+        [
+            {"text": "📈 Позиции", "callback_data": "show_positions"},
+            {"text": "📋 Ордера", "callback_data": "show_orders"}
+        ],
+        [
+            {"text": "📊 Статус", "callback_data": "show_status"},
+            {"text": "⚙️ Настройки", "callback_data": "settings"}
+        ],
+        [
+            {"text": "ℹ️ Помощь", "callback_data": "help"}
         ]
-    else:
-        # Меню для неактивной сессии (фокус на настройке)
-        trade_button = {"text": "🚀 Запустить торговлю", "callback_data": "start_trading"}
-        buttons = [
-            [
-                trade_button
-            ],
-            [
-                {"text": "⚙️ Настройки", "callback_data": "settings"},
-                {"text": "💰 Баланс", "callback_data": "show_balance"}
-            ],
-            [
-                {"text": "📈 Статистика", "callback_data": "statistics"},
-                {"text": "ℹ️ Помощь", "callback_data": "help"}
-            ]
-        ]
-
+    ]
     return KeyboardBuilder.build_keyboard(buttons)
 
 

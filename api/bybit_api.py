@@ -171,12 +171,13 @@ class BybitAPI:
                         # Некоторые ошибки не требуют повтора
                         if ret_code in [10001, 10003, 10004]:  # Auth errors
                             return None
-                        
-                    if attempt < self.max_retries:
-                        await asyncio.sleep(self.retry_delay * (attempt + 1))
-                        continue
-                    else:
-                        return None
+
+                        if attempt < self.max_retries:
+                            await asyncio.sleep(self.retry_delay * (attempt + 1))
+                            continue
+                        else:
+                            # Возвращаем пустой словарь вместо None, чтобы избежать AttributeError
+                            return {}
                         
             except asyncio.TimeoutError:
                 log_error(self.user_id, f"Таймаут запроса (попытка {attempt + 1})", module_name="bybit_api")

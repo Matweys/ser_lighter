@@ -112,7 +112,7 @@ async def callback_main_menu(callback: CallbackQuery, state: FSMContext):
         
         await callback.message.edit_text(
             text,
-            reply_markup=get_main_menu_keyboard(is_active),
+            reply_markup=get_main_menu_keyboard(),
             parse_mode="HTML"
         )
         
@@ -122,87 +122,6 @@ async def callback_main_menu(callback: CallbackQuery, state: FSMContext):
         log_error(user_id, f"Ошибка в главном меню: {e}", module_name='callback')
         await callback.answer("❌ Произошла ошибка", show_alert=True)
 
-# Управление торговлей
-@router.callback_query(F.data == "start_trading")
-async def callback_start_trading(callback: CallbackQuery, state: FSMContext):
-    """Запуск торговли"""
-    user_id = callback.from_user.id
-    
-    try:
-        # Проверяем доступ пользователя
-        user_profile = await db_manager.get_user(user_id)
-        if not user_profile or not user_profile.is_active:
-            await callback.answer("🚫 У вас нет доступа к торговле", show_alert=True)
-            return
-        
-        # Проверяем API ключи
-        api_keys = await db_manager.get_api_keys(user_id, "bybit")
-        if not api_keys:
-            await callback.answer(
-                "⚠️ Сначала настройте API ключи в разделе 'Настройки'",
-                show_alert=True
-            )
-            return
-        
-        # Проверяем существующую сессию
-        session_status = await redis_manager.get_user_session(user_id)
-        if session_status and session_status.get('running'):
-            await callback.answer("⚠️ Торговля уже запущена", show_alert=True)
-            return
-        
-        # Публикуем событие запуска сессии
-        if callback_handler.event_bus:
-            await callback_handler.event_bus.publish(
-                UserSessionStartRequestedEvent(user_id=user_id)
-            )
-        
-        await callback.message.edit_text(
-            "🚀 <b>Запуск торговли...</b>\n\n"
-            "⏳ Инициализация торговой сессии...\n"
-            "📊 Загрузка конфигураций...\n"
-            "🔄 Подключение к рынку...",
-            reply_markup=get_main_menu_keyboard(False),
-            parse_mode="HTML"
-        )
-        
-        log_info(user_id, "Запуск торговли", module_name='callback')
-        
-    except Exception as e:
-        log_error(user_id, f"Ошибка запуска торговли: {e}", module_name='callback')
-        await callback.answer("❌ Ошибка запуска торговли", show_alert=True)
-
-@router.callback_query(F.data == "stop_trading")
-async def callback_stop_trading(callback: CallbackQuery, state: FSMContext):
-    """Остановка торговли"""
-    user_id = callback.from_user.id
-    
-    try:
-        # Проверяем существующую сессию
-        session_status = await redis_manager.get_user_session(user_id)
-        if not session_status or not session_status.get('running'):
-            await callback.answer("⚠️ Торговля не запущена", show_alert=True)
-            return
-        
-        # Публикуем событие остановки сессии
-        if callback_handler.event_bus:
-            await callback_handler.event_bus.publish(
-                UserSessionStopRequestedEvent(user_id=user_id)
-            )
-        
-        await callback.message.edit_text(
-            "🛑 <b>Остановка торговли...</b>\n\n"
-            "⏳ Закрытие активных позиций...\n"
-            "📊 Сохранение статистики...\n"
-            "🔄 Завершение сессии...",
-            reply_markup=get_main_menu_keyboard(True),
-            parse_mode="HTML"
-        )
-        
-        log_info(user_id, "Остановка торговли", module_name='callback')
-        
-    except Exception as e:
-        log_error(user_id, f"Ошибка остановки торговли: {e}", module_name='callback')
-        await callback.answer("❌ Ошибка остановки торговли", show_alert=True)
 
 # Настройки
 @router.callback_query(F.data == "settings")
@@ -418,7 +337,7 @@ async def callback_statistics(callback: CallbackQuery, state: FSMContext):
         is_active_session = session_status.get('running', False) if session_status else False
         await callback.message.edit_text(
             text,
-            reply_markup=get_main_menu_keyboard(is_active_session),
+            reply_markup=get_main_menu_keyboard(),
             parse_mode="HTML"
         )
     except Exception as e:
@@ -445,7 +364,7 @@ async def callback_confirm_action(callback: CallbackQuery, state: FSMContext):
                 "🚀 Система начала мониторинг рынка\n"
                 "📊 Стратегии активированы\n"
                 "💼 Торговая сессия инициализирована",
-                reply_markup=get_main_menu_keyboard(True),
+                reply_markup=get_main_menu_keyboard(),
                 parse_mode="HTML"
             )
             
@@ -461,7 +380,7 @@ async def callback_confirm_action(callback: CallbackQuery, state: FSMContext):
                 "📊 Все стратегии деактивированы\n"
                 "💼 Торговая сессия завершена\n"
                 "📈 Статистика сохранена",
-                reply_markup=get_main_menu_keyboard(False),
+                reply_markup=get_main_menu_keyboard(),
                 parse_mode="HTML"
             )
         

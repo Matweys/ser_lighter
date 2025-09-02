@@ -129,7 +129,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
         await message.answer(
             welcome_text,
-            reply_markup=get_main_menu_keyboard(is_active), # Используем основную клавиатуру
+            reply_markup=get_main_menu_keyboard(),
             parse_mode="HTML"
         )
 
@@ -694,7 +694,7 @@ async def handle_unknown_message(message: Message, state: FSMContext):
             "❓ <b>Неизвестная команда</b>\n\n"
             "Используйте /help для получения списка доступных команд\n"
             "или выберите действие в главном меню.",
-            reply_markup=get_main_menu_keyboard(False),
+            reply_markup=get_main_menu_keyboard(),
             parse_mode="HTML"
         )
 
