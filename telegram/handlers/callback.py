@@ -22,8 +22,7 @@ from ..keyboards.inline import (
     get_risk_settings_keyboard,
     get_strategy_settings_keyboard,
     get_back_keyboard,
-    get_balance_keyboard,
-    get_watchlist_keyboard
+    get_balance_keyboard
 )
 from .states import UserStates, state_validator
 from cache.redis_manager import redis_manager
