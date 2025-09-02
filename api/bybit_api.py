@@ -126,69 +126,71 @@ class BybitAPI:
                 url = f"{self.base_url}{endpoint}"
                 headers = {}
 
-                # --- 1. Логика аутентификации (только для приватных запросов) ---
-                if private:
-                    if method == "GET":
-                        sorted_params = sorted(params.items())
-                        signature_params = urlencode(sorted_params)
-                    else:  # POST
+                # --- Логика сгруппирована по типу метода ---
+                if method == "GET":
+                    # Для GET запросов параметры сортируются для подписи, если запрос приватный
+                    request_params = params
+                    if private:
+                        sorted_params_list = sorted(params.items())
+                        signature_params = urlencode(sorted_params_list)
+                        signature = self._generate_signature(signature_params, timestamp)
+                        headers.update({
+                            "X-BAPI-API-KEY": self.api_key, "X-BAPI-SIGN": signature,
+                            "X-BAPI-SIGN-TYPE": "2", "X-BAPI-TIMESTAMP": timestamp,
+                            "X-BAPI-RECV-WINDOW": "5000"
+                        })
+                        # Используем отсортированный список кортежей для запроса, чтобы гарантировать порядок
+                        request_params = sorted_params_list
+
+                    async with self.session.get(url, headers=headers, params=request_params) as response:
+                        response_result = await response.json(content_type=None) if response.content else None
+
+                elif method == "POST":
+                    # Для POST запросов тело JSON используется для подписи
+                    if private:
                         signature_params = json.dumps(params) if params else ""
-
-                    signature = self._generate_signature(signature_params, timestamp)
-                    headers.update({
-                        "X-BAPI-API-KEY": self.api_key,
-                        "X-BAPI-SIGN": signature,
-                        "X-BAPI-SIGN-TYPE": "2",
-                        "X-BAPI-TIMESTAMP": timestamp,
-                        "X-BAPI-RECV-WINDOW": "5000"
-                    })
-
-                if method == "POST":
+                        signature = self._generate_signature(signature_params, timestamp)
+                        headers.update({
+                            "X-BAPI-API-KEY": self.api_key, "X-BAPI-SIGN": signature,
+                            "X-BAPI-SIGN-TYPE": "2", "X-BAPI-TIMESTAMP": timestamp,
+                            "X-BAPI-RECV-WINDOW": "5000"
+                        })
                     headers["Content-Type"] = "application/json"
 
-                    # --- 2. Логика выполнения запроса (для всех типов) ---
-                if method == "GET":
-                    async with self.session.get(url, headers=headers, params=params) as response:
-                        response_result = await response.json(content_type=None) if response.content else None
-                elif method == "POST":
                     async with self.session.post(url, headers=headers, json=params) as response:
                         response_result = await response.json(content_type=None) if response.content else None
                 else:
                     log_error(self.user_id, f"Неподдерживаемый HTTP метод: {method}", module_name="bybit_api")
                     return None
 
-                    # --- 3. Логика обработки ответа ---
+                # --- Общая логика обработки ответа ---
                 if response_result and response_result.get("retCode") == 0:
                     return response_result.get("result", {})
                 else:
                     ret_code = response_result.get("retCode", -1) if response_result else -1
                     error_msg = response_result.get("retMsg",
                                                     "получен пустой ответ от сервера") if response_result else "получен пустой ответ от сервера"
-
                     log_error(self.user_id, f"API ошибка: {error_msg} (код: {ret_code})", module_name="bybit_api")
-
-                    if ret_code in [10001, 10003, 10004]:  # Auth errors
+                    if ret_code in [10001, 10003, 10004]:
                         return None
-
                     if attempt < self.max_retries:
                         await asyncio.sleep(self.retry_delay * (attempt + 1))
                         continue
                     else:
-                        return {}  # Возвращаем пустой словарь, чтобы избежать AttributeError
+                        return {}
 
             except asyncio.TimeoutError:
                 log_error(self.user_id, f"Таймаут запроса (попытка {attempt + 1})", module_name="bybit_api")
                 if attempt < self.max_retries:
                     await asyncio.sleep(self.retry_delay * (attempt + 1))
                 else:
-                    return None  # Возвращаем None при таймауте
+                    return None
             except Exception as e:
                 log_error(self.user_id, f"Ошибка запроса (попытка {attempt + 1}): {e}", module_name="bybit_api")
                 if attempt < self.max_retries:
                     await asyncio.sleep(self.retry_delay * (attempt + 1))
                 else:
-                    return None  # Возвращаем None при других исключениях
-
+                    return None
         return None
     
     # =============================================================================
