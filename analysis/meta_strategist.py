@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from api.bybit_api import BybitAPI
 from core.logger import log_info, log_error
-from core.events import event_bus, EventType, NewCandleEvent, SignalEvent, UserSettingsChangedEvent
+from core.events import EventType, NewCandleEvent, SignalEvent, UserSettingsChangedEvent, EventBus
 from cache.redis_manager import redis_manager
 
 # Настройка точности для Decimal
@@ -296,9 +296,10 @@ class MetaStrategist:
     Анализирует рынок и принимает решения о запуске стратегий на основе событий
     """
     
-    def __init__(self, user_id: int, analyzer: 'MarketAnalyzer'):
+    def __init__(self, user_id: int, analyzer: 'MarketAnalyzer', event_bus: EventBus):
         self.user_id = user_id
         self.analyzer = analyzer
+        self.event_bus = event_bus
         self.running = False
         
         # Кэш для предотвращения спама анализа
@@ -320,8 +321,8 @@ class MetaStrategist:
             await self._load_user_config()
             
             # Подписка на события
-            event_bus.subscribe(EventType.NEW_CANDLE, self._handle_new_candle)
-            event_bus.subscribe(EventType.USER_SETTINGS_CHANGED, self._handle_settings_changed)
+            self.event_bus.subscribe(EventType.NEW_CANDLE, self._handle_new_candle)
+            self.event_bus.subscribe(EventType.USER_SETTINGS_CHANGED, self._handle_settings_changed)
             
             self.running = True
             log_info(self.user_id, "MetaStrategist запущен", module_name=__name__)
@@ -376,7 +377,7 @@ class MetaStrategist:
                     analysis_data=analysis
                 )
                 
-                await event_bus.publish(signal_event)
+                await self.event_bus.publish(signal_event)
                 log_info(self.user_id,f"Сигнал отправлен: {strategy_decision['strategy_type']} для {event.symbol} "
                     f"(сила: {analysis.get('signal_strength', 50)})",module_name=__name__)
         except Exception as e:

@@ -348,10 +348,11 @@ class UserSession:
             from core.meta_strategist import MarketAnalyzer
             market_analyzer = MarketAnalyzer(self.user_id, self.api)
 
-            # Передаем анализатор в MetaStrategist как зависимость
+            # Передаем анализатор и шину событий в MetaStrategist как зависимости
             self.meta_strategist = MetaStrategist(
                 user_id=self.user_id,
-                analyzer=market_analyzer
+                analyzer=market_analyzer,
+                event_bus=self.event_bus
             )
 
             log_info(self.user_id, "Компоненты сессии инициализированы", module_name=__name__)
