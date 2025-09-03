@@ -110,7 +110,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
         # 4. Получаем актуальные данные для приветственного сообщения
         session_data = await redis_manager.get_user_session(user_id)
-        is_active = session_data and session_data.get('status') == 'active'
+        is_active = session_data.get('autotrade_enabled', False) if session_data else False
 
         user_db_data = await db_manager.get_user(user_id)
         total_profit = user_db_data.total_profit if user_db_data else 0
@@ -523,7 +523,7 @@ async def cmd_autotrade_start(message: Message, state: FSMContext):
         return
 
     session_status = await redis_manager.get_user_session(user_id)
-    if session_status and session_status.get('status') == 'active':
+    if session_status and session_status.get('autotrade_enabled', False):
         await message.answer("✅ Торговля уже запущена.")
         return
 

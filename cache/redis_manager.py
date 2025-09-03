@@ -118,11 +118,8 @@ class RedisManager:
             key = self._get_key("user", user_id, "session")
             
             # Добавление метаданных
-            session_data.update({
-                "created_at": datetime.now().isoformat(),
-                "last_activity": datetime.now().isoformat(),
-                "status": "active"
-            })
+            session_data.setdefault("created_at", datetime.now().isoformat())
+            session_data.setdefault("last_activity", datetime.now().isoformat())
             
             # Сохранение сессии
             serialized_data = {}

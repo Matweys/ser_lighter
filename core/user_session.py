@@ -120,9 +120,6 @@ class UserSession:
             # Запуск компонентов
             await self._start_components()
 
-            # Запуск стратегий (если включены)
-            await self._start_enabled_strategies()
-
             self.running = True
 
             # Сохранение состояния сессии в Redis
@@ -412,7 +409,7 @@ class UserSession:
         except Exception as e:
             log_error(self.user_id, f"Ошибка остановки компонентов: {e}", module_name=__name__)
 
-    async def _start_enabled_strategies(self):
+    async def start_enabled_strategies(self):
         """Запуск включенных стратегий"""
         try:
             global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)

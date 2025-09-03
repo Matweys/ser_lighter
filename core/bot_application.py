@@ -467,18 +467,36 @@ class BotApplication:
             await self.stop_user_session(event.user_id, f"Risk limit exceeded: {event.limit_type}")
 
     async def _handle_session_start_request(self, event: UserSessionStartRequestedEvent):
-        """Обработчик запроса на запуск сессии от пользователя"""
-        log_info(event.user_id, "Получен запрос на запуск сессии...", module_name=__name__)
-        if event.user_id not in self.active_sessions:
-            await self.create_user_session(event.user_id)
-        else:
-            log_warning(event.user_id, "Попытка запустить уже активную сессию.", module_name=__name__)
+        """Обработчик запроса на запуск авто-торговли."""
+        user_id = event.user_id
+        log_info(user_id, "Получен запрос на запуск авто-торговли...", module_name=__name__)
+
+        # Сессия должна уже существовать (создается при /start или восстанавливается)
+        session = self.active_sessions.get(user_id)
+        if not session:
+            # Если по какой-то причине сессии нет, создаем ее
+            log_warning(user_id, "Сессия не найдена, создается новая для старта торговли.", module_name=__name__)
+            if not await self.create_user_session(user_id):
+                log_error(user_id, "Не удалось создать сессию для старта.", module_name=__name__)
+                return
+
+        # Обновляем статус напрямую в Redis, чтобы команды его увидели
+        session_data = await redis_manager.get_user_session(user_id) or {}
+        session_data['autotrade_enabled'] = True
+        await redis_manager.create_user_session(user_id, session_data)
+        log_info(user_id, "Статус авто-торговли установлен в 'active' в Redis.", module_name=__name__)
 
     async def _handle_session_stop_request(self, event: UserSessionStopRequestedEvent):
-        """Обработчик запроса на остановку сессии от пользователя"""
-        log_info(event.user_id, f"Получен запрос на остановку сессии (причина: {event.reason})...",
-                 module_name=__name__)
-        if event.user_id in self.active_sessions:
-            await self.stop_user_session(event.user_id, event.reason)
-        else:
-            log_warning(event.user_id, "Попытка остановить уже неактивную сессию.", module_name=__name__)
+        """Обработчик запроса на остановку авто-торговли."""
+        user_id = event.user_id
+        log_info(user_id, f"Получен запрос на остановку авто-торговли (причина: {event.reason})...", module_name=__name__)
+
+        session = self.active_sessions.get(user_id)
+        if session:
+            await session.stop_all_strategies(event.reason) # Останавливаем активные стратегии
+
+        # Обновляем статус напрямую в Redis
+        session_data = await redis_manager.get_user_session(user_id) or {}
+        session_data['autotrade_enabled'] = False
+        await redis_manager.create_user_session(user_id, session_data)
+        log_info(user_id, "Статус авто-торговли установлен в 'inactive' в Redis.", module_name=__name__)
