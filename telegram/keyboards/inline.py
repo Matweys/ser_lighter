@@ -197,6 +197,9 @@ def get_risk_settings_keyboard() -> InlineKeyboardMarkup:
             {"text": "💰 Максимальная сумма убытка", "callback_data": "set_max_daily_loss_usdt"}
         ],
         [
+            {"text": "⚖️ Кредитное плечо", "callback_data": "set_leverage"}
+        ],
+        [
             {"text": "⚙️ Назад в Настройки", "callback_data": "settings"}
         ]
     ]

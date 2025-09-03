@@ -34,6 +34,7 @@ class UserStates(StatesGroup):
 
     # Состояния настройки риск-менеджмента
     SETTING_MAX_DAILY_LOSS_USDT = State()
+    SETTING_LEVERAGE = State()
     
     # Состояния настройки стратегий
     CONFIGURING_STRATEGY = State()

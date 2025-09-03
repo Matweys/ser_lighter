@@ -28,7 +28,7 @@ class DefaultConfigs:
         """
         return {
             # Основные настройки
-            "leverage": 1,
+            "leverage": 2, # Значение по умолчанию для плеча
             "order_amount": 10.0,  # USDT на одну сделку
             "max_simultaneous_trades": 3,
             

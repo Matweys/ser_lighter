@@ -74,6 +74,18 @@ class CallbackHandler:
 
 callback_handler = CallbackHandler(None)  # EventBus будет инициализирован позже
 
+
+def convert_decimals_to_floats(data: Any) -> Any:
+    """Рекурсивно конвертирует Decimal в float для JSON-сериализации."""
+    if isinstance(data, Decimal):
+        return float(data)
+    if isinstance(data, dict):
+        return {k: convert_decimals_to_floats(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [convert_decimals_to_floats(i) for i in data]
+    return data
+
+
 def set_event_bus(event_bus: EventBus):
     """Установка EventBus для callback handler"""
     callback_handler.event_bus = event_bus
@@ -171,14 +183,16 @@ async def callback_risk_settings(callback: CallbackQuery, state: FSMContext):
         if not user_config:
             user_config = DefaultConfigs.get_global_config()
 
-        max_loss_usdt = user_config.get('max_daily_loss_usdt', 10.0)
+        max_loss_usdt = user_config.get('max_daily_loss_usdt', 100.0)
+        leverage = user_config.get('leverage', 10)
 
         text = (
             f"🛡️ <b>Настройки риск-менеджмента</b>\n\n"
             f"💰 <b>Максимальная сумма убытка:</b> {format_currency(max_loss_usdt)}\n"
-            f"Это максимальная сумма, которую вы готовы потерять за торговые сутки (00:00 - 23:59 МСК). "
-            f"При достижении этого лимита бот прекратит открывать новые сделки до следующего дня.\n\n"
-            f"Нажмите на кнопку ниже, чтобы изменить значение."
+            f"Максимальный убыток за торговые сутки, после которого бот остановится.\n\n"
+            f"⚖️ <b>Кредитное плечо:</b> {leverage}x\n"
+            f"Глобальное плечо, которое будет применяться ко всем новым сделкам.\n\n"
+            f"Выберите параметр для изменения:"
         )
 
         await callback.message.edit_text(
@@ -186,6 +200,7 @@ async def callback_risk_settings(callback: CallbackQuery, state: FSMContext):
             reply_markup=get_risk_settings_keyboard(),
             parse_mode="HTML"
         )
+        await callback.answer()
 
     except Exception as e:
         log_error(user_id, f"Ошибка в настройках риска: {e}", module_name='callback')
@@ -226,6 +241,62 @@ async def callback_strategy_settings(callback: CallbackQuery, state: FSMContext)
     except Exception as e:
         log_error(user_id, f"Ошибка в настройках стратегий: {e}", module_name='callback')
         await callback.answer("❌ Ошибка загрузки настроек", show_alert=True)
+
+
+# -- ОБРАБОТЧИК УСТАНОВКИ ПЛЕЧА --
+@router.callback_query(F.data == "set_leverage")
+async def callback_set_leverage(callback: CallbackQuery, state: FSMContext):
+    """Запрашивает у пользователя новое значение для кредитного плеча."""
+    await state.set_state(UserStates.SETTING_LEVERAGE)
+    await state.update_data(menu_message_id=callback.message.message_id)
+    await callback.message.edit_text(
+        "✏️ Введите новое значение кредитного плеча (целое число, например, `10`):",
+        parse_mode="HTML",
+        reply_markup=get_back_keyboard("risk_settings")
+    )
+    await callback.answer()
+
+
+@router.message(UserStates.SETTING_LEVERAGE)
+async def process_leverage(message: Message, state: FSMContext):
+    """Обрабатывает и сохраняет новое значение кредитного плеча."""
+    user_id = message.from_user.id
+    try:
+        # Валидация: значение должно быть целым числом от 1 до 100.
+        value = int(message.text.strip())
+        if not (1 <= value <= 100):
+            await message.answer("❌ Плечо должно быть в диапазоне от 1 до 100. Попробуйте еще раз.")
+            return
+
+        current_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+        if not current_config:
+            current_config = DefaultConfigs.get_global_config()
+
+        current_config["leverage"] = value
+        await redis_manager.save_config(user_id, ConfigType.GLOBAL, current_config)
+        log_info(user_id, f"Обновлен параметр риска: leverage = {value}", "callback")
+
+        await message.delete()
+
+        state_data = await state.get_data()
+        menu_message_id = state_data.get("menu_message_id")
+        await state.clear()
+
+        # Обновляем и показываем меню настроек риска
+        # Создаем "mock" CallbackQuery, чтобы переиспользовать существующий обработчик
+        mock_callback = CallbackQuery(id="mock_update", from_user=message.from_user, chat_instance="", message=message)
+        # Устанавливаем правильный message_id для редактирования
+        mock_callback.message.message_id = menu_message_id
+
+        await callback_risk_settings(mock_callback, state)
+
+    except (ValueError, TypeError):
+        await message.answer("❌ Некорректный формат. Введите целое число (например, `10`).")
+    except Exception as e:
+        log_error(user_id, f"Ошибка сохранения настройки leverage: {e}", "callback")
+        await message.answer("❌ Произошла ошибка при сохранении настройки.")
+# -- КОНЕЦ ОБРАБОТЧИКА УСТАНОВКИ ПЛЕЧА --
+
 
 # Выбор стратегии для настройки
 @router.callback_query(F.data.startswith("configure_strategy_"))
@@ -628,14 +699,16 @@ async def callback_manual_strategy_selected(callback: CallbackQuery, state: FSMC
     strategy_type = callback.data.replace("strategy_", "")
 
     try:
-        # Получаем конфиг по умолчанию для выбранной стратегии
         config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
-        default_config = await redis_manager.get_config(0, config_enum)  # Загружаем из шаблона (user_id=0)
+        default_config = await redis_manager.get_config(0, config_enum)
 
         if not default_config:
             default_config = DefaultConfigs.get_all_default_configs()["strategy_configs"][strategy_type]
 
-        await state.update_data(manual_strategy_type=strategy_type, manual_config=default_config)
+        # Конвертируем Decimal в float перед сохранением в состояние FSM
+        serializable_config = convert_decimals_to_floats(default_config)
+
+        await state.update_data(manual_strategy_type=strategy_type, manual_config=serializable_config)
         await state.set_state(UserStates.MANUAL_STRATEGY_CONFIGURE)
 
         strategy_info = callback_handler.strategy_descriptions.get(strategy_type, {})
@@ -648,7 +721,7 @@ async def callback_manual_strategy_selected(callback: CallbackQuery, state: FSMC
         await callback.message.edit_text(
             text,
             parse_mode="HTML",
-            reply_markup=get_strategy_dynamic_config_keyboard(strategy_type, default_config)
+            reply_markup=get_strategy_dynamic_config_keyboard(strategy_type, serializable_config)
         )
     except Exception as e:
         log_error(user_id, f"Ошибка при выборе стратегии для ручного запуска: {e}", module_name='callback')
@@ -843,12 +916,14 @@ async def callback_api_settings(callback: CallbackQuery, state: FSMContext):
 async def callback_set_max_daily_loss(callback: CallbackQuery, state: FSMContext):
     """Запрашивает у пользователя новое значение для макс. суточного убытка."""
     await state.set_state(UserStates.SETTING_MAX_DAILY_LOSS_USDT)
-    await state.update_data(message_to_delete=callback.message.message_id)
+    # Сохраняем ID сообщения с меню, чтобы потом его обновить
+    await state.update_data(menu_message_id=callback.message.message_id)
     await callback.message.edit_text(
         "✏️ Введите новую максимальную сумму суточного убытка в USDT (например, `150.50`):",
         parse_mode="HTML",
         reply_markup=get_back_keyboard("risk_settings")
     )
+    await callback.answer()
 
 
 @router.message(UserStates.SETTING_MAX_DAILY_LOSS_USDT)
@@ -856,13 +931,11 @@ async def process_max_daily_loss_usdt(message: Message, state: FSMContext):
     """Обрабатывает и сохраняет новое значение макс. суточного убытка."""
     user_id = message.from_user.id
     try:
-        # Валидация: значение должно быть положительным числом.
         value = float(message.text.strip().replace(',', '.'))
         if value <= 0:
             await message.answer("❌ Значение должно быть больше нуля. Попробуйте еще раз.")
             return
 
-        # 1. Сохраняем новое значение
         current_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
         if not current_config:
             current_config = DefaultConfigs.get_global_config()
@@ -871,28 +944,26 @@ async def process_max_daily_loss_usdt(message: Message, state: FSMContext):
         await redis_manager.save_config(user_id, ConfigType.GLOBAL, current_config)
         log_info(user_id, f"Обновлен параметр риска: max_daily_loss_usdt = {value}", "callback")
 
-        # 2. Удаляем сообщение пользователя
+        # Удаляем сообщение пользователя со значением
         await message.delete()
 
-        # 3. Получаем ID исходного сообщения с меню для его обновления
         state_data = await state.get_data()
-        message_id_to_edit = state_data.get("message_to_delete")
-
+        menu_message_id = state_data.get("menu_message_id")
         await state.clear()
 
-        # 4. Генерируем новый текст для меню с уже обновленным значением
+        # Генерируем новый текст с подтверждением
         new_text = (
             f"🛡️ <b>Настройки риск-менеджмента</b>\n\n"
             f"✅ <b>Значение обновлено!</b>\n"
             f"💰 <b>Максимальная сумма убытка:</b> {format_currency(current_config['max_daily_loss_usdt'])}\n\n"
-            f"Это максимальная сумма, которую вы готовы потерять за торговые сутки (00:00 - 23:59 МСК). "
+            f"Это максимальная сумма, которую вы готовы потерять за торговые сутки (00:00 - 23:59 МСК)."
         )
 
-        # 5. Редактируем исходное сообщение, показывая обновленное меню
-        if message_id_to_edit:
+        # Редактируем исходное сообщение с меню
+        if menu_message_id:
             await bot_manager.bot.edit_message_text(
                 chat_id=user_id,
-                message_id=message_id_to_edit,
+                message_id=menu_message_id,
                 text=new_text,
                 reply_markup=get_risk_settings_keyboard(),
                 parse_mode="HTML"
