@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 from typing import Dict, Any, Optional
 from decimal import Decimal
 import json
-
+from .basic import cmd_positions, cmd_orders, cmd_status
 from ..bot import bot_manager
 from database.db_trades import db_manager
 from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent, UserSettingsChangedEvent, SignalEvent
@@ -348,10 +348,30 @@ async def callback_statistics(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "show_status")
 async def callback_show_status(callback: CallbackQuery, state: FSMContext):
     """Обработчик кнопки 'Статус'"""
-    # Этот обработчик вызывает уже существующую логику для команды /status
-    from .basic import cmd_status
     await callback.answer()
     await cmd_status(callback.message, state)
+
+
+@router.callback_query(F.data == "show_positions")
+async def callback_show_positions(callback: CallbackQuery, state: FSMContext):
+    """Обработчик кнопки 'Позиции', вызывает логику команды /positions"""
+    try:
+        await callback.answer(text="Запрашиваю открытые позиции...")
+        await cmd_positions(callback.message, state)
+    except Exception as e:
+        log_error(callback.from_user.id, f"Ошибка при вызове /positions из callback: {e}", module_name='callback')
+        await callback.answer("Не удалось загрузить позиции.", show_alert=True)
+
+
+@router.callback_query(F.data == "show_orders")
+async def callback_show_orders(callback: CallbackQuery, state: FSMContext):
+    """Обработчик кнопки 'Ордера', вызывает логику команды /orders"""
+    try:
+        await callback.answer(text="Запрашиваю открытые ордера...")
+        await cmd_orders(callback.message, state)
+    except Exception as e:
+        log_error(callback.from_user.id, f"Ошибка при вызове /orders из callback: {e}", module_name='callback')
+        await callback.answer("Не удалось загрузить ордера.", show_alert=True)
 
 
 # Подтверждение действий

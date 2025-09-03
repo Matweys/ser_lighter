@@ -200,16 +200,17 @@ async def cmd_status(message: Message, state: FSMContext):
 
         # Получаем статус сессии
         session_status = await redis_manager.get_user_session(user_id)
-        user_config = await redis_manager.get_user_config(user_id)
+        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
 
         if not session_status:
             status_text = (
                 f"🔴 <b>Статус: Неактивен</b>\n\n"
                 f"Торговая сессия не запущена.\n"
-                f"Используйте /trade_start для запуска торговли."
+                f"Используйте /autotrade_start для запуска торговли."
             )
         else:
-            is_active = session_status.get('is_active', False)
+            # ИСПРАВЛЕНО: Ключ 'is_active' заменен на 'running' в соответствии с user_session.py
+            is_active = session_status.get('running', False)
             active_strategies = session_status.get('active_strategies', [])
             last_activity = session_status.get('last_activity')
 
@@ -222,6 +223,7 @@ async def cmd_status(message: Message, state: FSMContext):
             )
 
             if active_strategies:
+                # обработка списка стратегий
                 status_text += f"🔄 <b>Стратегии:</b> {', '.join(active_strategies)}\n"
 
             if last_activity:
@@ -229,23 +231,23 @@ async def cmd_status(message: Message, state: FSMContext):
 
             # Добавляем информацию о настройках риска
             if user_config:
-                risk_config = user_config.get('risk_management', {})
                 status_text += (
                     f"\n🛡️ <b>Настройки риска:</b>\n"
-                    f"🎯 Риск на сделку: {risk_config.get('risk_per_trade', 2)}%\n"
-                    f"📉 Макс. просадка: {risk_config.get('max_daily_drawdown', 10)}%\n"
-                    f"📊 Макс. сделок: {risk_config.get('max_concurrent_trades', 3)}\n"
+                    f"🎯 Риск на сделку: {user_config.get('risk_per_trade_percent', 2)}%\n"
+                    f"📉 Макс. просадка: {user_config.get('global_daily_drawdown_percent', 10)}%\n"
+                    f"📊 Макс. сделок: {user_config.get('max_simultaneous_trades', 3)}\n"
                 )
 
         await message.answer(
             status_text,
-            reply_markup=get_quick_actions_keyboard(session_status.get('is_active', False) if session_status else False),
+            reply_markup=get_quick_actions_keyboard(session_status.get('running', False) if session_status else False),
             parse_mode="HTML"
         )
 
     except Exception as e:
         log_error(user_id, f"Ошибка в команде /status: {e}", module_name='basic_handlers')
         await message.answer("❌ Ошибка получения статуса")
+
 
 @router.message(Command("trade_start"))
 async def cmd_trade_start(message: Message, state: FSMContext):
@@ -392,6 +394,47 @@ async def cmd_emergency_stop(message: Message, state: FSMContext):
     except Exception as e:
         log_error(user_id, f"Ошибка в команде /emergency_stop: {e}", module_name='basic_handlers')
         await message.answer("❌ Ошибка экстренной остановки")
+
+
+# ДОБАВЛЕНА НОВАЯ ФУНКЦИЯ
+@router.message(Command("orders"))
+async def cmd_orders(message: Message, state: FSMContext):
+    """Обработчик команды /orders для отображения открытых ордеров"""
+    user_id = message.from_user.id
+    await basic_handler.log_command_usage(user_id, "orders")
+
+    keys = await db_manager.get_api_keys(user_id, "bybit")
+    if not keys:
+        await message.answer("⚠️ API ключи не настроены. Не могу получить список ордеров.")
+        return
+
+    try:
+        exchange_config = system_config.get_exchange_config("bybit")
+        use_sandbox = exchange_config.sandbox if exchange_config else False
+
+        async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], testnet=use_sandbox) as api:
+            orders = await api.get_open_orders()
+
+        if not orders:
+            await message.answer("✅ У вас нет открытых ордеров.")
+            return
+
+        orders_text = "📋 <b>Открытые ордера:</b>\n\n"
+        for order in orders:
+            side_emoji = "🟢" if order['side'] == 'Buy' else "🔴"
+            orders_text += (
+                f"<b>{order['symbol']}</b> | {side_emoji} {order['side']}\n"
+                f"  - <b>Тип:</b> {order['orderType']}\n"
+                f"  - <b>Кол-во:</b> {order['qty']}\n"
+                f"  - <b>Цена:</b> {format_currency(order['price'])}\n"
+                f"  - <b>Статус:</b> {order['orderStatus']}\n\n"
+            )
+
+        await message.answer(orders_text, parse_mode="HTML")
+    except Exception as e:
+        log_error(user_id, f"Ошибка получения ордеров: {e}", module_name='basic_handlers')
+        await message.answer("❌ Произошла ошибка при запросе открытых ордеров.")
+
 
 @router.message(Command("stats"))
 async def cmd_stats(message: Message, state: FSMContext):
