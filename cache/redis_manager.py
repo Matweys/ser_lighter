@@ -163,24 +163,35 @@ class RedisManager:
             # Десериализация данных
             result = {}
             for k, v in session_data.items():
-                if k in ["api_key", "secret_key", "status"]:
+                # 1. Пропускаем пустые значения
+                if v is None:
+                    result[k] = None
+                    continue
+
+                # 2. Обработка известных строковых полей
+                if k in ["api_key", "secret_key", "status", "start_time", "created_at", "last_activity"]:
                     result[k] = v
-                elif k in ["created_at", "last_activity"]:
-                    result[k] = v
-                elif k.startswith("config_") or k.startswith("settings_"):
+                # 3. Обработка булевых значений
+                elif v.lower() in ["true", "false"]:
+                    result[k] = v.lower() == "true"
+                # 4. Обработка JSON-объектов
+                elif k.startswith("config_") or k.startswith("settings_") or v.startswith(('[', '{')):
                     try:
                         result[k] = json.loads(v)
                     except json.JSONDecodeError:
-                        result[k] = v
+                        result[k] = v  # Оставляем как строку, если не JSON
+                # 5. Обработка числовых значений
                 else:
-                    # Попытка конвертации в Decimal для числовых значений
                     try:
-                        if "." in v or "e" in v.lower():
+                        # Сначала пытаемся преобразовать в int
+                        result[k] = int(v)
+                    except ValueError:
+                        try:
+                            # Если не получилось, пытаемся в Decimal
                             result[k] = Decimal(v)
-                        else:
-                            result[k] = int(v)
-                    except (ValueError, TypeError):
-                        result[k] = v
+                        except Exception:
+                            # Если и это не удалось, оставляем как есть (строку)
+                            result[k] = v
                         
             # Обновление времени последней активности
             await self.update_user_activity(user_id)

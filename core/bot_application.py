@@ -9,7 +9,7 @@ from typing import Dict, Optional, Set, Any, List
 from decimal import Decimal
 from datetime import datetime
 
-from core.logger import log_info, log_error
+from core.logger import log_info, log_error, log_warning
 from core.events import (
     EventType, BaseEvent, UserSessionStartedEvent, UserSessionStoppedEvent,
     UserSettingsChangedEvent, RiskLimitExceededEvent, EventBus,
