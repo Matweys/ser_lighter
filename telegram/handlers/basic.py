@@ -28,7 +28,7 @@ from ..keyboards.inline import (
     get_back_keyboard
 )
 from core.logger import log_info, log_error, log_warning
-from core.settings_config import system_config
+from core.settings_config import system_config, DEFAULT_SYMBOLS
 
 router = Router()
 

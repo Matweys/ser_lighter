@@ -862,29 +862,48 @@ async def process_max_daily_loss_usdt(message: Message, state: FSMContext):
             await message.answer("❌ Значение должно быть больше нуля. Попробуйте еще раз.")
             return
 
+        # 1. Сохраняем новое значение
         current_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
         if not current_config:
             current_config = DefaultConfigs.get_global_config()
 
         current_config["max_daily_loss_usdt"] = round(value, 2)
-
         await redis_manager.save_config(user_id, ConfigType.GLOBAL, current_config)
         log_info(user_id, f"Обновлен параметр риска: max_daily_loss_usdt = {value}", "callback")
 
-        state_data = await state.get_data()
-        await bot_manager.bot.delete_message(user_id, state_data.get("message_to_delete"))
+        # 2. Удаляем сообщение пользователя
         await message.delete()
+
+        # 3. Получаем ID исходного сообщения с меню для его обновления
+        state_data = await state.get_data()
+        message_id_to_edit = state_data.get("message_to_delete")
+
         await state.clear()
 
-        # Обновляем и показываем меню настроек риска
-        mock_callback = CallbackQuery(id="mock", from_user=message.from_user, chat_instance="", message=message)
-        await callback_risk_settings(mock_callback, state)
+        # 4. Генерируем новый текст для меню с уже обновленным значением
+        new_text = (
+            f"🛡️ <b>Настройки риск-менеджмента</b>\n\n"
+            f"✅ <b>Значение обновлено!</b>\n"
+            f"💰 <b>Максимальная сумма убытка:</b> {format_currency(current_config['max_daily_loss_usdt'])}\n\n"
+            f"Это максимальная сумма, которую вы готовы потерять за торговые сутки (00:00 - 23:59 МСК). "
+        )
+
+        # 5. Редактируем исходное сообщение, показывая обновленное меню
+        if message_id_to_edit:
+            await bot_manager.bot.edit_message_text(
+                chat_id=user_id,
+                message_id=message_id_to_edit,
+                text=new_text,
+                reply_markup=get_risk_settings_keyboard(),
+                parse_mode="HTML"
+            )
 
     except (ValueError, TypeError):
         await message.answer("❌ Некорректный формат. Введите число (например, `150.50`).")
     except Exception as e:
         log_error(user_id, f"Ошибка сохранения настройки max_daily_loss_usdt: {e}", "callback")
         await message.answer("❌ Произошла ошибка при сохранении настройки.")
+
 #--- КОНЕЦ ОБРАБОТЧИКОВ СУТОЧНОГО ЛИМИТА УБЫТКА ---
 
 
