@@ -208,9 +208,7 @@ class StateManager:
                     UserStates.MAIN_MENU.state
                 ],
                 UserStates.RISK_SETTINGS.state: [
-                    UserStates.SETTING_RISK_PER_TRADE.state,
-                    UserStates.SETTING_MAX_DAILY_DRAWDOWN.state,
-                    UserStates.SETTING_MAX_CONCURRENT_TRADES.state,
+                    UserStates.SETTING_MAX_DAILY_LOSS_USDT.state,
                     UserStates.SETTINGS_MENU.state
                 ],
                 UserStates.STRATEGY_SETTINGS.state: [
