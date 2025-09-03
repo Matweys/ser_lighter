@@ -33,18 +33,19 @@ class UserStates(StatesGroup):
     GENERAL_SETTINGS = State()
 
     # Состояния настройки риск-менеджмента
-    SETTING_RISK_PER_TRADE = State()
-    SETTING_MAX_DAILY_DRAWDOWN = State()
-    SETTING_MAX_CONCURRENT_TRADES = State()
-    SETTING_MIN_BALANCE = State()
-    SETTING_STOP_LOSS_PERCENT = State()
-    SETTING_TAKE_PROFIT_PERCENT = State()
+    SETTING_MAX_DAILY_LOSS_USDT = State()
     
     # Состояния настройки стратегий
     CONFIGURING_STRATEGY = State()
     SELECTING_STRATEGY_TYPE = State()
     ENABLING_STRATEGY = State()
     DISABLING_STRATEGY = State()
+
+    # --- СОСТОЯНИЯ ДЛЯ РУЧНОГО ЗАПУСКА ---
+    MANUAL_STRATEGY_SELECT_SYMBOL = State()
+    MANUAL_STRATEGY_SELECT_TYPE = State()
+    MANUAL_STRATEGY_CONFIGURE = State()
+    MANUAL_STRATEGY_AWAIT_VALUE = State()
     
     # Состояния для Bidirectional Grid Strategy
     BIDIRECTIONAL_GRID_LEVELS = State()

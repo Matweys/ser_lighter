@@ -160,34 +160,33 @@ async def callback_settings(callback: CallbackQuery, state: FSMContext):
         log_error(user_id, f"Ошибка в настройках: {e}", module_name='callback')
         await callback.answer("❌ Ошибка загрузки настроек", show_alert=True)
 
+
 @router.callback_query(F.data == "risk_settings")
 async def callback_risk_settings(callback: CallbackQuery, state: FSMContext):
     """Настройки риск-менеджмента"""
     user_id = callback.from_user.id
-    
+
     try:
         user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
-        risk_config = user_config.get('risk_management', {})
-        
+        if not user_config:
+            user_config = DefaultConfigs.get_global_config()
+
+        max_loss_usdt = user_config.get('max_daily_loss_usdt', 10.0)
+
         text = (
             f"🛡️ <b>Настройки риск-менеджмента</b>\n\n"
-            f"🎯 <b>Риск на сделку:</b> {format_percentage(risk_config.get('risk_per_trade', 2))}\n"
-            f"Процент от баланса, рискуемый в одной сделке\n\n"
-            f"📉 <b>Макс. дневная просадка:</b> {format_percentage(risk_config.get('max_daily_drawdown', 10))}\n"
-            f"Максимальная просадка за день\n\n"
-            f"📊 <b>Одновременных сделок:</b> {risk_config.get('max_concurrent_trades', 3)}\n"
-            f"Максимальное количество активных позиций\n\n"
-            f"💰 <b>Минимальный баланс:</b> {format_currency(risk_config.get('min_balance', 100))}\n"
-            f"Минимальный баланс для торговли\n\n"
-            f"Выберите параметр для изменения:"
+            f"💰 <b>Максимальная сумма убытка:</b> {format_currency(max_loss_usdt)}\n"
+            f"Это максимальная сумма, которую вы готовы потерять за торговые сутки (00:00 - 23:59 МСК). "
+            f"При достижении этого лимита бот прекратит открывать новые сделки до следующего дня.\n\n"
+            f"Нажмите на кнопку ниже, чтобы изменить значение."
         )
-        
+
         await callback.message.edit_text(
             text,
             reply_markup=get_risk_settings_keyboard(),
             parse_mode="HTML"
         )
-        
+
     except Exception as e:
         log_error(user_id, f"Ошибка в настройках риска: {e}", module_name='callback')
         await callback.answer("❌ Ошибка загрузки настроек", show_alert=True)
@@ -600,80 +599,213 @@ async def callback_confirm_reset_settings(callback: CallbackQuery, state: FSMCon
             reply_markup=get_back_keyboard("settings")
         )
 
-@router.callback_query(F.data.startswith("manual_symbol_"))
-async def callback_manual_select_symbol(callback: CallbackQuery, state: FSMContext):
-    """Обрабатывает выбор символа для ручного запуска."""
+
+# --- ОБРАБОТЧИКИ ДЛЯ РУЧНОГО ЗАПУСКА СТРАТЕГИИ команды /manual ---
+
+@router.callback_query(UserStates.MANUAL_STRATEGY_SELECT_SYMBOL, F.data.startswith("manual_symbol_"))
+async def callback_manual_symbol_selected(callback: CallbackQuery, state: FSMContext):
+    """Шаг 2: Обрабатывает выбор символа и предлагает выбрать стратегию."""
     user_id = callback.from_user.id
     symbol = callback.data.split("_")[-1]
 
     await state.update_data(manual_symbol=symbol)
+    await state.set_state(UserStates.MANUAL_STRATEGY_SELECT_TYPE)
 
     await callback.message.edit_text(
         f"🛠️ <b>Ручной запуск стратегии</b>\n\n"
         f"<b>Символ:</b> <code>{symbol}</code>\n"
         f"<b>Шаг 2:</b> Теперь выберите стратегию, которую хотите запустить.",
         parse_mode="HTML",
-        reply_markup=get_strategy_selection_keyboard() # Используем существующую клавиатуру
+        reply_markup=get_strategy_selection_keyboard()
     )
+    await callback.answer()
 
-@router.callback_query(F.data.startswith("strategy_"))
-async def callback_manual_select_strategy(callback: CallbackQuery, state: FSMContext):
-    """Обрабатывает выбор стратегии для ручного запуска."""
+
+@router.callback_query(UserStates.MANUAL_STRATEGY_SELECT_TYPE, F.data.startswith("strategy_"))
+async def callback_manual_strategy_selected(callback: CallbackQuery, state: FSMContext):
+    """Шаг 3: Обрабатывает выбор стратегии и показывает ее настройки."""
     user_id = callback.from_user.id
     strategy_type = callback.data.replace("strategy_", "")
 
-    user_data = await state.get_data()
-    symbol = user_data.get("manual_symbol")
+    try:
+        # Получаем конфиг по умолчанию для выбранной стратегии
+        config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
+        default_config = await redis_manager.get_config(0, config_enum)  # Загружаем из шаблона (user_id=0)
 
-    if not symbol:
-        await callback.answer("❌ Ошибка: символ не выбран. Начните заново с /manual.", show_alert=True)
+        if not default_config:
+            default_config = DefaultConfigs.get_all_default_configs()["strategy_configs"][strategy_type]
+
+        await state.update_data(manual_strategy_type=strategy_type, manual_config=default_config)
+        await state.set_state(UserStates.MANUAL_STRATEGY_CONFIGURE)
+
+        strategy_info = callback_handler.strategy_descriptions.get(strategy_type, {})
+        text = (
+            f"🛠️ <b>Ручной запуск стратегии</b>\n\n"
+            f"<b>Стратегия:</b> {strategy_info.get('name', strategy_type)}\n"
+            f"<b>Шаг 3:</b> Проверьте и при необходимости измените настройки. Затем нажмите 'Запустить'."
+        )
+
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=get_strategy_dynamic_config_keyboard(strategy_type, default_config)
+        )
+    except Exception as e:
+        log_error(user_id, f"Ошибка при выборе стратегии для ручного запуска: {e}", module_name='callback')
+        await callback.answer("❌ Ошибка загрузки настроек стратегии.", show_alert=True)
         await state.clear()
-        return
 
-    # Проверяем, запущена ли уже такая стратегия
-    session_status = await redis_manager.get_user_session(user_id)
-    if session_status:
-        strategy_id = f"{strategy_type}_{symbol}"
-        active_strategies = [s.get('id') for s in session_status.get('active_strategies', [])]
-        if strategy_id in active_strategies:
-            await callback.answer(f"⚠️ Стратегия {strategy_type} для {symbol} уже запущена.", show_alert=True)
+
+@router.callback_query(UserStates.MANUAL_STRATEGY_CONFIGURE, F.data.startswith("manual_cfg_"))
+async def callback_manual_edit_param(callback: CallbackQuery, state: FSMContext):
+    """Обрабатывает нажатие на кнопку параметра для его изменения."""
+    param_key = callback.data.replace("manual_cfg_", "")
+
+    await state.update_data(param_to_edit=param_key)
+    await state.set_state(UserStates.MANUAL_STRATEGY_AWAIT_VALUE)
+
+    await callback.message.edit_text(
+        f"✏️ Введите новое значение для <b>{param_key}</b>:",
+        parse_mode="HTML",
+        reply_markup=get_back_keyboard("manual_back_to_config")
+    )
+    await callback.answer()
+
+
+@router.message(UserStates.MANUAL_STRATEGY_AWAIT_VALUE)
+async def process_manual_param_value(message: Message, state: FSMContext):
+    """Получает новое значение параметра от пользователя, валидирует и сохраняет."""
+    user_id = message.from_user.id
+    try:
+        user_data = await state.get_data()
+        param_key = user_data.get("param_to_edit")
+        strategy_type = user_data.get("manual_strategy_type")
+        current_config = user_data.get("manual_config", {})
+
+        # Простая валидация (числовое значение)
+        new_value = float(message.text.strip().replace(',', '.'))
+        current_config[param_key] = new_value
+
+        await state.update_data(manual_config=current_config)
+        await state.set_state(UserStates.MANUAL_STRATEGY_CONFIGURE)
+
+        await message.delete()  # Удаляем сообщение пользователя с новым значением
+
+        # Возвращаемся к меню конфигурации с обновленными данными
+        strategy_info = callback_handler.strategy_descriptions.get(strategy_type, {})
+        text = (
+            f"🛠️ <b>Ручной запуск стратегии</b> (значение обновлено)\n\n"
+            f"<b>Стратегия:</b> {strategy_info.get('name', strategy_type)}\n"
+            f"<b>Шаг 3:</b> Проверьте и при необходимости измените настройки. Затем нажмите 'Запустить'."
+        )
+
+        # Находим и редактируем исходное сообщение с меню
+        # (в реальном проекте лучше сохранять message_id в state)
+        await bot_manager.bot.edit_message_text(
+            chat_id=user_id,
+            message_id=message.message_id - 1,  # Предполагаем, что это предыдущее сообщение
+            text=text,
+            parse_mode="HTML",
+            reply_markup=get_strategy_dynamic_config_keyboard(strategy_type, current_config)
+        )
+
+    except (ValueError, TypeError):
+        await message.answer("❌ Ошибка: введите корректное числовое значение.")
+    except Exception as e:
+        log_error(user_id, f"Ошибка при обновлении параметра стратегии: {e}", module_name='callback')
+        await message.answer("❌ Произошла ошибка при сохранении значения.")
+
+
+@router.callback_query(UserStates.MANUAL_STRATEGY_CONFIGURE, F.data == "manual_launch")
+async def callback_manual_launch(callback: CallbackQuery, state: FSMContext):
+    """Финальный шаг: запуск стратегии с настроенными параметрами."""
+    user_id = callback.from_user.id
+    try:
+        user_data = await state.get_data()
+        symbol = user_data.get("manual_symbol")
+        strategy_type = user_data.get("manual_strategy_type")
+        config = user_data.get("manual_config")
+
+        if not all([symbol, strategy_type, config]):
+            await callback.answer("❌ Ошибка: не все данные для запуска собраны. Начните заново.", show_alert=True)
+            await state.clear()
             return
 
-    # Запускаем событие, которое обработает UserSession
-    from core.events import SignalEvent
-    # Для ручного запуска создаем минимально необходимые данные
-    mock_signal_data = {
-        'symbol': symbol,
-        'strategy_type': strategy_type,
-        'signal_strength': 100, # Максимальная сила для ручного запуска
-        'market_condition': 'MANUAL_TRIGGER',
-        'direction': 'MANUAL'
-    }
-
-    if callback_handler.event_bus:
-        await callback_handler.event_bus.publish(
-            SignalEvent(
-                user_id=user_id,
-                symbol=symbol,
-                strategy_type=strategy_type,
-                signal_strength=100,
-                analysis_data=mock_signal_data
+        # Создаем событие для запуска стратегии через UserSession
+        if callback_handler.event_bus:
+            # Для ручного запуска создаем 'сигнал' с максимальной силой
+            signal_data = {
+                **config,  # Добавляем настроенные пользователем параметры
+                'manual_trigger': True,
+                'signal_strength': 100,
+            }
+            await callback_handler.event_bus.publish(
+                SignalEvent(
+                    user_id=user_id,
+                    symbol=symbol,
+                    strategy_type=strategy_type,
+                    signal_strength=100,
+                    analysis_data=signal_data
+                )
             )
-        )
-        await callback.message.edit_text(
-            f"✅ <b>Запрос на запуск отправлен!</b>\n\n"
-            f"<b>Стратегия:</b> {strategy_type}\n"
-            f"<b>Символ:</b> <code>{symbol}</code>\n\n"
-            f"Используйте /status для отслеживания состояния.",
-            parse_mode="HTML",
-            reply_markup=get_back_keyboard("main_menu")
-        )
-        log_info(user_id, f"Ручной запуск стратегии {strategy_type} для {symbol}", module_name='callback')
-    else:
-        await callback.answer("❌ Системная ошибка: шина событий недоступна.", show_alert=True)
-        log_error(user_id, "EventBus не доступен в callback_handler для ручного запуска", "callback")
+            await callback.message.edit_text(
+                f"✅ <b>Запрос на запуск отправлен!</b>\n\n"
+                f"<b>Стратегия:</b> {strategy_type}\n"
+                f"<b>Символ:</b> <code>{symbol}</code>\n\n"
+                f"Используйте /status или /positions для отслеживания.",
+                parse_mode="HTML",
+                reply_markup=get_back_keyboard("main_menu")
+            )
+            log_info(user_id, f"Ручной запуск стратегии {strategy_type} для {symbol} с кастомными настройками",
+                     module_name='callback')
+        else:
+            await callback.answer("❌ Системная ошибка: шина событий недоступна.", show_alert=True)
 
-    await state.clear()
+        await state.clear()
+
+    except Exception as e:
+        log_error(user_id, f"Критическая ошибка при ручном запуске стратегии: {e}", module_name='callback')
+        await callback.answer("❌ Произошла непредвиденная ошибка.", show_alert=True)
+        await state.clear()
+
+
+@router.callback_query(F.data == "manual_back_to_strategy_select")
+async def callback_manual_back_to_strategy_select(callback: CallbackQuery, state: FSMContext):
+    """Возврат к шагу выбора стратегии."""
+    user_data = await state.get_data()
+    symbol = user_data.get("manual_symbol", "N/A")
+    await state.set_state(UserStates.MANUAL_STRATEGY_SELECT_TYPE)
+    await callback.message.edit_text(
+        f"🛠️ <b>Ручной запуск стратегии</b>\n\n"
+        f"<b>Символ:</b> <code>{symbol}</code>\n"
+        f"<b>Шаг 2:</b> Выберите другую стратегию.",
+        parse_mode="HTML",
+        reply_markup=get_strategy_selection_keyboard()
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "manual_back_to_config")
+async def callback_manual_back_to_config(callback: CallbackQuery, state: FSMContext):
+    """Возврат к меню конфигурации из режима ввода значения."""
+    user_data = await state.get_data()
+    strategy_type = user_data.get("manual_strategy_type")
+    config = user_data.get("manual_config")
+    await state.set_state(UserStates.MANUAL_STRATEGY_CONFIGURE)
+
+    strategy_info = callback_handler.strategy_descriptions.get(strategy_type, {})
+    text = (
+        f"🛠️ <b>Ручной запуск стратегии</b>\n\n"
+        f"<b>Стратегия:</b> {strategy_info.get('name', strategy_type)}\n"
+        f"<b>Шаг 3:</b> Проверьте и при необходимости измените настройки. Затем нажмите 'Запустить'."
+    )
+    await callback.message.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=get_strategy_dynamic_config_keyboard(strategy_type, config)
+    )
+    await callback.answer()
+# -- конец обработчиков функционала команды /manual --
 
 @router.callback_query(F.data == "api_settings")
 async def callback_api_settings(callback: CallbackQuery, state: FSMContext):
@@ -705,6 +837,55 @@ async def callback_api_settings(callback: CallbackQuery, state: FSMContext):
         log_error(user_id, f"Ошибка отображения API ключей: {e}", module_name='callback')
         await callback.message.edit_text("❌ Ошибка загрузки информации о ключах.", reply_markup=get_back_keyboard("settings"))
 
+
+#--- ОБРАБОТЧИКИ СУТОЧНОГО ЛИМИТА УБЫТКА ---
+@router.callback_query(F.data == "set_max_daily_loss_usdt")
+async def callback_set_max_daily_loss(callback: CallbackQuery, state: FSMContext):
+    """Запрашивает у пользователя новое значение для макс. суточного убытка."""
+    await state.set_state(UserStates.SETTING_MAX_DAILY_LOSS_USDT)
+    await state.update_data(message_to_delete=callback.message.message_id)
+    await callback.message.edit_text(
+        "✏️ Введите новую максимальную сумму суточного убытка в USDT (например, `150.50`):",
+        parse_mode="HTML",
+        reply_markup=get_back_keyboard("risk_settings")
+    )
+
+
+@router.message(UserStates.SETTING_MAX_DAILY_LOSS_USDT)
+async def process_max_daily_loss_usdt(message: Message, state: FSMContext):
+    """Обрабатывает и сохраняет новое значение макс. суточного убытка."""
+    user_id = message.from_user.id
+    try:
+        # Валидация: значение должно быть положительным числом.
+        value = float(message.text.strip().replace(',', '.'))
+        if value <= 0:
+            await message.answer("❌ Значение должно быть больше нуля. Попробуйте еще раз.")
+            return
+
+        current_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+        if not current_config:
+            current_config = DefaultConfigs.get_global_config()
+
+        current_config["max_daily_loss_usdt"] = round(value, 2)
+
+        await redis_manager.save_config(user_id, ConfigType.GLOBAL, current_config)
+        log_info(user_id, f"Обновлен параметр риска: max_daily_loss_usdt = {value}", "callback")
+
+        state_data = await state.get_data()
+        await bot_manager.bot.delete_message(user_id, state_data.get("message_to_delete"))
+        await message.delete()
+        await state.clear()
+
+        # Обновляем и показываем меню настроек риска
+        mock_callback = CallbackQuery(id="mock", from_user=message.from_user, chat_instance="", message=message)
+        await callback_risk_settings(mock_callback, state)
+
+    except (ValueError, TypeError):
+        await message.answer("❌ Некорректный формат. Введите число (например, `150.50`).")
+    except Exception as e:
+        log_error(user_id, f"Ошибка сохранения настройки max_daily_loss_usdt: {e}", "callback")
+        await message.answer("❌ Произошла ошибка при сохранении настройки.")
+#--- КОНЕЦ ОБРАБОТЧИКОВ СУТОЧНОГО ЛИМИТА УБЫТКА ---
 
 
 # --- ОБРАБОТЧИКИ НАСТРОЕК РИСКА ---

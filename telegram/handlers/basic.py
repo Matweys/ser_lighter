@@ -593,25 +593,25 @@ async def cmd_manual(message: Message, state: FSMContext):
     await basic_handler.log_command_usage(user_id, "manual")
 
     try:
-        from core.enums import ConfigType
-        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
-        watchlist = user_config.get("watchlist_symbols", [])
+        # Используем глобальный список символов вместо пользовательского watchlist
+        symbols = DEFAULT_SYMBOLS
 
-        if not watchlist:
+        if not symbols:
             await message.answer(
-                "⚠️ <b>Список отслеживания пуст.</b>\n\n"
-                "Сначала добавьте торговые пары в 'Настройки' -> 'Watchlist', чтобы можно было запустить стратегию вручную.",
+                "⚠️ <b>Список доступных торговых пар пуст.</b>\n\n"
+                "Обратитесь к администратору для настройки.",
                 parse_mode="HTML",
                 reply_markup=get_back_keyboard("main_menu")
             )
             return
 
-        await state.set_state(UserStates.SELECTING_STRATEGY_TYPE)
+        # Устанавливаем первое состояние для ручного запуска
+        await state.set_state(UserStates.MANUAL_STRATEGY_SELECT_SYMBOL)
         await message.answer(
             "🛠️ <b>Ручной запуск стратегии</b>\n\n"
-            "<b>Шаг 1:</b> Выберите торговую пару из вашего списка отслеживания.",
+            "<b>Шаг 1:</b> Выберите торговую пару.",
             parse_mode="HTML",
-            reply_markup=get_manual_trade_symbol_keyboard(watchlist)
+            reply_markup=get_manual_trade_symbol_keyboard(symbols)
         )
 
     except Exception as e:

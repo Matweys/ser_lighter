@@ -437,43 +437,45 @@ class RiskManager:
         except Exception as e:
             log_error(self.user_id, f"Ошибка расчета просадки: {e}", module_name=__name__)
             return Decimal('0')
-            
-    async def _check_daily_drawdown_limit(self) -> bool:
-        """Проверка лимита дневной просадки"""
+
+    async def _check_daily_loss_limit(self) -> bool:
+        """Проверка лимита суточного убытка в USDT."""
         try:
             await self._ensure_config_fresh()
-            
             if not self.user_config:
                 return False
-                
-            max_drawdown = Decimal(str(self.user_config.get("global_daily_drawdown_percent", 5.0)))
-            current_drawdown = await self._calculate_current_drawdown_percent()
-            
-            if current_drawdown >= max_drawdown:
+
+            max_loss_usdt = Decimal(str(self.user_config.get("max_daily_loss_usdt", 100.0)))
+
+            # Расчет общего PnL за сегодня (realized + unrealized)
+            # Примечание: Эта логика предполагает, что daily_stats корректно обнуляются каждый день.
+            total_daily_pnl = self.daily_stats.get("realized_pnl", Decimal('0')) + self.daily_stats.get(
+                "unrealized_pnl", Decimal('0'))
+
+            # Нас интересует только убыток
+            current_loss = abs(min(Decimal('0'), total_daily_pnl))
+
+            if current_loss >= max_loss_usdt:
+                log_warning(self.user_id,
+                            f"ПРЕВЫШЕН ЛИМИТ СУТОЧНОГО УБЫТКА! Лимит: {max_loss_usdt} USDT, Текущий убыток: {current_loss} USDT",
+                            module_name=__name__)
+
                 await self.event_bus.publish(RiskLimitExceededEvent(
                     user_id=self.user_id,
-                    limit_type="daily_drawdown",
-                    current_value=current_drawdown,
-                    limit_value=max_drawdown,
-                    action_required="stop_trading"
+                    limit_type="daily_loss_usdt",
+                    current_value=current_loss,
+                    limit_value=max_loss_usdt,
+                    action_required="stop_trading"  # Это событие будет обработано UserSession
                 ))
-                return True
-                
-            # Предупреждение при 80% от лимита
-            warning_threshold = max_drawdown * Decimal('0.8')
-            if current_drawdown >= warning_threshold:
-                await self.event_bus.publish(DrawdownWarningEvent(
-                    user_id=self.user_id,
-                    current_drawdown_percent=current_drawdown,
-                    warning_threshold_percent=warning_threshold,
-                    max_drawdown_percent=max_drawdown
-                ))
-                
-            return False
-            
+                return True  # Лимит превышен
+
+            return False  # Лимит не превышен
+
         except Exception as e:
-            log_error(self.user_id, f"Ошибка проверки лимита просадки: {e}", module_name=__name__)
+            log_error(self.user_id, f"Ошибка проверки лимита суточного убытка: {e}", module_name=__name__)
             return False
+
+
             
     async def _check_portfolio_risk_limit(self) -> bool:
         """Проверка общего риска портфеля"""
@@ -504,10 +506,11 @@ class RiskManager:
         except Exception as e:
             log_error(self.user_id, f"Ошибка проверки риска портфеля: {e}", module_name=__name__)
             return False
-            
+
+
     async def _check_risk_limits(self):
         """Проверка всех лимитов риска"""
-        await self._check_daily_drawdown_limit()
+        await self._check_daily_loss_limit()  # Заменено
         await self._check_portfolio_risk_limit()
         
     async def _save_daily_stats(self):

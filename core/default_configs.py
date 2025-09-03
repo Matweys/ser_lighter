@@ -34,6 +34,7 @@ class DefaultConfigs:
             
             # Риск-менеджмент
             "risk_per_trade_percent": 1.0,  # 2% риска на сделку
+            "max_daily_loss_usdt": 10.0,  # Максимальный суточный убыток в USDT
             "global_daily_drawdown_percent": 2.0,  # 10% максимальная дневная просадка
             "max_portfolio_exposure_percent": 50.0,  # 50% максимальная экспозиция
             "stop_loss_percent": 1.0,  # 3% стоп-лосс

@@ -189,27 +189,18 @@ def get_settings_keyboard() -> InlineKeyboardMarkup:
 
     return KeyboardBuilder.build_keyboard(buttons)
 
+
 def get_risk_settings_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура настроек риск-менеджмента"""
     buttons = [
         [
-            {"text": "🎯 Риск на сделку", "callback_data": "set_risk_per_trade"},
-            {"text": "📉 Макс. просадка", "callback_data": "set_max_drawdown"}
+            {"text": "💰 Максимальная сумма убытка", "callback_data": "set_max_daily_loss_usdt"}
         ],
         [
-            {"text": "📊 Макс. сделок", "callback_data": "set_max_trades"},
-            {"text": "💰 Мин. баланс", "callback_data": "set_min_balance"}
-        ],
-        [
-            {"text": "🛑 Стоп-лосс", "callback_data": "set_stop_loss"},
-            {"text": "🎯 Тейк-профит", "callback_data": "set_take_profit"}
-        ],
-        [
-            {"text": "⚙️ Настройки", "callback_data": "settings"},
-            {"text": "🏠 Главное меню", "callback_data": "main_menu"}
+            {"text": "⚙️ Назад в Настройки", "callback_data": "settings"}
         ]
     ]
-    
+
     return KeyboardBuilder.build_keyboard(buttons)
 
 def get_strategy_settings_keyboard() -> InlineKeyboardMarkup:
@@ -500,4 +491,39 @@ def get_emergency_keyboard() -> InlineKeyboardMarkup:
     return KeyboardBuilder.build_keyboard(buttons)
 
 
+def get_strategy_dynamic_config_keyboard(strategy_type: str, config: Dict[str, Any]) -> InlineKeyboardMarkup:
+    """Создает клавиатуру для динамической настройки параметров стратегии."""
+    buttons = []
 
+    # Определяем параметры для каждой стратегии
+    params = {}
+    if strategy_type == StrategyType.BIDIRECTIONAL_GRID.value:
+        params = {
+            "grid_levels": f"Уровни сетки: {config.get('grid_levels', 5)}",
+            "grid_spacing_percent": f"Отступ сетки (%): {config.get('grid_spacing_percent', 1.0)}",
+            "profit_percent": f"Процент профита: {config.get('profit_percent', 0.5)}",
+        }
+    elif strategy_type == StrategyType.IMPULSE_TRAILING.value:
+        params = {
+            "initial_stop_percent": f"Начальный стоп (%): {config.get('initial_stop_percent', 1.0)}",
+            "trailing_step_percent": f"Шаг трейлинга (%): {config.get('trailing_step_percent', 0.5)}",
+            "min_profit_for_trailing": f"Мин. профит для трейлинга (%): {config.get('min_profit_for_trailing', 1.0)}",
+        }
+    elif strategy_type == StrategyType.GRID_SCALPING.value:
+        params = {
+            "scalp_levels": f"Уровни скальпинга: {config.get('scalp_levels', 5)}",
+            "scalp_spacing_percent": f"Отступ (%): {config.get('scalp_spacing_percent', 0.5)}",
+            "quick_profit_percent": f"Быстрый профит (%): {config.get('quick_profit_percent', 0.5)}",
+        }
+
+    # Создаем кнопки для параметров
+    for key, text in params.items():
+        buttons.append([{"text": text, "callback_data": f"manual_cfg_{key}"}])
+
+    # Добавляем кнопки управления
+    buttons.append([
+        {"text": "🚀 Запустить стратегию", "callback_data": "manual_launch"},
+        {"text": "🔙 Назад к выбору стратегии", "callback_data": "manual_back_to_strategy_select"}
+    ])
+
+    return KeyboardBuilder.build_keyboard(buttons)
