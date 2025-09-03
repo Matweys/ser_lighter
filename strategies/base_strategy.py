@@ -10,7 +10,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 
 from core.logger import log_info, log_error, log_warning
-from core.enums import StrategyType, PositionSide
+from core.enums import StrategyType, PositionSide, ConfigType
 from core.events import (
     EventType, BaseEvent, SignalEvent, PriceUpdateEvent,
     OrderFilledEvent, PositionUpdateEvent, PositionClosedEvent,

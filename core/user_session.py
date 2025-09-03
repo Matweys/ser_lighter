@@ -16,7 +16,7 @@ from core.events import (
 )
 from cache.redis_manager import redis_manager, ConfigType
 from analysis.meta_strategist import MetaStrategist
-from analysis.meta_strategist import MarketAnalyzer
+from analysis.market_analyzer import MarketAnalyzer
 from analysis.risk_manager import RiskManager
 from api.bybit_api import BybitAPI
 from websocket.websocket_manager import GlobalWebSocketManager, DataFeedHandler
