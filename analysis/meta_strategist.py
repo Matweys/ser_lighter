@@ -148,15 +148,16 @@ class MetaStrategist:
         watchlist = self.user_config.get("watchlist_symbols", [])
         return symbol in watchlist
         
-    async def _make_strategy_decision(self, analysis: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    async def _make_strategy_decision(self, analysis: 'MarketAnalysis') -> Optional[Dict[str, str]]:
         """
         Принятие решения о запуске стратегии на основе анализа
         Returns:
             Dict с типом стратегии или None если стратегию запускать не нужно
         """
         try:
-            regime = analysis.get('regime', 'UNCERTAIN')
-            signal_strength = analysis.get('signal_strength', 0)
+            # Используем прямой доступ к атрибутам датакласса MarketAnalysis
+            regime = analysis.regime.value if hasattr(analysis.regime, 'value') else analysis.regime
+            signal_strength = analysis.strength
             
             # Минимальная сила сигнала для запуска стратегии
             min_signal_strength = 40
