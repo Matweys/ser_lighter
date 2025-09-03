@@ -48,36 +48,34 @@ class MarketAnalyzer:
             Dict с результатами анализа
         """
         try:
-            # Загружаем персональные настройки анализа, используя self.user_id
+            log_info(self.user_id, f"DEBUG: Начало get_market_analysis для symbol: {symbol}")
             analysis_config = await self._get_analysis_config(self.user_id)
-            
-            # Анализ по каждому таймфрейму
+
             timeframe_analyses = {}
             for timeframe in analysis_config["timeframes"]:
                 tf_analysis = await self._analyze_timeframe(
-                    user_id, symbol, timeframe, analysis_config
+                    self.user_id, symbol, timeframe, analysis_config
                 )
                 if tf_analysis:
                     timeframe_analyses[timeframe] = tf_analysis
-                    
+
             if not timeframe_analyses:
                 return {
                     'regime': 'UNCERTAIN',
                     'reason': 'Недостаточно данных для анализа',
                     'signal_strength': 0
                 }
-                
-            # Сведение сигналов с разных таймфреймов
+
             final_analysis = await self._combine_timeframe_signals(
                 timeframe_analyses
             )
-            
-            # Добавляем текущую цену и ATR для расчета позиции
-            current_data = await self._get_current_market_data(user_id, symbol)
+
+            # ИЗМЕНЕНО: Явно передаем self.api в метод
+            current_data = await self._get_current_market_data(symbol, self.api)
             final_analysis.update(current_data)
             return final_analysis
         except Exception as e:
-            log_error(user_id, f"Ошибка анализа рынка для {symbol}: {e}", module_name=__name__)
+            log_error(self.user_id, f"Ошибка анализа рынка для {symbol}: {e}", module_name=__name__)
             return {
                 'regime': 'UNCERTAIN',
                 'reason': f'Ошибка анализа: {str(e)}',
@@ -261,17 +259,18 @@ class MarketAnalyzer:
             return {'regime': 'UNCERTAIN', 'signal_strength': 0}
 
     @staticmethod
-    async def _get_current_market_data(user_id: int, symbol: str) -> Dict[str, Decimal]:
+    async def _get_current_market_data(self, symbol: str) -> Dict[str, Decimal]:
         """Получение текущих рыночных данных"""
         try:
             # Получаем последние данные 1m для актуальной цены
-            klines = await get_klines(user_id, symbol, "1m", limit=1)
+            # ИСПРАВЛЕНО: Вызываем метод экземпляра, а не статическую функцию
+            klines = await self.get_klines(symbol, "1m", limit=1)
             if klines:
-                current_price = Decimal(str(klines[0][4]))  # close price
+                current_price = Decimal(str(klines[0]['close'])) # Используем ключ 'close' для надежности
                 return {'current_price': current_price}
             return {}
         except Exception as e:
-            log_error(user_id, f"Ошибка получения текущих данных: {e}", module_name=__name__)
+            log_error(self.user_id, f"Ошибка получения текущих данных: {e}", module_name=__name__)
             return {}
 
     @staticmethod
