@@ -378,27 +378,33 @@ class BaseStrategy(ABC):
             
         log_info(self.user_id, "Перезагрузка конфигурации после изменения настроек", module_name=__name__)
         await self._load_strategy_config()
-        
-    async def _place_order(self, side: str, order_type: str, qty: Decimal, price: Optional[Decimal] = None, 
-                          stop_loss: Optional[Decimal] = None, take_profit: Optional[Decimal] = None) -> Optional[str]:
+
+    async def _place_order(self, side: str, order_type: str, qty: Decimal, price: Optional[Decimal] = None,
+                           stop_loss: Optional[Decimal] = None, take_profit: Optional[Decimal] = None) -> Optional[str]:
         """
-        Размещение ордера
-        
-        Args:
-            side: Направление (Buy/Sell)
-            order_type: Тип ордера (Market/Limit)
-            qty: Количество
-            price: Цена (для лимитных ордеров)
-            stop_loss: Стоп-лосс
-            take_profit: Тейк-профит
-            
-        Returns:
-            str: ID ордера или None при ошибке
+        Размещение ордера: реального или симулированного в зависимости от режима API.
         """
         try:
             if not self.api:
+                log_error(self.user_id, "API клиент не инициализирован в стратегии.", module_name=__name__)
                 return None
-                
+
+            # Если API в тестовом режиме, симулируем ордер, не отправляя его на биржу.
+            if self.api.testnet:
+                fake_order_id = f"paper_{self.symbol}_{int(datetime.now().timestamp())}"
+                log_info(self.user_id,
+                         f"[РЕЖИМ TESTNET] Симуляция ордера '{fake_order_id}': {side} {qty} {self.symbol}",
+                         module_name=__name__)
+
+                # Симулируем немедленное исполнение ордера для тестирования логики
+                await self.event_bus.publish(OrderFilledEvent(
+                    user_id=self.user_id, order_id=fake_order_id, symbol=self.symbol,
+                    side=side, qty=qty, price=price or qty, fee=Decimal('0')
+                    # Используем qty как цену для Market ордеров в симуляции
+                ))
+                return fake_order_id
+
+            # В реальном режиме отправляем ордер на биржу
             order_result = await self.api.place_order(
                 symbol=self.symbol,
                 side=side,
@@ -408,10 +414,10 @@ class BaseStrategy(ABC):
                 stop_loss=stop_loss,
                 take_profit=take_profit
             )
-            
+
             if order_result and "orderId" in order_result:
                 order_id = order_result["orderId"]
-                
+
                 # Сохранение ордера в активных
                 self.active_orders[order_id] = {
                     "order_id": order_id,

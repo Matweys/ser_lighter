@@ -88,12 +88,24 @@ class RiskManager:
         self.running = False
         log_info(self.user_id, "RiskManager остановлен", module_name=__name__)
 
-    async def get_account_balance(self) -> Decimal:  # <-- Реализуем метод
-        """Получение баланса пользователя через API"""
+    async def get_account_balance(self) -> Decimal:
+        """Получение баланса: реального для production или виртуального для testnet."""
         try:
+            # Если API работает в тестовом режиме (BYBIT_SANDBOX=True), используем виртуальный баланс.
+            if self.api.testnet:
+                # Загружаем конфиг, чтобы взять оттуда сумму виртуального баланса
+                await self._ensure_config_fresh()
+                # Для гибкости, можно добавить сумму в конфиг, если ее нет - используем 10000.
+                paper_balance = Decimal(str(self.user_config.get("paper_trading_balance", "10000.0")))
+                log_info(self.user_id, f"РЕЖИМ TESTNET: Используется виртуальный баланс: {paper_balance} USDT", module_name=__name__)
+                return paper_balance
+
+            # В реальном режиме получаем баланс через API
             balance_data = await self.api.get_wallet_balance()
             if balance_data and "totalEquity" in balance_data:
                 return balance_data["totalEquity"]
+
+            log_warning(self.user_id, "Не удалось получить реальный баланс через API, возвращен 0.", module_name=__name__)
             return Decimal('0')
         except Exception as e:
             log_error(self.user_id, f"Ошибка получения баланса: {e}", module_name=__name__)
