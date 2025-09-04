@@ -752,21 +752,24 @@ async def callback_manual_symbol_selected(callback: CallbackQuery, state: FSMCon
 
 @router.callback_query(UserStates.MANUAL_STRATEGY_SELECT_TYPE, F.data.startswith("strategy_"))
 async def callback_manual_strategy_selected(callback: CallbackQuery, state: FSMContext):
-    """Шаг 3: Обрабатывает выбор стратегии и показывает ее настройки."""
+    """Шаг 3: Обрабатывает выбор стратегии и показывает ее настройки. (ИСПРАВЛЕННАЯ ВЕРСИЯ)"""
     user_id = callback.from_user.id
     strategy_type = callback.data.replace("strategy_", "")
 
     try:
         config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
-        default_config = await redis_manager.get_config(0, config_enum)
-
-        if not default_config:
-            default_config = DefaultConfigs.get_all_default_configs()["strategy_configs"][strategy_type]
+        # Для ручного запуска всегда берем чистый шаблон
+        default_config = DefaultConfigs.get_all_default_configs()["strategy_configs"][strategy_type]
 
         # Конвертируем Decimal в float перед сохранением в состояние FSM
         serializable_config = convert_decimals_to_floats(default_config)
 
-        await state.update_data(manual_strategy_type=strategy_type, manual_config=serializable_config)
+        # !!! ГЛАВНЫЙ ФИКС: ЗАПОМИНАЕМ ID СООБЩЕНИЯ С МЕНЮ !!!
+        await state.update_data(
+            manual_strategy_type=strategy_type,
+            manual_config=serializable_config,
+            menu_message_id=callback.message.message_id
+        )
         await state.set_state(UserStates.MANUAL_STRATEGY_CONFIGURE)
 
         strategy_info = callback_handler.strategy_descriptions.get(strategy_type, {})
@@ -781,6 +784,7 @@ async def callback_manual_strategy_selected(callback: CallbackQuery, state: FSMC
             parse_mode="HTML",
             reply_markup=get_strategy_dynamic_config_keyboard(strategy_type, serializable_config)
         )
+        await callback.answer() # Добавляем пустой answer для лучшего UX
     except Exception as e:
         log_error(user_id, f"Ошибка при выборе стратегии для ручного запуска: {e}", module_name='callback')
         await callback.answer("❌ Ошибка загрузки настроек стратегии.", show_alert=True)

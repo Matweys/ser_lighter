@@ -78,7 +78,7 @@ class DefaultConfigs:
             # --- Пользовательские настройки (видны в Telegram) ---
             "is_enabled": True,
             "order_amount": 10.0,
-            "grid_levels": 4,
+            "grid_levels": 3,
             "profit_percent": 0.8,
             "stop_loss_percent": 1.0,
 
@@ -118,10 +118,10 @@ class DefaultConfigs:
         return {
             # --- Пользовательские настройки (видны в Telegram) ---
             "is_enabled": True,
-            "order_amount": 15.0,
-            "max_averaging_orders": 3,
+            "order_amount": 10.0,
+            "max_averaging_orders": 5,
             "profit_percent": 0.5,
-            "stop_loss_percent": 3.0,
+            "stop_loss_percent": 1.0,
 
             # --- Внутренние параметры (для логики бота) ---
             "adaptive_to_spread": True,
