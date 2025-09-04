@@ -31,6 +31,7 @@ from core.default_configs import DefaultConfigs
 from core.logger import log_info, log_error, log_warning
 from core.settings_config import DEFAULT_SYMBOLS, system_config
 from api.bybit_api import BybitAPI
+from aiogram.exceptions import TelegramBadRequest
 
 router = Router()
 
@@ -399,33 +400,52 @@ async def callback_reconfigure_strategy(callback: CallbackQuery, state: FSMConte
 async def _show_strategy_config_menu(bot, chat_id: int, message_id: int, strategy_type: str, user_id: int):
     """
     Отображает меню настройки стратегии, гарантируя слияние
-    конфигурации по умолчанию с пользовательской.
+    конфигурации по умолчанию с пользовательской. (ИСПРАВЛЕННАЯ ВЕРСИЯ)
     """
-    # Шаг 1: Загружаем шаблон с полным набором параметров
-    all_defaults = DefaultConfigs.get_all_default_configs()["strategy_configs"]
-    default_config = all_defaults.get(strategy_type, {})
+    # !!! ИСПРАВЛЕНИЕ: Инициализируем переменные до блока try
+    text = "❌ Ошибка: не удалось сформировать меню настроек."
+    reply_markup = get_back_keyboard("strategy_settings") # Клавиатура "Назад" по умолчанию
 
-    # Шаг 2: Загружаем конфиг пользователя из Redis
-    config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
-    user_config = await redis_manager.get_config(user_id, config_enum) or {}
+    try:
+        # Шаг 1: Загружаем шаблон с полным набором параметров
+        all_defaults = DefaultConfigs.get_all_default_configs()["strategy_configs"]
+        default_config = all_defaults.get(strategy_type, {})
 
-    # Шаг 3: Сливаем конфиги. Пользовательские настройки перезаписывают дефолтные.
-    final_config = default_config.copy()
-    final_config.update(user_config)
+        # Шаг 2: Загружаем конфиг пользователя из Redis
+        config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
+        user_config = await redis_manager.get_config(user_id, config_enum) or {}
 
-    strategy_info = callback_handler.strategy_descriptions[strategy_type]
-    status_text = "✅ Включена" if final_config.get("is_enabled", False) else "❌ Отключена"
+        # Шаг 3: Сливаем конфиги. Пользовательские настройки перезаписывают дефолтные.
+        final_config = default_config.copy()
+        final_config.update(user_config)
 
-    text = (
-        f"⚙️ <b>Настройка: {strategy_info['name']}</b>\n\n"
-        f"<b>Статус для автоторговли:</b> {status_text}\n\n"
-        f"Нажмите на параметр, чтобы изменить его значение."
-    )
+        strategy_info = callback_handler.strategy_descriptions[strategy_type]
+        status_text = "✅ Включена" if final_config.get("is_enabled", False) else "❌ Отключена"
 
-    # Передаем полный и корректный конфиг в клавиатуру
-    reply_markup = get_strategy_config_keyboard(strategy_type, final_config)
+        # Переопределяем переменные с корректными данными
+        text = (
+            f"⚙️ <b>Настройка: {strategy_info['name']}</b>\n\n"
+            f"<b>Статус для автоторговли:</b> {status_text}\n\n"
+            f"Нажмите на параметр, чтобы изменить его значение."
+        )
+        reply_markup = get_strategy_config_keyboard(strategy_type, final_config)
 
-    await bot.edit_message_text(text, chat_id, message_id, reply_markup=reply_markup, parse_mode="HTML")
+        # --- ОТКАЗОУСТОЙЧИВОЕ ОБНОВЛЕНИЕ ---
+        await bot.edit_message_text(
+            text=text,
+            chat_id=chat_id,
+            message_id=message_id,
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" in e.message:
+            pass
+        else:
+            log_error(user_id, f"Ошибка Telegram API при обновлении меню стратегии: {e}", "callback")
+            await bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode="HTML")
+    except Exception as e:
+        log_error(user_id, f"Критическая ошибка в _show_strategy_config_menu: {e}", "callback")
 
 
 
@@ -952,31 +972,43 @@ async def callback_api_settings(callback: CallbackQuery, state: FSMContext):
 
 # --- 1. НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ОТРИСОВКИ МЕНЮ РИСКА ---
 async def _show_risk_settings_menu(bot, chat_id: int, message_id: int, user_id: int):
-    """Надежно отображает и обновляет меню настроек риска."""
-    # Загружаем конфиг слиянием с дефолтным для гарантии наличия всех ключей
-    default_config = DefaultConfigs.get_global_config()
-    user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL) or {}
-    final_config = default_config.copy()
-    final_config.update(user_config)
-
-    text = (
-        f"🛡️ <b>Настройки риск-менеджмента</b>\n\n"
-        f"Здесь устанавливаются глобальные правила безопасности для вашего аккаунта.\n\n"
-        f"<b>Текущие параметры:</b>\n"
-        f"∙ Макс. убыток в день: <b>{final_config.get('max_daily_loss_usdt')} USDT</b>\n"
-        f"∙ Кредитное плечо: <b>x{final_config.get('leverage')}</b>"
-    )
+    """Надежно отображает и обновляет меню настроек риска. (ИСПРАВЛЕННАЯ ВЕРСИЯ)"""
+    # !!! ИСПРАВЛЕНИЕ: Инициализируем переменные до блока try
+    text = "❌ Ошибка: не удалось сформировать меню настроек риска."
+    reply_markup = get_back_keyboard("settings") # Клавиатура "Назад" по умолчанию
 
     try:
+        default_config = DefaultConfigs.get_global_config()
+        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL) or {}
+        final_config = default_config.copy()
+        final_config.update(user_config)
+
+        # Переопределяем переменные с корректными данными
+        text = (
+            f"🛡️ <b>Настройки риск-менеджмента</b>\n\n"
+            f"Здесь устанавливаются глобальные правила безопасности для вашего аккаунта.\n\n"
+            f"<b>Текущие параметры:</b>\n"
+            f"∙ Макс. убыток в день: <b>{final_config.get('max_daily_loss_usdt')} USDT</b>\n"
+            f"∙ Кредитное плечо: <b>x{final_config.get('leverage')}</b>"
+        )
+        reply_markup = get_risk_settings_keyboard()
+
+        # --- ОТКАЗОУСТОЙЧИВОЕ ОБНОВЛЕНИЕ ---
         await bot.edit_message_text(
             text=text,
             chat_id=chat_id,
             message_id=message_id,
-            reply_markup=get_risk_settings_keyboard(),
+            reply_markup=reply_markup,
             parse_mode="HTML"
         )
+    except TelegramBadRequest as e:
+        if "message is not modified" in e.message:
+            pass
+        else:
+            log_error(user_id, f"Ошибка Telegram API при обновлении меню риска: {e}", "callback")
+            await bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode="HTML")
     except Exception as e:
-        log_error(user_id, f"Ошибка обновления меню риска: {e}", module_name='callback')
+        log_error(user_id, f"Критическая ошибка в _show_risk_settings_menu: {e}", "callback")
 
 
 # --- 2. ОБРАБОТЧИК ВХОДА В МЕНЮ РИСКА ---
