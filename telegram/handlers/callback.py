@@ -443,18 +443,16 @@ async def process_leverage(message: Message, state: FSMContext):
     """Обрабатывает и сохраняет новое значение кредитного плеча."""
     user_id = message.from_user.id
     try:
-        # Валидация: значение должно быть целым числом от 1 до 100.
         value = int(message.text.strip())
         if not (1 <= value <= 100):
             await message.answer("❌ Плечо должно быть в диапазоне от 1 до 100. Попробуйте еще раз.")
             return
 
-        current_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
-        if not current_config:
-            current_config = DefaultConfigs.get_global_config()
-
+        # Используем надежное слияние с дефолтными настройками
+        current_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL) or DefaultConfigs.get_global_config()
         current_config["leverage"] = value
         await redis_manager.save_config(user_id, ConfigType.GLOBAL, current_config)
+
         log_info(user_id, f"Обновлен параметр риска: leverage = {value}", "callback")
 
         await message.delete()
@@ -463,12 +461,11 @@ async def process_leverage(message: Message, state: FSMContext):
         menu_message_id = state_data.get("menu_message_id")
         await state.clear()
 
-        # Обновляем и показываем меню настроек риска
-        # Создаем "mock" CallbackQuery, чтобы переиспользовать существующий обработчик
+        # Создаем "ненастоящий" callback для обновления меню
         mock_callback = CallbackQuery(id="mock_update", from_user=message.from_user, chat_instance="", message=message)
-        # Устанавливаем правильный message_id для редактирования
         mock_callback.message.message_id = menu_message_id
 
+        # Вызываем функцию, которая покажет обновленное меню риска
         await callback_risk_settings(mock_callback, state)
 
     except (ValueError, TypeError):
@@ -1061,38 +1058,26 @@ async def process_max_daily_loss_usdt(message: Message, state: FSMContext):
             await message.answer("❌ Значение должно быть больше нуля. Попробуйте еще раз.")
             return
 
-        current_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
-        if not current_config:
-            current_config = DefaultConfigs.get_global_config()
-
+        # Используем надежное слияние с дефолтными настройками
+        current_config = await redis_manager.get_config(user_id,
+                                                        ConfigType.GLOBAL) or DefaultConfigs.get_global_config()
         current_config["max_daily_loss_usdt"] = round(value, 2)
         await redis_manager.save_config(user_id, ConfigType.GLOBAL, current_config)
+
         log_info(user_id, f"Обновлен параметр риска: max_daily_loss_usdt = {value}", "callback")
 
-        # Удаляем сообщение пользователя со значением
         await message.delete()
 
         state_data = await state.get_data()
         menu_message_id = state_data.get("menu_message_id")
         await state.clear()
 
-        # Генерируем новый текст с подтверждением
-        new_text = (
-            f"🛡️ <b>Настройки риск-менеджмента</b>\n\n"
-            f"✅ <b>Значение обновлено!</b>\n"
-            f"💰 <b>Максимальная сумма убытка:</b> {format_currency(current_config['max_daily_loss_usdt'])}\n\n"
-            f"Это максимальная сумма, которую вы готовы потерять за торговые сутки (00:00 - 23:59 МСК)."
-        )
+        # Создаем "ненастоящий" callback, чтобы передать в функцию отображения меню
+        mock_callback = CallbackQuery(id="mock_update", from_user=message.from_user, chat_instance="", message=message)
+        mock_callback.message.message_id = menu_message_id  # Важно сохранить ID старого сообщения
 
-        # Редактируем исходное сообщение с меню
-        if menu_message_id:
-            await bot_manager.bot.edit_message_text(
-                chat_id=user_id,
-                message_id=menu_message_id,
-                text=new_text,
-                reply_markup=get_risk_settings_keyboard(),
-                parse_mode="HTML"
-            )
+        # Просто вызываем функцию, которая покажет обновленное меню риска
+        await callback_risk_settings(mock_callback, state)
 
     except (ValueError, TypeError):
         await message.answer("❌ Некорректный формат. Введите число (например, `150.50`).")

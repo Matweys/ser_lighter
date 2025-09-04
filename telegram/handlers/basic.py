@@ -484,11 +484,15 @@ async def cmd_stats(message: Message, state: FSMContext):
         log_error(user_id, f"Ошибка в команде /stats: {e}", module_name='basic_handlers')
         await message.answer("❌ Ошибка получения статистики")
 
+
 @router.message(Command("settings"))
 async def cmd_settings(message: Message, state: FSMContext):
     """Обработчик команды /settings"""
     user_id = message.from_user.id
     try:
+        # СБРАСЫВАЕМ ЛЮБОЕ ПРЕДЫДУЩЕЕ СОСТОЯНИЕ!
+        await state.clear()
+
         await basic_handler.log_command_usage(user_id, "settings")
         await state.set_state(UserStates.SETTINGS_MENU)
 
