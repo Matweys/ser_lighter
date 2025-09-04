@@ -203,7 +203,7 @@ class SystemConfig:
     def get_fee_rate(exchange_type: ExchangeType, order_type: str) -> Decimal:
         """Получить ставку комиссии"""
         fees = EXCHANGE_FEES.get(exchange_type, {})
-        return fees.get(order_type.lower(), Decimal('0.1'))  # По умолчанию 0.1%
+        return fees.get(order_type.lower())
 
     @staticmethod
     def get_rate_limit(exchange_type: ExchangeType, endpoint_type: str) -> int:
