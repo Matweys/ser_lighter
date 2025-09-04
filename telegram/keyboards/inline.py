@@ -479,32 +479,35 @@ def get_emergency_keyboard() -> InlineKeyboardMarkup:
 
 
 def get_strategy_dynamic_config_keyboard(strategy_type: str, config: Dict[str, Any]) -> InlineKeyboardMarkup:
-    """Создает клавиатуру для динамической настройки параметров стратегии."""
+    """Создает клавиатуру для динамической настройки параметров стратегии. (ИСПРАВЛЕННАЯ ВЕРСИЯ)"""
     buttons = []
 
-    # Определяем параметры для каждой стратегии
-    params = {}
+    # Определяем параметры, которые пользователь может редактировать
+    editable_params = {}
     if strategy_type == StrategyType.BIDIRECTIONAL_GRID.value:
-        params = {
-            "grid_levels": f"Уровни сетки: {config.get('grid_levels', 5)}",
-            "grid_spacing_percent": f"Отступ сетки (%): {config.get('grid_spacing_percent', 1.0)}",
-            "profit_percent": f"Процент профита: {config.get('profit_percent', 0.5)}",
-        }
-    elif strategy_type == StrategyType.IMPULSE_TRAILING.value:
-        params = {
-            "initial_stop_percent": f"Начальный стоп (%): {config.get('initial_stop_percent', 1.0)}",
-            "trailing_step_percent": f"Шаг трейлинга (%): {config.get('trailing_step_percent', 0.5)}",
-            "min_profit_for_trailing": f"Мин. профит для трейлинга (%): {config.get('min_profit_for_trailing', 1.0)}",
+        editable_params = {
+            "order_amount": f"Сумма ордера: {config.get('order_amount', 0)} USDT",
+            "grid_levels": f"Уровни (в каждую сторону): {config.get('grid_levels', 0)}",
+            "profit_percent": f"Процент прибыли: {config.get('profit_percent', 0)}%",
+            "stop_loss_percent": f"Стоп-лосс: {config.get('stop_loss_percent', 0)}%",
         }
     elif strategy_type == StrategyType.GRID_SCALPING.value:
-        params = {
-            "scalp_levels": f"Уровни скальпинга: {config.get('scalp_levels', 5)}",
-            "scalp_spacing_percent": f"Отступ (%): {config.get('scalp_spacing_percent', 0.5)}",
-            "quick_profit_percent": f"Быстрый профит (%): {config.get('quick_profit_percent', 0.5)}",
+        editable_params = {
+            "order_amount": f"Сумма ордера: {config.get('order_amount', 0)} USDT",
+            "max_averaging_orders": f"Макс. ордеров усреднения: {config.get('max_averaging_orders', 0)}",
+            "profit_percent": f"Процент прибыли: {config.get('profit_percent', 0)}%",
+            "stop_loss_percent": f"Стоп-лосс: {config.get('stop_loss_percent', 0)}%",
+        }
+    elif strategy_type == StrategyType.IMPULSE_TRAILING.value:
+        editable_params = {
+            "order_amount": f"Сумма ордера: {config.get('order_amount', 0)} USDT",
+            "min_signal_strength": f"Мин. сила сигнала: {config.get('min_signal_strength', 0)}",
+            "stop_loss_percent": f"Стоп-лосс: {config.get('stop_loss_percent', 0)}%",
+            "trailing_percent": f"Трейлинг: {config.get('trailing_percent', 0)}%",
         }
 
     # Создаем кнопки для параметров
-    for key, text in params.items():
+    for key, text in editable_params.items():
         buttons.append([{"text": text, "callback_data": f"manual_cfg_{key}"}])
 
     # Добавляем кнопки управления

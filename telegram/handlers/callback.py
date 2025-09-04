@@ -542,51 +542,6 @@ async def callback_show_orders(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Не удалось загрузить ордера.", show_alert=True)
 
 
-# Подтверждение действий
-@router.callback_query(F.data.startswith("confirm_"))
-async def callback_confirm_action(callback: CallbackQuery, state: FSMContext):
-    """Подтверждение различных действий"""
-    user_id = callback.from_user.id
-    action = callback.data.replace("confirm_", "")
-    
-    try:
-        if action == "start_trading":
-            # Подтверждение запуска торговли
-            if callback_handler.event_bus:
-                await callback_handler.event_bus.publish(
-                    UserSessionStartRequestedEvent(user_id=user_id)
-                )
-            
-            await callback.message.edit_text(
-                "✅ <b>Торговля запущена!</b>\n\n"
-                "🚀 Система начала мониторинг рынка\n"
-                "📊 Стратегии активированы\n"
-                "💼 Торговая сессия инициализирована",
-                reply_markup=get_main_menu_keyboard(),
-                parse_mode="HTML"
-            )
-            
-        elif action == "stop_trading":
-            # Подтверждение остановки торговли
-            if callback_handler.event_bus:
-                await callback_handler.event_bus.publish(
-                    UserSessionStopRequestedEvent(user_id=user_id)
-                )
-            
-            await callback.message.edit_text(
-                "🛑 <b>Торговля остановлена!</b>\n\n"
-                "📊 Все стратегии деактивированы\n"
-                "💼 Торговая сессия завершена\n"
-                "📈 Статистика сохранена",
-                reply_markup=get_main_menu_keyboard(),
-                parse_mode="HTML"
-            )
-        
-        log_info(user_id, f"Подтверждено действие '{action}'", module_name='callback')
-        
-    except Exception as e:
-        log_error(user_id, f"Ошибка подтверждения действия '{action}': {e}", module_name='callback')
-        await callback.answer("❌ Ошибка выполнения действия", show_alert=True)
 
 @router.callback_query(F.data == "cancel")
 async def callback_cancel(callback: CallbackQuery, state: FSMContext):
