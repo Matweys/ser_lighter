@@ -173,38 +173,7 @@ async def callback_settings(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Ошибка загрузки настроек", show_alert=True)
 
 
-@router.callback_query(F.data == "risk_settings")
-async def callback_risk_settings(callback: CallbackQuery, state: FSMContext):
-    """Настройки риск-менеджмента"""
-    user_id = callback.from_user.id
 
-    try:
-        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
-        if not user_config:
-            user_config = DefaultConfigs.get_global_config()
-
-        max_loss_usdt = user_config.get('max_daily_loss_usdt', 10.0)
-        leverage = user_config.get('leverage', 2)
-
-        text = (
-            f"🛡️ <b>Настройки риск-менеджмента</b>\n\n"
-            f"💰 <b>Максимальная сумма убытка:</b> {format_currency(max_loss_usdt)}\n"
-            f"Максимальный убыток за торговые сутки, после которого бот остановится.\n\n"
-            f"⚖️ <b>Кредитное плечо:</b> {leverage}x\n"
-            f"Глобальное плечо, которое будет применяться ко всем новым сделкам.\n\n"
-            f"Выберите параметр для изменения:"
-        )
-
-        await callback.message.edit_text(
-            text,
-            reply_markup=get_risk_settings_keyboard(),
-            parse_mode="HTML"
-        )
-        await callback.answer()
-
-    except Exception as e:
-        log_error(user_id, f"Ошибка в настройках риска: {e}", module_name='callback')
-        await callback.answer("❌ Ошибка загрузки настроек", show_alert=True)
 
 
 @router.callback_query(F.data == "strategy_settings")
@@ -422,58 +391,6 @@ async def callback_reconfigure_strategy(callback: CallbackQuery, state: FSMConte
     strategy_type = callback.data.replace("reconfigure_", "")
     # Переиспользуем основной обработчик для отображения меню
     await callback_configure_strategy(callback, state, strategy_type_override=strategy_type)
-
-
-# -- ОБРАБОТЧИК УСТАНОВКИ ПЛЕЧА --
-@router.callback_query(F.data == "set_leverage")
-async def callback_set_leverage(callback: CallbackQuery, state: FSMContext):
-    """Запрашивает у пользователя новое значение для кредитного плеча."""
-    await state.set_state(UserStates.SETTING_LEVERAGE)
-    await state.update_data(menu_message_id=callback.message.message_id)
-    await callback.message.edit_text(
-        "✏️ Введите новое значение кредитного плеча (целое число, например, `10`):",
-        parse_mode="HTML",
-        reply_markup=get_back_keyboard("risk_settings")
-    )
-    await callback.answer()
-
-
-@router.message(UserStates.SETTING_LEVERAGE)
-async def process_leverage(message: Message, state: FSMContext):
-    """Обрабатывает и сохраняет новое значение кредитного плеча."""
-    user_id = message.from_user.id
-    try:
-        value = int(message.text.strip())
-        if not (1 <= value <= 100):
-            await message.answer("❌ Плечо должно быть в диапазоне от 1 до 100. Попробуйте еще раз.")
-            return
-
-        # Используем надежное слияние с дефолтными настройками
-        current_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL) or DefaultConfigs.get_global_config()
-        current_config["leverage"] = value
-        await redis_manager.save_config(user_id, ConfigType.GLOBAL, current_config)
-
-        log_info(user_id, f"Обновлен параметр риска: leverage = {value}", "callback")
-
-        await message.delete()
-
-        state_data = await state.get_data()
-        menu_message_id = state_data.get("menu_message_id")
-        await state.clear()
-
-        # Создаем "ненастоящий" callback для обновления меню
-        mock_callback = CallbackQuery(id="mock_update", from_user=message.from_user, chat_instance="", message=message)
-        mock_callback.message.message_id = menu_message_id
-
-        # Вызываем функцию, которая покажет обновленное меню риска
-        await callback_risk_settings(mock_callback, state)
-
-    except (ValueError, TypeError):
-        await message.answer("❌ Некорректный формат. Введите целое число (например, `10`).")
-    except Exception as e:
-        log_error(user_id, f"Ошибка сохранения настройки leverage: {e}", "callback")
-        await message.answer("❌ Произошла ошибка при сохранении настройки.")
-# -- КОНЕЦ ОБРАБОТЧИКА УСТАНОВКИ ПЛЕЧА --
 
 
 # -- ОБРАБОИЧИКИ ВЫБОРА СТРАТЕГИИ для настройки
@@ -1033,21 +950,77 @@ async def callback_api_settings(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("❌ Ошибка загрузки информации о ключах.", reply_markup=get_back_keyboard("settings"))
 
 
-#--- ОБРАБОТЧИКИ СУТОЧНОГО ЛИМИТА УБЫТКА ---
-@router.callback_query(F.data == "set_max_daily_loss_usdt")
-async def callback_set_max_daily_loss(callback: CallbackQuery, state: FSMContext):
-    """Запрашивает у пользователя новое значение для макс. суточного убытка."""
-    await state.set_state(UserStates.SETTING_MAX_DAILY_LOSS_USDT)
-    # Сохраняем ID сообщения с меню, чтобы потом его обновить
-    await state.update_data(menu_message_id=callback.message.message_id)
-    await callback.message.edit_text(
-        "✏️ Введите новую максимальную сумму суточного убытка в USDT (например, `150.50`):",
-        parse_mode="HTML",
-        reply_markup=get_back_keyboard("risk_settings")
+# --- 1. НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ОТРИСОВКИ МЕНЮ РИСКА ---
+async def _show_risk_settings_menu(bot, chat_id: int, message_id: int, user_id: int):
+    """Надежно отображает и обновляет меню настроек риска."""
+    # Загружаем конфиг слиянием с дефолтным для гарантии наличия всех ключей
+    default_config = DefaultConfigs.get_global_config()
+    user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL) or {}
+    final_config = default_config.copy()
+    final_config.update(user_config)
+
+    text = (
+        f"🛡️ <b>Настройки риск-менеджмента</b>\n\n"
+        f"Здесь устанавливаются глобальные правила безопасности для вашего аккаунта.\n\n"
+        f"<b>Текущие параметры:</b>\n"
+        f"∙ Макс. убыток в день: <b>{final_config.get('max_daily_loss_usdt')} USDT</b>\n"
+        f"∙ Кредитное плечо: <b>x{final_config.get('leverage')}</b>"
+    )
+
+    try:
+        await bot.edit_message_text(
+            text=text,
+            chat_id=chat_id,
+            message_id=message_id,
+            reply_markup=get_risk_settings_keyboard(),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        log_error(user_id, f"Ошибка обновления меню риска: {e}", module_name='callback')
+
+
+# --- 2. ОБРАБОТЧИК ВХОДА В МЕНЮ РИСКА ---
+@router.callback_query(F.data == "risk_settings")
+async def callback_risk_settings(callback: CallbackQuery, state: FSMContext):
+    """Отображает меню настроек риска."""
+    await state.set_state(UserStates.RISK_SETTINGS)
+    await _show_risk_settings_menu(
+        bot=callback.bot,
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
+        user_id=callback.from_user.id
     )
     await callback.answer()
 
 
+# --- 3. ОБРАБОТЧИКИ НАЖАТИЯ НА КНОПКИ ПАРАМЕТРОВ ---
+@router.callback_query(F.data == "set_max_daily_loss_usdt")
+async def callback_set_max_daily_loss(callback: CallbackQuery, state: FSMContext):
+    """Запрашивает ввод нового значения для максимального суточного убытка."""
+    await state.set_state(UserStates.SETTING_MAX_DAILY_LOSS_USDT)
+    await state.update_data(menu_message_id=callback.message.message_id)
+    await callback.message.edit_text(
+        "✏️ Введите новую максимальную сумму суточного убытка в USDT (например, `50.5`):",
+        reply_markup=get_back_keyboard("risk_settings"),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "set_leverage")
+async def callback_set_leverage(callback: CallbackQuery, state: FSMContext):
+    """Запрашивает ввод нового значения для кредитного плеча."""
+    await state.set_state(UserStates.SETTING_LEVERAGE)
+    await state.update_data(menu_message_id=callback.message.message_id)
+    await callback.message.edit_text(
+        "✏️ Введите новое значение кредитного плеча (целое число, например, `10`):",
+        reply_markup=get_back_keyboard("risk_settings"),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+# --- 4. ОБРАБОТЧИКИ ВВОДА ЗНАЧЕНИЙ ОТ ПОЛЬЗОВАТЕЛЯ ---
 @router.message(UserStates.SETTING_MAX_DAILY_LOSS_USDT)
 async def process_max_daily_loss_usdt(message: Message, state: FSMContext):
     """Обрабатывает и сохраняет новое значение макс. суточного убытка."""
@@ -1055,37 +1028,59 @@ async def process_max_daily_loss_usdt(message: Message, state: FSMContext):
     try:
         value = float(message.text.strip().replace(',', '.'))
         if value <= 0:
-            await message.answer("❌ Значение должно быть больше нуля. Попробуйте еще раз.")
+            await message.answer("❌ Значение должно быть больше нуля.")
             return
 
-        # Используем надежное слияние с дефолтными настройками
-        current_config = await redis_manager.get_config(user_id,
-                                                        ConfigType.GLOBAL) or DefaultConfigs.get_global_config()
-        current_config["max_daily_loss_usdt"] = round(value, 2)
-        await redis_manager.save_config(user_id, ConfigType.GLOBAL, current_config)
+        default_config = DefaultConfigs.get_global_config()
+        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL) or {}
+        final_config = default_config.copy()
+        final_config.update(user_config)
+        final_config["max_daily_loss_usdt"] = round(value, 2)
+        await redis_manager.save_config(user_id, ConfigType.GLOBAL, final_config)
 
         log_info(user_id, f"Обновлен параметр риска: max_daily_loss_usdt = {value}", "callback")
 
-        await message.delete()
+        state_data = await state.get_data()
+        menu_message_id = state_data.get("menu_message_id")
+        await message.delete()  # Удаляем сообщение пользователя с числом
+        await state.clear()  # Сбрасываем состояние
+
+        # Вызываем нашу новую функцию для корректного обновления меню
+        await _show_risk_settings_menu(message.bot, message.chat.id, menu_message_id, user_id)
+
+    except (ValueError, TypeError):
+        await message.answer("❌ Некорректный формат. Введите число (например, `50.5`).")
+
+
+@router.message(UserStates.SETTING_LEVERAGE)
+async def process_leverage(message: Message, state: FSMContext):
+    """Обрабатывает и сохраняет новое значение кредитного плеча."""
+    user_id = message.from_user.id
+    try:
+        value = int(message.text.strip())
+        if not (1 <= value <= 100):
+            await message.answer("❌ Плечо должно быть в диапазоне от 1 до 100.")
+            return
+
+        default_config = DefaultConfigs.get_global_config()
+        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL) or {}
+        final_config = default_config.copy()
+        final_config.update(user_config)
+        final_config["leverage"] = value
+        await redis_manager.save_config(user_id, ConfigType.GLOBAL, final_config)
+
+        log_info(user_id, f"Обновлен параметр риска: leverage = {value}", "callback")
 
         state_data = await state.get_data()
         menu_message_id = state_data.get("menu_message_id")
-        await state.clear()
+        await message.delete()  # Удаляем сообщение пользователя с числом
+        await state.clear()  # Сбрасываем состояние
 
-        # Создаем "ненастоящий" callback, чтобы передать в функцию отображения меню
-        mock_callback = CallbackQuery(id="mock_update", from_user=message.from_user, chat_instance="", message=message)
-        mock_callback.message.message_id = menu_message_id  # Важно сохранить ID старого сообщения
-
-        # Просто вызываем функцию, которая покажет обновленное меню риска
-        await callback_risk_settings(mock_callback, state)
+        # Вызываем нашу новую функцию для корректного обновления меню
+        await _show_risk_settings_menu(message.bot, message.chat.id, menu_message_id, user_id)
 
     except (ValueError, TypeError):
-        await message.answer("❌ Некорректный формат. Введите число (например, `150.50`).")
-    except Exception as e:
-        log_error(user_id, f"Ошибка сохранения настройки max_daily_loss_usdt: {e}", "callback")
-        await message.answer("❌ Произошла ошибка при сохранении настройки.")
-
-#--- КОНЕЦ ОБРАБОТЧИКОВ СУТОЧНОГО ЛИМИТА УБЫТКА ---
+        await message.answer("❌ Некорректный формат. Введите целое число (например, `10`).")
 
 
 # --- ОБРАБОТЧИКИ НАСТРОЕК СТРАТЕГИЙ ---

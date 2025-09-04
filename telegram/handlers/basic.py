@@ -490,7 +490,7 @@ async def cmd_settings(message: Message, state: FSMContext):
     """Обработчик команды /settings"""
     user_id = message.from_user.id
     try:
-        # СБРАСЫВАЕМ ЛЮБОЕ ПРЕДЫДУЩЕЕ СОСТОЯНИЕ!
+        # !!! ГЛАВНЫЙ ФИКС ПРОТИВ "ЗАСТРЕВАНИЯ" !!!
         await state.clear()
 
         await basic_handler.log_command_usage(user_id, "settings")
@@ -500,10 +500,9 @@ async def cmd_settings(message: Message, state: FSMContext):
             "⚙️ <b>Настройки бота</b>\n\n"
             "Здесь вы можете управлять всеми аспектами работы бота, от управления рисками до параметров конкретных стратегий."
         )
-
         await message.answer(
             text,
-            reply_markup=get_settings_keyboard(), # ИСПРАВЛЕНО: используется правильная клавиатура
+            reply_markup=get_settings_keyboard(),
             parse_mode="HTML"
         )
     except Exception as e:
