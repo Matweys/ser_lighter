@@ -16,6 +16,7 @@ from ..keyboards.inline import (
     get_main_menu_keyboard,
     get_strategy_selection_keyboard,
     get_strategy_config_keyboard,
+    get_strategy_dynamic_config_keyboard,
     get_confirmation_keyboard,
     get_symbol_selection_keyboard,
     get_settings_keyboard,
@@ -737,21 +738,26 @@ async def callback_reset_settings(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "confirm_do_reset_settings")
 async def callback_confirm_reset_settings(callback: CallbackQuery, state: FSMContext):
     """
-    Подтверждение и выполнение сброса настроек.
+    Подтверждение и выполнение сброса настроек. (ИСПРАВЛЕННАЯ ВЕРСИЯ)
     """
     user_id = callback.from_user.id
     await callback.answer("Сбрасываю настройки...", show_alert=True)
 
     try:
-        # Получаем конфиг по умолчанию и сохраняем его для пользователя
-        default_config = DefaultConfigs.get_global_config()
-        from core.enums import ConfigType
-        await redis_manager.save_config(user_id, ConfigType.GLOBAL, default_config)
+        # --- ИСПРАВЛЕННАЯ ЛОГИКА ---
+        # 1. Сбрасываем глобальный конфиг
+        default_global_config = DefaultConfigs.get_global_config()
+        await redis_manager.save_config(user_id, ConfigType.GLOBAL, default_global_config)
 
-        # Также сбрасываем конфиги для каждой стратегии
-        default_strategies = DefaultConfigs.get_all_default_configs().get("strategy_configs", {})
+        # 2. Сбрасываем конфиги для каждой стратегии, используя правильные ConfigType
+        all_default_configs = DefaultConfigs.get_all_default_configs()
+        default_strategies = all_default_configs.get("strategy_configs", {})
+
         for strategy_type, strategy_config in default_strategies.items():
-            await redis_manager.save_config(user_id, f"strategy:{strategy_type}", strategy_config)
+            # Получаем правильный enum, например, ConfigType.STRATEGY_BIDIRECTIONAL_GRID
+            config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
+            await redis_manager.save_config(user_id, config_enum, strategy_config)
+        # --- КОНЕЦ ИСПРАВЛЕННОЙ ЛОГИКИ ---
 
         log_warning(user_id, "Пользователь сбросил все настройки к значениям по умолчанию.", module_name='callback')
 
