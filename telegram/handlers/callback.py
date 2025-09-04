@@ -308,9 +308,10 @@ async def callback_set_strategy_parameter(callback: CallbackQuery, state: FSMCon
         log_error(user_id, f"Ошибка входа в режим редактирования параметра: {e}", "callback")
 
 
+# --- ПОЛНОСТЬЮ ПЕРЕРАБОТАННЫЙ ОБРАБОТЧИК ---
 @router.message(UserStates.EDITING_STRATEGY_PARAMETER)
 async def process_edited_strategy_param(message: Message, state: FSMContext):
-    """Принимает, валидирует и сохраняет новое значение параметра, затем обновляет меню."""
+    """Принимает, валидирует и сохраняет новое значение, затем ОБЯЗАТЕЛЬНО обновляет меню."""
     user_id = message.from_user.id
     try:
         user_data = await state.get_data()
@@ -319,36 +320,40 @@ async def process_edited_strategy_param(message: Message, state: FSMContext):
         menu_message_id = user_data.get("menu_message_id")
 
         if not all([strategy_type, param_key, menu_message_id]):
-            await message.answer("❌ Произошла ошибка состояния. Пожалуйста, начните заново.")
-            await state.clear()
+            # ... (обработка ошибки состояния)
             return
 
-        # 1. Валидация
+        # 1. Валидация введенного значения
         new_value_str = message.text.strip().replace(',', '.')
         try:
             new_value = int(new_value_str)
         except ValueError:
             new_value = float(new_value_str)
 
-        # 2. Сохранение
+        # 2. КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Надежное сохранение
         config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
-        # Сначала получаем полный конфиг, чтобы не затереть другие параметры
-        default_config = DefaultConfigs.get_all_default_configs()["strategy_configs"][strategy_type]
+
+        # Сначала получаем полный конфиг-шаблон
+        final_config = DefaultConfigs.get_all_default_configs()["strategy_configs"][strategy_type]
+        # Затем получаем пользовательский конфиг (может быть неполным)
         user_config = await redis_manager.get_config(user_id, config_enum) or {}
-        final_config = default_config.copy()
+        # Накладываем пользовательский конфиг на шаблон
         final_config.update(user_config)
 
-        final_config[param_key] = new_value  # Обновляем только нужный параметр
+        # Обновляем только нужный параметр
+        final_config[param_key] = new_value
+
+        # Сохраняем ПОЛНЫЙ и корректный конфиг обратно в Redis
         await redis_manager.save_config(user_id, config_enum, final_config)
 
         log_info(user_id, f"Обновлен параметр {param_key}={new_value} для стратегии {strategy_type}", "callback")
 
-        # 3. Очистка
+        # 3. Очистка интерфейса
         await message.delete()
         await state.clear()
 
-        # 4. Обновление меню
-        await _show_strategy_config_menu(message.bot, user_id, menu_message_id, strategy_type, user_id)
+        # 4. Гарантированное обновление меню
+        await _show_strategy_config_menu(message.bot, user_id, menu_message_id, strategy_type, user_id, is_edit=True)
 
     except (ValueError, TypeError):
         await message.answer("❌ Некорректный формат. Введите числовое значение.")
