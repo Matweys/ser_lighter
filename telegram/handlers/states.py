@@ -47,6 +47,9 @@ class UserStates(StatesGroup):
     MANUAL_STRATEGY_SELECT_TYPE = State()
     MANUAL_STRATEGY_CONFIGURE = State()
     MANUAL_STRATEGY_AWAIT_VALUE = State()
+
+    # ---СОСТОЯНИЕ РЕДАКТИРОВАНИЯ НАСТРОЕК СТРАТЕГИЙ ---
+    EDITING_STRATEGY_PARAMETER = State()
     
     # Состояния для Bidirectional Grid Strategy
     BIDIRECTIONAL_GRID_LEVELS = State()
