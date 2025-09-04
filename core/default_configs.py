@@ -70,127 +70,65 @@ class DefaultConfigs:
             # Версия конфигурации (для миграций)
             "config_version": "1.0.0"
         }
-    
+
     @staticmethod
     def get_bidirectional_grid_config() -> Dict[str, Any]:
-        """
-        Конфигурация стратегии двунаправленной сетки
-        
-        Returns:
-            Dict: Настройки стратегии
-        """
+        """Конфигурация стратегии двунаправленной сетки."""
         return {
-            # Основные параметры сетки
-            "grid_levels": 5,                    # Количество уровней сетки в каждую сторону
-            "grid_spacing_percent": 1.0,         # Расстояние между уровнями в %
-            "profit_percent": 0.5,               # Прибыль с каждого исполнения в %
-            
-            # Адаптивные настройки
-            "adaptive_spacing": True,            # Адаптивное расстояние на основе ATR
-            "min_spacing_percent": 0.2,          # Минимальное расстояние
-            "max_spacing_percent": 2.0,          # Максимальное расстояние
-            "atr_multiplier": 0.5,               # Множитель ATR для расчета spacing
-            
-            # Управление сеткой
-            "auto_rebuild_grid": True,           # Автоматическая перестройка сетки
-            "rebuild_threshold_percent": 80,     # Порог для перестройки (% от границ)
-            "min_orders_for_rebuild": 3,         # Минимум ордеров для перестройки
-            
-            # Размеры позиций
-            "position_size_percent": 10,         # % от order_amount на всю сетку
-            "max_grid_exposure": 100.0,          # Максимальная экспозиция сетки в USDT
-            
-            # Условия запуска
+            # --- Пользовательские настройки (видны в Telegram) ---
+            "is_enabled": True,
+            "order_amount": 10.0,
+            "grid_levels": 4,
+            "profit_percent": 0.8,
+            "stop_loss_percent": 1.0,
+
+            # --- Внутренние параметры (для логики бота) ---
+            "grid_spacing_percent": 0.8,  # Используется как базовый шаг
+            "adaptive_spacing": True,
+            "atr_multiplier": 0.5,
+            "auto_rebuild_grid": True,
+            "rebuild_threshold_percent": 80,
             "required_market_conditions": ["STRONG_FLAT", "FLAT"],
-            "min_signal_strength": 60,
-            "max_volatility_threshold": 5.0,     # Максимальная волатильность для запуска
-            
-            # Дополнительные настройки
-            "enable_profit_orders": True,        # Размещать ордера прибыли
-            "grid_timeout_hours": 24,            # Таймаут работы сетки
-            "save_grid_stats": True              # Сохранять статистику сетки
+            "min_signal_strength": 60
         }
-    
+
     @staticmethod
     def get_impulse_trailing_config() -> Dict[str, Any]:
-        """
-        Конфигурация стратегии импульсного трейлинга
-        
-        Returns:
-            Dict: Настройки стратегии
-        """
+        """Конфигурация стратегии импульсного трейлинга."""
         return {
-            # Основные параметры
-            "initial_stop_percent": 1.0,         # Начальный стоп-лосс в %
-            "trailing_step_percent": 0.5,        # Шаг трейлинга в %
-            "min_profit_for_trailing": 1.0,      # Минимальная прибыль для начала трейлинга
-            
-            # Импульсные настройки
-            "impulse_threshold_percent": 3.0,    # Порог импульса в %
-            "impulse_timeframe": "15m",          # Таймфрейм для определения импульса
-            "volume_confirmation": True,         # Подтверждение объемом
-            "min_volume_ratio": 1.5,             # Минимальное отношение объема к среднему
-            
-            # Управление позицией
-            "position_size_percent": 50,         # % от order_amount
-            "max_position_size": 50.0,           # Максимальный размер позиции в USDT
-            "partial_close_enabled": True,       # Частичное закрытие позиций
-            "partial_close_percent": 50,         # % позиции для частичного закрытия
-            
-            # Условия запуска
-            "required_market_conditions": ["STRONG_TREND", "TREND"],
+            # --- Пользовательские настройки (видны в Telegram) ---
+            "is_enabled": True,
+            "order_amount": 50.0,
             "min_signal_strength": 75,
+            "stop_loss_percent": 1.0,
+            "trailing_percent": 2.0,
+
+            # --- Внутренние параметры (для логики бота) ---
+            "impulse_threshold_percent": 3.0,
+            "volume_confirmation": True,
+            "min_volume_ratio": 1.5,
+            "required_market_conditions": ["STRONG_TREND", "TREND"],
             "trend_confirmation_required": True,
-            
-            # Дополнительные фильтры
-            "rsi_filter_enabled": True,          # Фильтр по RSI
-            "rsi_oversold_threshold": 30,        # Порог перепроданности
-            "rsi_overbought_threshold": 70,      # Порог перекупленности
-            
-            # Таймауты и лимиты
-            "max_holding_time_hours": 12,        # Максимальное время удержания позиции
-            "strategy_timeout_hours": 6,         # Таймаут работы стратегии
-            "save_impulse_stats": True           # Сохранять статистику импульсов
+            "max_holding_time_hours": 12
         }
-    
+
     @staticmethod
     def get_grid_scalping_config() -> Dict[str, Any]:
-        """
-        Конфигурация стратегии грид-скальпинга
-        
-        Returns:
-            Dict: Настройки стратегии
-        """
+        """Конфигурация стратегии грид-скальпинга."""
         return {
-            # Основные параметры скальпинга
-            "scalp_levels": 5,                   # Количество уровней скальпинга
-            "scalp_spacing_percent": 0.5,        # Расстояние между уровнями в %
-            "quick_profit_percent": 0.5,         # Быстрая прибыль в %
-            
-            # Адаптивные настройки
-            "adaptive_to_spread": True,          # Адаптация к спреду
-            "min_spread_multiplier": 2.0,        # Минимальный множитель спреда
-            "volatility_adjustment": True,       # Корректировка по волатильности
-            
-            # Управление позициями
-            "position_size_percent": 30,         # % от order_amount
-            "max_scalp_exposure": 30.0,          # Максимальная экспозиция в USDT
-            "fast_execution_mode": True,         # Режим быстрого исполнения
-            
-            # Условия запуска
+            # --- Пользовательские настройки (видны в Telegram) ---
+            "is_enabled": True,
+            "order_amount": 15.0,
+            "max_averaging_orders": 3,
+            "profit_percent": 0.5,
+            "stop_loss_percent": 3.0,
+
+            # --- Внутренние параметры (для логики бота) ---
+            "adaptive_to_spread": True,
+            "min_spread_multiplier": 2.0,
             "required_market_conditions": ["WEAK_TREND", "FLAT"],
             "min_signal_strength": 65,
-            "max_spread_threshold": 0.1,         # Максимальный спред для работы
-            
-            # Фильтры качества
-            "liquidity_filter": True,            # Фильтр по ликвидности
-            "min_volume_24h": 1000000,           # Минимальный объем за 24ч
-            "order_book_depth_check": True,      # Проверка глубины стакана
-            
-            # Таймауты
-            "order_timeout_seconds": 30,         # Таймаут ордера
-            "strategy_timeout_hours": 2,         # Таймаут работы стратегии
-            "save_scalp_stats": True             # Сохранять статистику скальпинга
+            "order_timeout_seconds": 30
         }
     
     @staticmethod
@@ -241,7 +179,7 @@ class DefaultConfigs:
             "save_analysis_history": True,
             "max_history_records": 1000
         }
-    
+
     @staticmethod
     def get_risk_manager_config() -> Dict[str, Any]:
         """

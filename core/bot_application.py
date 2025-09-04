@@ -493,7 +493,7 @@ class BotApplication:
 
         session = self.active_sessions.get(user_id)
         if session:
-            await session.stop_all_strategies(event.reason) # Останавливаем активные стратегии
+            await session.stop_all_strategies(event.reason)
 
         # Обновляем статус напрямую в Redis
         session_data = await redis_manager.get_user_session(user_id) or {}

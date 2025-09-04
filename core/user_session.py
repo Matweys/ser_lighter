@@ -426,18 +426,6 @@ class UserSession:
         except Exception as e:
             log_error(self.user_id, f"Ошибка запуска включенных стратегий: {e}", module_name=__name__)
 
-    async def _stop_all_strategies(self, reason: str):
-        """Остановка всех стратегий"""
-        try:
-            strategy_ids = list(self.active_strategies.keys())
-            
-            for strategy_id in strategy_ids:
-                await self.stop_strategy(strategy_id, reason)
-                
-            log_info(self.user_id, f"Остановлено {len(strategy_ids)} стратегий", module_name=__name__)
-            
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка остановки всех стратегий: {e}", module_name=__name__)
             
     async def _subscribe_to_events(self):
         """Подписка на события"""
@@ -570,3 +558,23 @@ class UserSession:
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки изменения настроек: {e}", module_name=__name__)
+
+    async def stop_all_strategies(self, reason: str):
+        """
+        Публичный метод для остановки всех активных стратегий сессии.
+        Безопасно вызывает внутренний метод _stop_all_strategies.
+        """
+        await self._stop_all_strategies(reason)
+
+    async def _stop_all_strategies(self, reason: str):
+        """Остановка всех стратегий"""
+        try:
+            strategy_ids = list(self.active_strategies.keys())
+
+            for strategy_id in strategy_ids:
+                await self.stop_strategy(strategy_id, reason)
+
+            log_info(self.user_id, f"Остановлено {len(strategy_ids)} стратегий", module_name=__name__)
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка остановки всех стратегий: {e}", module_name=__name__)

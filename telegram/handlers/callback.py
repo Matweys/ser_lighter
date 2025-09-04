@@ -183,8 +183,8 @@ async def callback_risk_settings(callback: CallbackQuery, state: FSMContext):
         if not user_config:
             user_config = DefaultConfigs.get_global_config()
 
-        max_loss_usdt = user_config.get('max_daily_loss_usdt', 100.0)
-        leverage = user_config.get('leverage', 10)
+        max_loss_usdt = user_config.get('max_daily_loss_usdt', 10.0)
+        leverage = user_config.get('leverage', 2)
 
         text = (
             f"🛡️ <b>Настройки риск-менеджмента</b>\n\n"
@@ -206,41 +206,185 @@ async def callback_risk_settings(callback: CallbackQuery, state: FSMContext):
         log_error(user_id, f"Ошибка в настройках риска: {e}", module_name='callback')
         await callback.answer("❌ Ошибка загрузки настроек", show_alert=True)
 
+
 @router.callback_query(F.data == "strategy_settings")
 async def callback_strategy_settings(callback: CallbackQuery, state: FSMContext):
     """Настройки стратегий"""
     user_id = callback.from_user.id
-    
+
     try:
-        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
-        strategies_config = user_config.get('strategies', {})
-        
         text = (
             f"📊 <b>Настройки стратегий</b>\n\n"
-            f"Настройте параметры для каждого типа стратегии:\n\n"
+            f"Здесь вы можете настроить параметры для каждой стратегии, а также включить или отключить их для автоматической торговли.\n\n"
+            f"Выберите стратегию для настройки:"
         )
-        
-        # Добавляем информацию о каждой стратегии
-        for strategy_type, info in callback_handler.strategy_descriptions.items():
-            strategy_config = strategies_config.get(strategy_type, {})
-            enabled = strategy_config.get('enabled', True)
-            status = "✅" if enabled else "❌"
-            
-            text += f"{status} <b>{info['name']}</b>\n"
-            text += f"   Риск: {info['risk_level']}\n"
-            text += f"   Мин. баланс: {format_currency(info['min_balance'])}\n\n"
-        
-        text += "Выберите стратегию для настройки:"
-        
+
+        # Получаем статусы (включена/выключена) для отображения в меню
+        all_strategy_configs = {}
+        for s_type in callback_handler.strategy_descriptions.keys():
+            config_enum = getattr(ConfigType, f"STRATEGY_{s_type.upper()}", None)
+            if config_enum:
+                config = await redis_manager.get_config(user_id, config_enum)
+                all_strategy_configs[s_type] = config or {}
+
         await callback.message.edit_text(
             text,
-            reply_markup=get_strategy_settings_keyboard(),
+            reply_markup=get_strategy_settings_keyboard(all_strategy_configs),
             parse_mode="HTML"
         )
-        
+        await callback.answer()
+
     except Exception as e:
         log_error(user_id, f"Ошибка в настройках стратегий: {e}", module_name='callback')
         await callback.answer("❌ Ошибка загрузки настроек", show_alert=True)
+
+
+# --- НОВЫЙ БЛОК ДЛЯ УПРАВЛЕНИЯ НАСТРОЙКАМИ СТРАТЕГИЙ ---
+
+@router.callback_query(F.data.startswith("configure_strategy_"))
+async def callback_configure_strategy(callback: CallbackQuery, state: FSMContext,
+                                      strategy_type_override: Optional[str] = None):
+    """Отображает меню настройки для конкретной стратегии."""
+    user_id = callback.from_user.id
+    # Используем override, если мы возвращаемся в это меню после изменения параметра
+    strategy_type = strategy_type_override or callback.data.replace("configure_strategy_", "")
+
+    try:
+        if strategy_type not in callback_handler.strategy_descriptions:
+            await callback.answer("❌ Неизвестная стратегия", show_alert=True)
+            return
+
+        # Загружаем актуальный конфиг стратегии
+        config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
+        config = await redis_manager.get_config(user_id, config_enum)
+        if not config:
+            config = DefaultConfigs.get_all_default_configs()["strategy_configs"][strategy_type]
+
+        strategy_info = callback_handler.strategy_descriptions[strategy_type]
+        status_text = "✅ Включена" if config.get("is_enabled", False) else "❌ Отключена"
+
+        text = (
+            f"⚙️ <b>Настройка: {strategy_info['name']}</b>\n\n"
+            f"<b>Статус для автоторговли:</b> {status_text}\n\n"
+            f"Нажмите на параметр, чтобы изменить его значение."
+        )
+
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_strategy_config_keyboard(strategy_type, config),
+            parse_mode="HTML"
+        )
+        await callback.answer()
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка настройки стратегии {strategy_type}: {e}", module_name='callback')
+        await callback.answer("❌ Ошибка при загрузке настроек.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("set_param_"))
+async def callback_set_strategy_parameter(callback: CallbackQuery, state: FSMContext):
+    """Обрабатывает нажатие на кнопку параметра и запрашивает новое значение."""
+    user_id = callback.from_user.id
+    try:
+        parts = callback.data.split("_")
+        strategy_type = f"{parts[2]}_{parts[3]}"
+        param_key = "_".join(parts[4:])
+
+        await state.set_state(UserStates.MANUAL_STRATEGY_AWAIT_VALUE)  # Переиспользуем состояние
+        await state.update_data(
+            editing_strategy_type=strategy_type,
+            editing_param_key=param_key,
+            menu_message_id=callback.message.message_id
+        )
+
+        await callback.message.edit_text(
+            f"✏️ Введите новое значение для <b>{param_key}</b>:",
+            parse_mode="HTML",
+            reply_markup=get_back_keyboard(f"reconfigure_{strategy_type}")
+        )
+        await callback.answer()
+    except Exception as e:
+        log_error(user_id, f"Ошибка входа в режим редактирования параметра: {e}", "callback")
+
+
+@router.message(UserStates.MANUAL_STRATEGY_AWAIT_VALUE)
+async def process_strategy_param_value(message: Message, state: FSMContext):
+    """Принимает, валидирует и сохраняет новое значение параметра стратегии."""
+    user_id = message.from_user.id
+    try:
+        user_data = await state.get_data()
+        strategy_type = user_data.get("editing_strategy_type")
+        param_key = user_data.get("editing_param_key")
+        menu_message_id = user_data.get("menu_message_id")
+
+        # Валидация
+        new_value_str = message.text.strip().replace(',', '.')
+        # Пытаемся преобразовать в int, если не получается - в float
+        try:
+            new_value = int(new_value_str)
+        except ValueError:
+            new_value = float(new_value_str)
+
+        # Сохранение
+        config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
+        config = await redis_manager.get_config(user_id, config_enum)
+        config[param_key] = new_value
+        await redis_manager.save_config(user_id, config_enum, config)
+
+        log_info(user_id, f"Обновлен параметр {param_key}={new_value} для стратегии {strategy_type}", "callback")
+        await message.delete()
+        await state.clear()
+
+        # Создаем mock CallbackQuery для обновления меню
+        mock_callback = CallbackQuery(id="mock_update", from_user=message.from_user, chat_instance="", message=message)
+        mock_callback.message.message_id = menu_message_id
+
+        await callback_configure_strategy(mock_callback, state, strategy_type_override=strategy_type)
+
+    except (ValueError, TypeError):
+        await message.answer("❌ Некорректный формат. Введите числовое значение.")
+    except Exception as e:
+        log_error(user_id, f"Ошибка сохранения параметра стратегии: {e}", "callback")
+
+
+@router.callback_query(F.data.startswith("toggle_strategy_"))
+async def callback_toggle_strategy(callback: CallbackQuery, state: FSMContext):
+    """Включает или отключает стратегию для автоторговли."""
+    user_id = callback.from_user.id
+    strategy_type = callback.data.replace("toggle_strategy_", "")
+
+    try:
+        config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
+        config = await redis_manager.get_config(user_id, config_enum)
+        if not config:
+            config = DefaultConfigs.get_all_default_configs()["strategy_configs"][strategy_type]
+
+        is_enabled = not config.get("is_enabled", False)
+        config["is_enabled"] = is_enabled
+        await redis_manager.save_config(user_id, config_enum, config)
+
+        status_text = "включена" if is_enabled else "отключена"
+        await callback.answer(f"Стратегия {status_text} для автоторговли.", show_alert=True)
+
+        await callback_configure_strategy(callback, state, strategy_type_override=strategy_type)
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка переключения стратегии {strategy_type}: {e}", module_name='callback')
+
+
+@router.callback_query(F.data == "save_and_exit_strategy_config")
+async def callback_save_and_exit_strategy_config(callback: CallbackQuery, state: FSMContext):
+    """Обрабатывает кнопку 'Сохранить и выйти'."""
+    await callback.answer("✅ Настройки сохранены!", show_alert=False)
+    await callback_strategy_settings(callback, state)
+
+
+@router.callback_query(F.data.startswith("reconfigure_"))
+async def callback_reconfigure_strategy(callback: CallbackQuery, state: FSMContext):
+    """Возврат в меню настройки конкретной стратегии из режима ввода значения."""
+    strategy_type = callback.data.replace("reconfigure_", "")
+    await state.set_state(UserStates.CONFIGURING_STRATEGY)  # Возвращаем правильное состояние
+    await callback_configure_strategy(callback, state, strategy_type_override=strategy_type)
 
 
 # -- ОБРАБОТЧИК УСТАНОВКИ ПЛЕЧА --
@@ -300,57 +444,38 @@ async def process_leverage(message: Message, state: FSMContext):
 
 # Выбор стратегии для настройки
 @router.callback_query(F.data.startswith("configure_strategy_"))
-async def callback_configure_strategy(callback: CallbackQuery, state: FSMContext):
-    """Настройка конкретной стратегии"""
+async def callback_configure_strategy(callback: CallbackQuery, state: FSMContext,
+                                      strategy_type_override: Optional[str] = None):
+    """Отображает меню настройки для конкретной стратегии."""
     user_id = callback.from_user.id
-    strategy_type = callback.data.replace("configure_strategy_", "")
-    
+    # Используем override, если мы возвращаемся в это меню после изменения параметра
+    strategy_type = strategy_type_override or callback.data.replace("configure_strategy_", "")
+
     try:
         if strategy_type not in callback_handler.strategy_descriptions:
             await callback.answer("❌ Неизвестная стратегия", show_alert=True)
             return
-        
+
+        # Загружаем актуальный конфиг стратегии
+        config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
+        config = await redis_manager.get_config(user_id, config_enum)
+        if not config:
+            config = DefaultConfigs.get_all_default_configs()["strategy_configs"][strategy_type]
+
         strategy_info = callback_handler.strategy_descriptions[strategy_type]
-        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
-        strategy_config = user_config.get('strategies', {}).get(strategy_type, {})
-        
-        # Сохраняем тип стратегии в состоянии
-        await state.update_data(configuring_strategy=strategy_type)
-        await state.set_state(UserStates.CONFIGURING_STRATEGY)
-        
+        status_text = "✅ Включена" if config.get("is_enabled", False) else "❌ Отключена"
+
         text = (
             f"⚙️ <b>Настройка: {strategy_info['name']}</b>\n\n"
-            f"📝 <b>Описание:</b>\n{strategy_info['description']}\n\n"
-            f"🎯 <b>Уровень риска:</b> {strategy_info['risk_level']}\n"
-            f"💰 <b>Мин. баланс:</b> {format_currency(strategy_info['min_balance'])}\n\n"
-            f"<b>Текущие настройки:</b>\n"
+            f"<b>Статус для автоторговли:</b> {status_text}\n\n"
+            f"Нажмите на параметр, чтобы изменить его значение."
         )
-        
-        # Добавляем текущие параметры стратегии
-        if strategy_type == StrategyType.BIDIRECTIONAL_GRID.value:
-            text += f"📏 Количество уровней: {strategy_config.get('grid_levels', 5)}\n"
-            text += f"📊 Spacing (%): {strategy_config.get('spacing_percent', 0.5)}\n"
-            text += f"💵 Размер ордера (USDT): {strategy_config.get('order_size_usdt', 10)}\n"
-        elif strategy_type == StrategyType.GRID_SCALPING.value:
-            text += f"⚡ Таймаут ордера (сек): {strategy_config.get('order_timeout', 30)}\n"
-            text += f"📊 Мин. спред (%): {strategy_config.get('min_spread_percent', 0.1)}\n"
-            text += f"💵 Размер ордера (USDT): {strategy_config.get('order_size_usdt', 20)}\n"
-        elif strategy_type == StrategyType.IMPULSE_TRAILING.value:
-            text += f"🎯 Мин. сила сигнала: {strategy_config.get('min_signal_strength', 70)}\n"
-            text += f"📈 Трейлинг (%): {strategy_config.get('trailing_percent', 1.0)}\n"
-            text += f"💵 Размер позиции (USDT): {strategy_config.get('position_size_usdt', 50)}\n"
-        
-        text += f"\nВыберите параметр для изменения:"
-        
-        await callback.message.edit_text(
-            text,
-            reply_markup=get_strategy_config_keyboard(strategy_type),
-            parse_mode="HTML"
-        )
-        
+
+        await callback.message.edit_text(text,reply_markup=get_strategy_config_keyboard(strategy_type, config), parse_mode="HTML")
+        await callback.answer()
     except Exception as e:
         log_error(user_id, f"Ошибка настройки стратегии {strategy_type}: {e}", module_name='callback')
-        await callback.answer("❌ Ошибка настройки стратегии", show_alert=True)
+        await callback.answer("❌ Ошибка при загрузке настроек.", show_alert=True)
 
 # Статистика
 @router.callback_query(F.data == "statistics")

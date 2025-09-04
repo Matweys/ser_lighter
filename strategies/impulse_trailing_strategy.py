@@ -180,7 +180,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
             self.partial_close_percent = self.config.get("partial_close_percent", 50)
             
             # Таймауты
-            max_holding_hours = self.config.get("max_holding_time_hours", 12)
+            max_holding_hours = self.config.get("max_holding_time_hours")
             self.max_holding_time = timedelta(hours=max_holding_hours)
             
             log_info(

@@ -206,94 +206,71 @@ def get_risk_settings_keyboard() -> InlineKeyboardMarkup:
 
     return KeyboardBuilder.build_keyboard(buttons)
 
-def get_strategy_settings_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура настроек стратегий"""
+
+def get_strategy_settings_keyboard(configs: Dict[str, Dict[str, Any]]) -> InlineKeyboardMarkup:
+    """Клавиатура настроек стратегий с отображением статуса (вкл/выкл)."""
+
+    def get_status_icon(strategy_type: str) -> str:
+        # is_enabled - наш новый флаг в конфиге стратегии
+        return "✅" if configs.get(strategy_type, {}).get("is_enabled", False) else "❌"
+
     buttons = [
         [
-            {"text": "🔄 Двунаправленная сетка", "callback_data": "configure_strategy_bidirectional_grid"},
-            {"text": "⚡ Сеточный скальпинг", "callback_data": "configure_strategy_grid_scalping"}
+            {"text": f"{get_status_icon('bidirectional_grid')} Двунаправленная сетка",
+             "callback_data": "configure_strategy_bidirectional_grid"},
+            {"text": f"{get_status_icon('grid_scalping')} Сеточный скальпинг",
+             "callback_data": "configure_strategy_grid_scalping"}
         ],
         [
-            {"text": "🚀 Импульсный трейлинг", "callback_data": "configure_strategy_impulse_trailing"}
+            {"text": f"{get_status_icon('impulse_trailing')} Импульсный трейлинг",
+             "callback_data": "configure_strategy_impulse_trailing"}
         ],
         [
-            {"text": "✅ Включить все", "callback_data": "enable_all_strategies"},
-            {"text": "❌ Отключить все", "callback_data": "disable_all_strategies"}
-        ],
-        [
-            {"text": "⚙️ Настройки", "callback_data": "settings"},
+            {"text": "⚙️ Назад в Настройки", "callback_data": "settings"},
             {"text": "🏠 Главное меню", "callback_data": "main_menu"}
         ]
     ]
-    
+
     return KeyboardBuilder.build_keyboard(buttons)
 
-def get_strategy_config_keyboard(strategy_type: str) -> InlineKeyboardMarkup:
-    """Клавиатура настройки конкретной стратегии"""
+def get_strategy_config_keyboard(strategy_type: str, config: Dict[str, Any]) -> InlineKeyboardMarkup:
+    """Динамическая клавиатура настройки конкретной стратегии."""
+    buttons = []
+
+    # --- Генерация кнопок с параметрами ---
     if strategy_type == StrategyType.BIDIRECTIONAL_GRID.value:
-        buttons = [
-            [
-                {"text": "📏 Уровни сетки", "callback_data": f"set_{strategy_type}_levels"},
-                {"text": "📊 Spacing (%)", "callback_data": f"set_{strategy_type}_spacing"}
-            ],
-            [
-                {"text": "💵 Размер ордера", "callback_data": f"set_{strategy_type}_order_size"},
-                {"text": "🔄 Ребаланс", "callback_data": f"set_{strategy_type}_rebalance"}
-            ],
-            [
-                {"text": "📈 Границы сетки", "callback_data": f"set_{strategy_type}_bounds"},
-                {"text": "💰 Макс. позиция", "callback_data": f"set_{strategy_type}_max_position"}
-            ]
-        ]
+        buttons.extend([
+            [{"text": f"Сумма ордера: {config.get('order_amount', 0)} USDT", "callback_data": f"set_param_{strategy_type}_order_amount"}],
+            [{"text": f"Уровни (в каждую сторону): {config.get('grid_levels', 0)}", "callback_data": f"set_param_{strategy_type}_grid_levels"}],
+            [{"text": f"Процент прибыли: {config.get('profit_percent', 0)}%", "callback_data": f"set_param_{strategy_type}_profit_percent"}],
+            [{"text": f"Стоп-лосс: {config.get('stop_loss_percent', 0)}%", "callback_data": f"set_param_{strategy_type}_stop_loss_percent"}],
+        ])
     elif strategy_type == StrategyType.GRID_SCALPING.value:
-        buttons = [
-            [
-                {"text": "⏰ Таймаут ордера", "callback_data": f"set_{strategy_type}_timeout"},
-                {"text": "📊 Мин. спред", "callback_data": f"set_{strategy_type}_spread"}
-            ],
-            [
-                {"text": "💵 Размер ордера", "callback_data": f"set_{strategy_type}_order_size"},
-                {"text": "📈 Макс. ордеров", "callback_data": f"set_{strategy_type}_max_orders"}
-            ],
-            [
-                {"text": "🎯 Цель прибыли", "callback_data": f"set_{strategy_type}_profit_target"},
-                {"text": "💧 Проверка ликвидности", "callback_data": f"set_{strategy_type}_liquidity"}
-            ]
-        ]
+        buttons.extend([
+            [{"text": f"Сумма ордера: {config.get('order_amount', 0)} USDT", "callback_data": f"set_param_{strategy_type}_order_amount"}],
+            [{"text": f"Макс. ордеров усреднения: {config.get('max_averaging_orders', 0)}", "callback_data": f"set_param_{strategy_type}_max_averaging_orders"}],
+            [{"text": f"Процент прибыли: {config.get('profit_percent', 0)}%", "callback_data": f"set_param_{strategy_type}_profit_percent"}],
+            [{"text": f"Стоп-лосс: {config.get('stop_loss_percent', 0)}%", "callback_data": f"set_param_{strategy_type}_stop_loss_percent"}],
+        ])
     elif strategy_type == StrategyType.IMPULSE_TRAILING.value:
-        buttons = [
-            [
-                {"text": "🎯 Мин. сила сигнала", "callback_data": f"set_{strategy_type}_signal_strength"},
-                {"text": "📈 Трейлинг (%)", "callback_data": f"set_{strategy_type}_trailing"}
-            ],
-            [
-                {"text": "💵 Размер позиции", "callback_data": f"set_{strategy_type}_position_size"},
-                {"text": "⏰ Макс. время", "callback_data": f"set_{strategy_type}_max_time"}
-            ],
-            [
-                {"text": "📊 Частичное закрытие", "callback_data": f"set_{strategy_type}_partial_close"},
-                {"text": "🔍 Подтверждение тренда", "callback_data": f"set_{strategy_type}_trend_confirm"}
-            ]
-        ]
-    else:
-        buttons = [
-            [
-                {"text": "⚙️ Основные параметры", "callback_data": f"set_{strategy_type}_basic"}
-            ]
-        ]
-    
-    # Добавляем общие кнопки
+        buttons.extend([
+            [{"text": f"Сумма ордера: {config.get('order_amount', 0)} USDT", "callback_data": f"set_param_{strategy_type}_order_amount"}],
+            [{"text": f"Мин. сила сигнала: {config.get('min_signal_strength', 0)}", "callback_data": f"set_param_{strategy_type}_min_signal_strength"}],
+            [{"text": f"Стоп-лосс: {config.get('stop_loss_percent', 0)}%", "callback_data": f"set_param_{strategy_type}_stop_loss_percent"}],
+            [{"text": f"Трейлинг: {config.get('trailing_percent', 0)}%", "callback_data": f"set_param_{strategy_type}_trailing_percent"}],
+        ])
+
+    # --- Динамическая кнопка включения/отключения ---
+    is_enabled = config.get("is_enabled", False)
+    toggle_button_text = "❌ Не применять в автоторговле" if is_enabled else "✅ Применять в автоторговле"
+    buttons.append([{"text": toggle_button_text, "callback_data": f"toggle_strategy_{strategy_type}"}])
+
+    # --- Кнопки управления ---
     buttons.extend([
-        [
-            {"text": "✅ Включить стратегию", "callback_data": f"enable_strategy_{strategy_type}"},
-            {"text": "❌ Отключить стратегию", "callback_data": f"disable_strategy_{strategy_type}"}
-        ],
-        [
-            {"text": "📊 Настройки стратегий", "callback_data": "strategy_settings"},
-            {"text": "🏠 Главное меню", "callback_data": "main_menu"}
-        ]
+        [{"text": "💾 Сохранить и выйти", "callback_data": "save_and_exit_strategy_config"}],
+        [{"text": "📊 Назад к стратегиям", "callback_data": "strategy_settings"}]
     ])
-    
+
     return KeyboardBuilder.build_keyboard(buttons)
 
 # Выбор стратегий
