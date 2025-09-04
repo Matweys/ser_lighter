@@ -233,39 +233,46 @@ def get_strategy_settings_keyboard(configs: Dict[str, Dict[str, Any]]) -> Inline
 
     return KeyboardBuilder.build_keyboard(buttons)
 
+
+# telegram/keyboards/inline.py
+
 def get_strategy_config_keyboard(strategy_type: str, config: Dict[str, Any]) -> InlineKeyboardMarkup:
     """Динамическая клавиатура настройки конкретной стратегии."""
     buttons = []
 
-    # --- Генерация кнопок с параметрами ---
+    # Определяем параметры, которые пользователь может редактировать
+    editable_params = {}
     if strategy_type == StrategyType.BIDIRECTIONAL_GRID.value:
-        buttons.extend([
-            [{"text": f"Сумма ордера: {config.get('order_amount', 0)} USDT", "callback_data": f"set_param_{strategy_type}_order_amount"}],
-            [{"text": f"Уровни (в каждую сторону): {config.get('grid_levels', 0)}", "callback_data": f"set_param_{strategy_type}_grid_levels"}],
-            [{"text": f"Процент прибыли: {config.get('profit_percent', 0)}%", "callback_data": f"set_param_{strategy_type}_profit_percent"}],
-            [{"text": f"Стоп-лосс: {config.get('stop_loss_percent', 0)}%", "callback_data": f"set_param_{strategy_type}_stop_loss_percent"}],
-        ])
+        editable_params = {
+            "order_amount": f"Сумма ордера: {config.get('order_amount', 0)} USDT",
+            "grid_levels": f"Уровни (в каждую сторону): {config.get('grid_levels', 0)}",
+            "profit_percent": f"Процент прибыли: {config.get('profit_percent', 0)}%",
+            "stop_loss_percent": f"Стоп-лосс: {config.get('stop_loss_percent', 0)}%",
+        }
     elif strategy_type == StrategyType.GRID_SCALPING.value:
-        buttons.extend([
-            [{"text": f"Сумма ордера: {config.get('order_amount', 0)} USDT", "callback_data": f"set_param_{strategy_type}_order_amount"}],
-            [{"text": f"Макс. ордеров усреднения: {config.get('max_averaging_orders', 0)}", "callback_data": f"set_param_{strategy_type}_max_averaging_orders"}],
-            [{"text": f"Процент прибыли: {config.get('profit_percent', 0)}%", "callback_data": f"set_param_{strategy_type}_profit_percent"}],
-            [{"text": f"Стоп-лосс: {config.get('stop_loss_percent', 0)}%", "callback_data": f"set_param_{strategy_type}_stop_loss_percent"}],
-        ])
+        editable_params = {
+            "order_amount": f"Сумма ордера: {config.get('order_amount', 0)} USDT",
+            "max_averaging_orders": f"Макс. ордеров усреднения: {config.get('max_averaging_orders', 0)}",
+            "profit_percent": f"Процент прибыли: {config.get('profit_percent', 0)}%",
+            "stop_loss_percent": f"Стоп-лосс: {config.get('stop_loss_percent', 0)}%",
+        }
     elif strategy_type == StrategyType.IMPULSE_TRAILING.value:
-        buttons.extend([
-            [{"text": f"Сумма ордера: {config.get('order_amount', 0)} USDT", "callback_data": f"set_param_{strategy_type}_order_amount"}],
-            [{"text": f"Мин. сила сигнала: {config.get('min_signal_strength', 0)}", "callback_data": f"set_param_{strategy_type}_min_signal_strength"}],
-            [{"text": f"Стоп-лосс: {config.get('stop_loss_percent', 0)}%", "callback_data": f"set_param_{strategy_type}_stop_loss_percent"}],
-            [{"text": f"Трейлинг: {config.get('trailing_percent', 0)}%", "callback_data": f"set_param_{strategy_type}_trailing_percent"}],
-        ])
+        editable_params = {
+            "order_amount": f"Сумма ордера: {config.get('order_amount', 0)} USDT",
+            "min_signal_strength": f"Мин. сила сигнала: {config.get('min_signal_strength', 0)}",
+            "stop_loss_percent": f"Стоп-лосс: {config.get('stop_loss_percent', 0)}%",
+            "trailing_percent": f"Трейлинг: {config.get('trailing_percent', 0)}%",
+        }
 
-    # --- Динамическая кнопка включения/отключения ---
+    for key, text in editable_params.items():
+        buttons.append([{"text": text, "callback_data": f"set_param_{strategy_type}_{key}"}])
+
+    # Динамическая кнопка включения/отключения
     is_enabled = config.get("is_enabled", False)
-    toggle_button_text = "❌ Не применять в автоторговле" if is_enabled else "✅ Применять в автоторговле"
+    toggle_button_text = "❌ Отключить для автоторговли" if is_enabled else "✅ Включить для автоторговли"
     buttons.append([{"text": toggle_button_text, "callback_data": f"toggle_strategy_{strategy_type}"}])
 
-    # --- Кнопки управления ---
+    # Кнопки управления
     buttons.extend([
         [{"text": "💾 Сохранить и выйти", "callback_data": "save_and_exit_strategy_config"}],
         [{"text": "📊 Назад к стратегиям", "callback_data": "strategy_settings"}]

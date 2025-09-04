@@ -28,17 +28,17 @@ class DefaultConfigs:
         """
         return {
             # Основные настройки
-            "leverage": 2, # Значение по умолчанию для плеча
+            "leverage": 1, # Значение по умолчанию для плеча
             "order_amount": 10.0,  # USDT на одну сделку
             "max_simultaneous_trades": 3,
             
             # Риск-менеджмент
-            "risk_per_trade_percent": 1.0,  # 2% риска на сделку
+            "risk_per_trade_percent": 1.0,  # 1% риска на сделку
             "max_daily_loss_usdt": 10.0,  # Максимальный суточный убыток в USDT
-            "global_daily_drawdown_percent": 2.0,  # 10% максимальная дневная просадка
+            "global_daily_drawdown_percent": 1.0,  # 2% максимальная дневная просадка
             "max_portfolio_exposure_percent": 50.0,  # 50% максимальная экспозиция
-            "stop_loss_percent": 1.0,  # 3% стоп-лосс
-            "take_profit_percent": 6.0,  # 6% тейк-профит (R:R = 1:2)
+            "stop_loss_percent": 1.0,  # 1% стоп-лосс
+            "take_profit_percent": 0.8,  # 1% тейк-профит (R:R = 1:2)
             
             # Watchlist символов для анализа
             "watchlist_symbols": [
