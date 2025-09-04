@@ -3,7 +3,7 @@
 """
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from typing import Optional, Dict, Any
 from datetime import datetime
@@ -721,19 +721,11 @@ async def cmd_stop_all(message: Message, state: FSMContext):
 
 
 # Обработчик неизвестных команд
-@router.message()
+@router.message(StateFilter(None))
 async def handle_unknown_message(message: Message, state: FSMContext):
-    """Обработчик неизвестных сообщений"""
+    """Обработчик неизвестных сообщений, который не мешает FSM."""
     user_id = message.from_user.id
-
     try:
-        # Проверяем, находится ли пользователь в процессе настройки
-        current_state = await state.get_state()
-
-        if current_state:
-            # Пользователь в процессе настройки, не обрабатываем как неизвестную команду
-            return
-
         log_info(user_id, f"Неизвестное сообщение: {message.text}", module_name='basic_handlers')
 
         await message.answer(
@@ -743,7 +735,6 @@ async def handle_unknown_message(message: Message, state: FSMContext):
             reply_markup=get_main_menu_keyboard(),
             parse_mode="HTML"
         )
-
     except Exception as e:
         log_error(user_id, f"Ошибка обработки неизвестного сообщения: {e}", module_name='basic_handlers')
 
