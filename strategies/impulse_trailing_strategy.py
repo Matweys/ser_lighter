@@ -279,6 +279,9 @@ class ImpulseTrailingStrategy(BaseStrategy):
             # Получаем направление из данных анализа по ключу 'trend_direction'
             trend_direction = self.signal_data.get("trend_direction", "")
 
+            log_info(self.user_id, f"Определение направления: получен trend_direction = '{trend_direction}'",
+                     module_name=__name__)
+
             if trend_direction == "UP":
                 return "Buy"
             elif trend_direction == "DOWN":
