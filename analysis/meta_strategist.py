@@ -106,20 +106,23 @@ class MetaStrategist:
             
             # Принимаем решение о запуске стратегии
             strategy_decision = await self._make_strategy_decision(analysis)
-            
+
             if strategy_decision:
-                # Публикуем сигнал
+                # Преобразуем результат анализа в словарь для события
+                analysis_dict = analysis.to_dict()
+
+                # Публикуем сигнал, используя прямой доступ к атрибутам
                 signal_event = SignalEvent(
                     user_id=self.user_id,
                     symbol=event.symbol,
                     strategy_type=strategy_decision["strategy_type"],
-                    signal_strength=analysis.get("signal_strength", 50),
-                    analysis_data=analysis
+                    signal_strength=analysis.strength,
+                    analysis_data=analysis_dict
                 )
-                
+
                 await self.event_bus.publish(signal_event)
-                log_info(self.user_id,f"Сигнал отправлен: {strategy_decision['strategy_type']} для {event.symbol} "
-                    f"(сила: {analysis.get('signal_strength', 50)})",module_name=__name__)
+                log_info(self.user_id, f"Сигнал отправлен: {strategy_decision['strategy_type']} для {event.symbol} "
+                                       f"(сила: {analysis.strength})", module_name=__name__)
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки новой свечи {event.symbol}: {e}", module_name=__name__)
             
