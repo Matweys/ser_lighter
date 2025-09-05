@@ -324,8 +324,8 @@ class UserSession:
         try:
             # Получаем ключи из БД и создаем API клиент
             keys = await db_manager.get_api_keys(self.user_id, "bybit")
-            if not keys:
-                raise ValueError("API ключи для пользователя не найдены в БД")
+            if not keys or not keys[0] or not keys[1]:
+                raise ValueError(f"API ключи для пользователя {self.user_id} не найдены или неполные в БД.")
 
             api_key, secret_key, _ = keys
 

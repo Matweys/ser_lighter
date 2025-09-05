@@ -654,15 +654,18 @@ class BybitAPI:
             if instrument_info:
                 qty_step = instrument_info.get("qtyStep", Decimal('0.001'))
                 min_qty = instrument_info.get("minOrderQty", Decimal('0'))
-                
+
                 # Округление до шага
                 if qty_step > 0:
                     base_qty = (base_qty // qty_step) * qty_step
-                    
+
                 # Проверка минимального количества
                 if base_qty < min_qty:
+                    log_warning(self.user_id,
+                                f"Рассчитанное кол-во {base_qty} для {symbol} меньше минимального {min_qty}. Ордер не будет создан.",
+                                module_name="bybit_api")
                     return Decimal('0')
-                    
+
             return base_qty
             
         except Exception as e:
