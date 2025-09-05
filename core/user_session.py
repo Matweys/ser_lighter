@@ -211,7 +211,7 @@ class UserSession:
             log_error(self.user_id, f"Ошибка получения статуса сессии: {e}", module_name=__name__)
             return {"user_id": self.user_id, "running": self.running, "error": str(e)}
 
-    async def start_strategy(self, strategy_type: str, symbol: str, config: Optional[Dict] = None) -> bool:
+    async def start_strategy(self, strategy_type: str, symbol: str, analysis_data: Optional[Dict] = None) -> bool:
         """
         Запуск стратегии
         """
@@ -222,17 +222,18 @@ class UserSession:
                 log_warning(self.user_id, f"Стратегия {strategy_id} уже запущена", module_name=__name__)
                 return True
 
-            if not await self.risk_manager.can_start_new_strategy():
-                log_warning(self.user_id, "Превышен лимит активных стратегий", module_name=__name__)
+            if not await self.risk_manager.can_open_new_trade(symbol):
+                log_warning(self.user_id, f"Открытие новой сделки для {symbol} отклонено риск-менеджером.",
+                            module_name=__name__)
                 return False
 
             strategy = create_strategy(
                 strategy_type=strategy_type,
                 user_id=self.user_id,
                 symbol=symbol,
-                signal_data=config or {},  # Передаем config как signal_data
+                signal_data=analysis_data or {},  # Явно передаем данные анализа
                 api=self.api,
-                config=config,
+                config=None, # Конфиг будет загружен внутри самой стратегии
                 event_bus=self.event_bus
             )
 
@@ -482,7 +483,7 @@ class UserSession:
             log_warning(self.user_id, f"Открытие новой сделки для {event.symbol} отклонено риск-менеджером.",
                         module_name=__name__)
             return
-        await self.start_strategy(event.strategy_type, event.symbol, event.analysis_data)
+        await self.start_strategy(event.strategy_type, event.symbol, analysis_data=event.analysis_data)
 
     async def _handle_order_event(self, event: OrderFilledEvent):
         """Обработчик событий исполненных ордеров для глобальной статистики сессии"""
