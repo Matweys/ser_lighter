@@ -272,25 +272,19 @@ class ImpulseTrailingStrategy(BaseStrategy):
         except Exception as e:
             log_error(self.user_id, f"Ошибка анализа импульсного сигнала: {e}", module_name=__name__)
             return False
-            
+
     async def _determine_entry_direction(self) -> Optional[str]:
         """Определение направления входа"""
         try:
-            # Направление из signal_data
-            signal_direction = self.signal_data.get("direction", "")
-            
-            if signal_direction in ["LONG", "BUY"]:
+            # Получаем направление из данных анализа по ключу 'trend_direction'
+            trend_direction = self.signal_data.get("trend_direction", "")
+
+            if trend_direction == "UP":
                 return "Buy"
-            elif signal_direction in ["SHORT", "SELL"]:
+            elif trend_direction == "DOWN":
                 return "Sell"
-            else:
-                # Дополнительный анализ на основе индикаторов
-                ema_trend = self.signal_data.get("ema_trend", "")
-                if ema_trend == "BULLISH":
-                    return "Buy"
-                elif ema_trend == "BEARISH":
-                    return "Sell"
-                    
+
+            # Если направление не определено или "SIDEWAYS", не входим в сделку
             return None
             
         except Exception as e:
