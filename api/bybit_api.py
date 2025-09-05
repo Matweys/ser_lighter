@@ -31,9 +31,15 @@ class BybitAPI:
         self.user_id = user_id
         self.testnet = testnet
 
+        # --- НАЧАЛО ИЗМЕНЕНИЙ ---
+        # ОТЛАДОЧНОЕ ЛОГИРОВАНИЕ: Проверяем, какой ключ используется при каждом создании объекта
         if self.api_key:
             log_info(self.user_id, f"BybitAPI инициализирован с ключом: {self.api_key[:4]}...{self.api_key[-4:]}",
                      module_name="bybit_api")
+        else:
+            log_warning(self.user_id, "BybitAPI инициализирован БЕЗ API ключа.", module_name="bybit_api")
+        # --- КОНЕЦ ИЗМЕНЕНИЙ ---
+
         # URL endpoints
         if testnet:
             self.base_url = "https://api-testnet.bybit.com"
