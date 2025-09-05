@@ -100,16 +100,19 @@ class ImpulseTrailingStrategy(BaseStrategy):
             
             # Анализ импульса из signal_data
             impulse_detected = await self._analyze_impulse_signal()
-            
+
             if impulse_detected:
+                log_info(self.user_id, "Импульс подтвержден, определяю направление...", module_name=__name__)
                 # Определение направления входа
                 direction = await self._determine_entry_direction()
-                
+
                 if direction:
+                    log_info(self.user_id, f"Направление определено: {direction}. Вхожу в позицию...",
+                             module_name=__name__)
                     # Вход в позицию
                     await self._enter_position(direction)
                 else:
-                    log_info(self.user_id, "Направление входа не определено", module_name=__name__)
+                    log_info(self.user_id, "Направление входа не определено, отмена сделки.", module_name=__name__)
                     await self.stop("Нет четкого направления")
             else:
                 log_info(self.user_id, "Импульс не подтвержден", module_name=__name__)
