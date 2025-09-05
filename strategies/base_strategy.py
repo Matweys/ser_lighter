@@ -66,9 +66,6 @@ class BaseStrategy(ABC):
         self.order_amount = 100.0
         self.profit_percent = 1.0
         
-        # API клиент
-        self.api: Optional[BybitAPI] = None
-        
         # Блокировка для thread-safety
         self.lock = asyncio.Lock()
         
