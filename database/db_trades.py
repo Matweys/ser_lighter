@@ -540,7 +540,12 @@ class DatabaseManager:
                 api_key = self.decrypt_data(result['api_key_encrypted'])
                 secret_key = self.decrypt_data(result['secret_key_encrypted'])
                 passphrase = self.decrypt_data(result['passphrase_encrypted']) if result['passphrase_encrypted'] else None
-                
+
+                # --- НАЧАЛО ИЗМЕНЕНИЙ ---
+                # Логируем часть расшифрованного ключа для верификации
+                log_info(user_id, f"Ключ API расшифрован из БД для использования: {api_key[:4]}...{api_key[-4:]}",
+                         module_name='database')
+                # --- КОНЕЦ ИЗМЕНЕНИЙ ---
                 return api_key, secret_key, passphrase
             
             return None
