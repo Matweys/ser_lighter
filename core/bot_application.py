@@ -142,7 +142,20 @@ class BotApplication:
                 if user_id in self.active_sessions:
                     log_info(user_id, "Сессия уже существует", module_name=__name__)
                     return True
-                    
+
+                # --- НАЧАЛО ИЗМЕНЕНИЙ ---
+                # Добавляем явную проверку и логирование ключей здесь
+                api_keys = await db_manager.get_api_keys(user_id, "bybit")
+                if not api_keys or not api_keys[0] or not api_keys[1]:
+                    log_error(user_id, "Не удалось создать сессию: API ключи не найдены в базе данных.",
+                              module_name=__name__)
+                    return False
+
+                # Логируем часть ключа для верификации
+                log_info(user_id, f"Используется API ключ: {api_keys[0][:4]}...{api_keys[0][-4:]}",
+                         module_name=__name__)
+                # --- КОНЕЦ ИЗМЕНЕНИЙ ---
+
                 # Инициализация конфигураций по умолчанию
                 await self._initialize_user_configs(user_id)
                 
