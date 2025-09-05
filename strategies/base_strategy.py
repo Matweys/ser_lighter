@@ -89,7 +89,18 @@ class BaseStrategy(ABC):
 
         log_info(self.user_id,f"Инициализирована стратегия {self.strategy_type.value} для {symbol} (ID: {self.strategy_id})",
             module_name=__name__)
-        
+
+
+    @staticmethod
+    def _convert_to_decimal( value: Any) -> Decimal:
+        """Безопасное преобразование в Decimal"""
+        if isinstance(value, Decimal):
+            return value
+        try:
+            return Decimal(str(value))
+        except (ValueError, TypeError):
+            return Decimal('0')
+
     @abstractmethod
     def _get_strategy_type(self) -> StrategyType:
         """Возвращает тип стратегии"""
@@ -505,11 +516,12 @@ class BaseStrategy(ABC):
                     for order_id, order_data in self.active_orders.items()
                 }
             }
-            
+
             await redis_manager.save_strategy_state(
-                self.user_id,
-                f"{self.strategy_type.value}:{self.symbol}",
-                state_data
+                user_id=self.user_id,
+                strategy_name=self.strategy_type.value,
+                symbol=self.symbol,
+                state_data=state_data
             )
             
         except Exception as e:

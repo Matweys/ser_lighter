@@ -243,11 +243,7 @@ class UserSession:
             # Запуск стратегии
             if await strategy.start():
                 self.active_strategies[strategy_id] = strategy
-                
-                # Создание задачи для стратегии
-                task = asyncio.create_task(strategy.run())
-                self.strategy_tasks[strategy_id] = task
-                
+
                 # Обновление статистики
                 self.session_stats["strategies_launched"] += 1
                 

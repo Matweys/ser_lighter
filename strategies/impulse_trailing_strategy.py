@@ -67,6 +67,23 @@ class ImpulseTrailingStrategy(BaseStrategy):
         # Таймауты
         self.max_holding_time = timedelta(hours=12)
 
+    async def validate_config(self) -> bool:
+        """Валидирует конфигурацию для ImpulseTrailingStrategy."""
+        # Используем собственный набор обязательных полей
+        required_fields = ['leverage', 'order_amount', 'initial_stop_percent', 'trailing_step_percent']
+
+        for field in required_fields:
+            if field not in self.config:
+                log_error(self.user_id, f"Отсутствует обязательное поле конфигурации: {field}", module_name=__name__)
+                return False
+
+        # Здесь можно добавить более детальные проверки диапазонов для этой стратегии
+        if not (self._convert_to_decimal(self.config.get('initial_stop_percent', 0)) > 0):
+            log_error(self.user_id, f"Неверное значение initial_stop_percent", module_name=__name__)
+            return False
+
+        return True
+
     def _get_strategy_type(self) -> StrategyType:
         return StrategyType.IMPULSE_TRAILING
 

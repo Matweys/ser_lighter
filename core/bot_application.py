@@ -187,13 +187,19 @@ class BotApplication:
                 if user_id not in self.active_sessions:
                     log_info(user_id, "Сессия не найдена", module_name=__name__)
                     return True
-                    
+
                 session = self.active_sessions[user_id]
+
+                # Обновляем статус в Redis ПЕРЕД остановкой
+                session_data = await redis_manager.get_user_session(user_id) or {}
+                session_data['autotrade_enabled'] = False
+                await redis_manager.create_user_session(user_id, session_data)
+
                 await session.stop(reason)
-                
+
                 # Удаление из активных сессий
                 del self.active_sessions[user_id]
-                
+
                 # Остановка задачи сессии
                 if user_id in self.session_tasks:
                     task = self.session_tasks[user_id]

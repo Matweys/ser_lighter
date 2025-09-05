@@ -75,15 +75,16 @@ class MarketAnalyzer:
     async def get_market_analysis(self, symbol: str, timeframes: List[str]) -> MarketAnalysis:
         """
         Получить полный анализ рынка для символа.
-
-        Args:
-            symbol: Торговый символ (например, "BTCUSDT")
-            timeframes: Список таймфреймов для анализа (например, ["5m", "15m", "1h"])
-
-        Returns:
-            MarketAnalysis: Результат анализа
+        ...
         """
         try:
+            # ПРОВЕРКА РЕЖИМА TESTNET
+            if self.api.testnet:
+                # В режиме testnet принудительно используем таймфреймы с доступными данными
+                overridden_timeframes = ["1m", "5m", "15m"]
+                log_info(self.user_id, f"РЕЖИМ TESTNET: Таймфреймы для анализа {symbol} принудительно заменены на {overridden_timeframes}", module_name="market_analyzer")
+                timeframes = overridden_timeframes
+
             # log_info(self.user_id, f"Начинаю анализ рынка для {symbol}", module_name="market_analyzer")
 
             # Получаем данные по всем таймфреймам
