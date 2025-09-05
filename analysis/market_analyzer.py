@@ -66,33 +66,34 @@ class MarketAnalyzer:
         self.cache_expiry: Dict[str, Dict[str, datetime]] = {}
         
         # Настройки анализа
-        self.timeframes = [TimeFrame.M15, TimeFrame.H1, TimeFrame.H4]
+        #self.timeframes = [TimeFrame.M15, TimeFrame.H1, TimeFrame.H4]
         self.candle_limit = 200
         self.cache_duration = timedelta(minutes=5)
         
         log_info(user_id, f"MarketAnalyzer инициализирован для пользователя {user_id}", module_name="market_analyzer")
-    
-    async def get_market_analysis(self, symbol: str) -> MarketAnalysis:
+
+    async def get_market_analysis(self, symbol: str, timeframes: List[str]) -> MarketAnalysis:
         """
         Получить полный анализ рынка для символа.
-        
+
         Args:
             symbol: Торговый символ (например, "BTCUSDT")
-            
+            timeframes: Список таймфреймов для анализа (например, ["5m", "15m", "1h"])
+
         Returns:
             MarketAnalysis: Результат анализа
         """
         try:
-            #log_info(self.user_id, f"Начинаю анализ рынка для {symbol}", module_name="market_analyzer")
-            
+            # log_info(self.user_id, f"Начинаю анализ рынка для {symbol}", module_name="market_analyzer")
+
             # Получаем данные по всем таймфреймам
             timeframe_data = {}
-            for tf in self.timeframes:
-                candles = await self._get_candles_cached(symbol, tf.value)
+            for tf_value in timeframes:
+                candles = await self._get_candles_cached(symbol, tf_value)
                 if candles is not None and len(candles) >= 50:
-                    timeframe_data[tf.value] = candles
+                    timeframe_data[tf_value] = candles
                 else:
-                    log_warning(self.user_id, f"Недостаточно данных для {symbol} на {tf.value}", module_name="market_analyzer")
+                    log_warning(self.user_id, f"Недостаточно данных для {symbol} на {tf_value}", module_name="market_analyzer")
             
             if not timeframe_data:
                 log_error(self.user_id, f"Нет данных для анализа {symbol}", module_name="market_analyzer")

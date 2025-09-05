@@ -129,17 +129,13 @@ class RiskManager:
             current_trades = len(self.active_positions)
             
             if current_trades >= max_trades:
-                log_info(
-                    self.user_id,
-                    f"Превышен лимит одновременных сделок: {current_trades}/{max_trades}",
-                    module_name=__name__
-                )
+                log_info(self.user_id, f"Превышен лимит одновременных сделок: {current_trades}/{max_trades}", module_name=__name__)
                 return False
-                
+
             # Проверка дневной просадки
-            if await self._check_daily_drawdown_limit():
+            if await self._check_daily_loss_limit():
                 return False
-                
+
             # Проверка общего риска портфеля
             if await self._check_portfolio_risk_limit():
                 return False

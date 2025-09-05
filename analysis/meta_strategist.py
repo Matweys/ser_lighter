@@ -94,10 +94,13 @@ class MetaStrategist:
             
         try:
             log_info(self.user_id, f"Анализ рынка для {event.symbol} по новой свече", module_name=__name__)
-            
-            # Проводим анализ рынка
-            analysis = await self.analyzer.get_market_analysis(event.symbol)
-            
+
+            # Получаем таймфреймы из конфигурации пользователя
+            analysis_timeframes = self.user_config.get("analysis_timeframes", ["15m", "1h", "4h"])
+
+            # Проводим анализ рынка с указанием таймфреймов
+            analysis = await self.analyzer.get_market_analysis(event.symbol, timeframes=analysis_timeframes)
+
             # Обновляем время последнего анализа
             self.last_analysis_time[event.symbol] = now
             
