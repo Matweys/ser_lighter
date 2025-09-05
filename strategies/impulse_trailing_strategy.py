@@ -232,9 +232,9 @@ class ImpulseTrailingStrategy(BaseStrategy):
         """Анализ импульсного сигнала из signal_data"""
         try:
             # Проверка силы сигнала
-            signal_strength = self.signal_data.get("signal_strength", 0)
+            signal_strength = self.signal_data.get("strength", 0)
             min_strength = self.config.get("min_signal_strength", 75) if self.config else 75
-            
+
             if signal_strength < min_strength:
                 log_info(
                     self.user_id,

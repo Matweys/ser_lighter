@@ -573,10 +573,10 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
         await message.answer("🔴 <b>Статус: Неактивен</b>\nТорговля не запущена.", parse_mode="HTML")
         return
 
-    status = session_status.get('status', 'unknown')
+    is_active = session_status.get('autotrade_enabled', False)
     active_strategies = session_status.get('active_strategies', [])
 
-    status_text = f"<b>Статус торговли:</b> {'🟢 Активен' if status == 'active' else '🔴 Неактивен'}\n\n"
+    status_text = f"<b>Статус торговли:</b> {'🟢 Активен' if is_active else '🔴 Неактивен'}\n\n"
     if active_strategies:
         status_text += f"<b>Активные стратегии ({len(active_strategies)}):</b>\n"
         for strategy in active_strategies:
