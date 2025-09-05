@@ -345,7 +345,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
             position_size_percent = self.config.get("position_size_percent", 50)
             
             # Размер для трейлинга
-            position_size = base_size * (position_size_percent / 100)
+            position_size = base_size * (self._convert_to_decimal(position_size_percent) / Decimal('100'))
             
             # Максимальный размер позиции
             max_size = self._convert_to_decimal(self.config.get("max_position_size", 50.0))

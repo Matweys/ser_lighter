@@ -303,7 +303,7 @@ class GridScalpingStrategy(BaseStrategy):
             position_size_percent = self.config.get("position_size_percent", 30)
             
             # Размер для скальпинга
-            scalp_size = total_position_size * (position_size_percent / 100)
+            scalp_size = total_position_size * (self._convert_to_decimal(position_size_percent) / Decimal('100'))
             
             # Размер одного ордера
             order_size = scalp_size / (self.scalp_levels * 2)  # *2 для buy и sell
