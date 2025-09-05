@@ -30,7 +30,10 @@ class BybitAPI:
         self.api_secret = api_secret
         self.user_id = user_id
         self.testnet = testnet
-        
+
+        if self.api_key:
+            log_info(self.user_id, f"BybitAPI инициализирован с ключом: {self.api_key[:4]}...{self.api_key[-4:]}",
+                     module_name="bybit_api")
         # URL endpoints
         if testnet:
             self.base_url = "https://api-testnet.bybit.com"
