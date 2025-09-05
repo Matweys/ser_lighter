@@ -242,17 +242,13 @@ class ImpulseTrailingStrategy(BaseStrategy):
                     module_name=__name__
                 )
                 return False
-                
+
             # Проверка рыночных условий
-            market_condition = self.signal_data.get("market_condition", "")
+            market_condition = self.signal_data.get("regime", "")
             required_conditions = ["STRONG_TREND", "TREND"]
-            
+
             if market_condition not in required_conditions:
-                log_info(
-                    self.user_id,
-                    f"Неподходящие рыночные условия: {market_condition}",
-                    module_name=__name__
-                )
+                log_info( self.user_id, f"Неподходящие рыночные условия: {market_condition}", module_name=__name__)
                 return False
                 
             # Проверка подтверждения трендом
