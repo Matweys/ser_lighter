@@ -492,9 +492,6 @@ class BotApplication:
             session_data['autotrade_enabled'] = True
             await redis_manager.create_user_session(user_id, session_data)
             log_info(user_id, "Статус авто-торговли установлен в 'active' в Redis.", module_name=__name__)
-
-            # Запускаем все включенные стратегии
-            await session.start_enabled_strategies()
         else:
             log_error(user_id, "Не удалось получить сессию после попытки создания.", module_name=__name__)
 

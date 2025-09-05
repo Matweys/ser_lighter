@@ -264,19 +264,27 @@ class BybitAPI:
         return None
     
     async def get_klines(
-        self, 
-        symbol: str, 
-        interval: str, 
+        self,
+        symbol: str,
+        interval: str,
         limit: int = 200,
         start_time: Optional[int] = None,
         end_time: Optional[int] = None
     ) -> Optional[List[Dict[str, Any]]]:
         """Получение исторических свечей"""
         try:
+            # Конвертер таймфреймов в формат, требуемый Bybit V5 API
+            interval_map = {
+                "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
+                "1h": "60", "2h": "120", "4h": "240", "6h": "360", "12h": "720",
+                "1d": "D", "1w": "W", "1M": "M"
+            }
+            api_interval = interval_map.get(interval, interval) # Если нет в словаре, используем как есть
+
             params = {
                 "category": "linear",
                 "symbol": symbol,
-                "interval": interval,
+                "interval": api_interval,
                 "limit": limit
             }
             
