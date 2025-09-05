@@ -95,9 +95,6 @@ class ImpulseTrailingStrategy(BaseStrategy):
             # Загрузка параметров из конфигурации
             await self._load_trailing_parameters()
             
-            # Установка плеча
-            await self._set_leverage()
-            
             # Анализ импульса из signal_data
             impulse_detected = await self._analyze_impulse_signal()
 
@@ -109,6 +106,8 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 if direction:
                     log_info(self.user_id, f"Направление определено: {direction}. Вхожу в позицию...",
                              module_name=__name__)
+                    # Установка плеча
+                    await self._set_leverage()
                     # Вход в позицию
                     await self._enter_position(direction)
                 else:

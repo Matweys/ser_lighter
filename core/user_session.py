@@ -227,6 +227,15 @@ class UserSession:
                             module_name=__name__)
                 return False
 
+            # --- НАЧАЛО ИЗМЕНЕНИЙ ---
+            # Добавляем явную проверку, что API клиент существует ПЕРЕД созданием стратегии
+            if not self.api:
+                log_error(self.user_id,
+                          "Критическая ошибка: попытка создать стратегию без инициализированного API клиента.",
+                          module_name=__name__)
+                return False
+            # --- КОНЕЦ ИЗМЕНЕНИЙ ---
+
             strategy = create_strategy(
                 strategy_type=strategy_type,
                 user_id=self.user_id,
