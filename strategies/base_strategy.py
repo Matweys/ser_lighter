@@ -381,31 +381,14 @@ class BaseStrategy(ABC):
 
     async def _place_order(self, side: str, order_type: str, qty: Decimal, price: Optional[Decimal] = None,
                            stop_loss: Optional[Decimal] = None, take_profit: Optional[Decimal] = None) -> Optional[str]:
-        """
-        Размещение ордера: реального или симулированного в зависимости от режима API.
-        """
+        """Универсальное размещение ордера через API"""
         try:
             if not self.api:
                 log_error(self.user_id, "API клиент не инициализирован в стратегии.", module_name=__name__)
                 return None
 
-            # Если API в тестовом режиме, симулируем ордер, не отправляя его на биржу.
-            if self.api.testnet:
-                fake_order_id = f"paper_{self.symbol}_{int(datetime.now().timestamp())}"
-                log_info(self.user_id,
-                         f"[РЕЖИМ TESTNET] Симуляция ордера '{fake_order_id}': {side} {qty} {self.symbol}",
-                         module_name=__name__)
-
-                # Симулируем немедленное исполнение ордера для тестирования логики
-                await self.event_bus.publish(OrderFilledEvent(
-                    user_id=self.user_id, order_id=fake_order_id, symbol=self.symbol,
-                    side=side, qty=qty, price=price or qty, fee=Decimal('0')
-                    # Используем qty как цену для Market ордеров в симуляции
-                ))
-                return fake_order_id
-
-            # В реальном режиме отправляем ордер на биржу
-            order_result = await self.api.place_order(
+            # Логика едина для testnet и production, т.к. BybitAPI сам переключает эндпоинты
+            order_id = await self.api.place_order(
                 symbol=self.symbol,
                 side=side,
                 order_type=order_type,
@@ -415,9 +398,7 @@ class BaseStrategy(ABC):
                 take_profit=take_profit
             )
 
-            if order_result and "orderId" in order_result:
-                order_id = order_result["orderId"]
-
+            if order_id:
                 # Сохранение ордера в активных
                 self.active_orders[order_id] = {
                     "order_id": order_id,
@@ -430,8 +411,12 @@ class BaseStrategy(ABC):
                     "take_profit": take_profit,
                     "created_at": datetime.now()
                 }
-                log_info(self.user_id,f"Ордер размещен: {side} {qty} {self.symbol} по {price} (ID: {order_id})", module_name=__name__)
+                log_info(self.user_id, f"Ордер размещен: {side} {qty} {self.symbol} по {price} (ID: {order_id})", module_name=__name__)
                 return order_id
+            else:
+                log_error(self.user_id, "Не удалось разместить ордер (API не вернул ID).", module_name=__name__)
+                return None
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка размещения ордера: {e}", module_name=__name__)
         return None

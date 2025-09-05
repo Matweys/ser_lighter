@@ -421,7 +421,7 @@ class BybitAPI:
         stop_loss: Optional[Decimal] = None,
         take_profit: Optional[Decimal] = None
     ) -> Optional[str]:
-        """Размещение ордера с поддержкой stop_loss и take_profit"""
+        """Размещение ордера с поддержкой stop_loss и take_profit. Возвращает orderId или None."""
         try:
             params = {
                 "category": "linear",
@@ -431,36 +431,33 @@ class BybitAPI:
                 "qty": str(qty),
                 "timeInForce": time_in_force
             }
-            
+
             if price is not None:
                 params["price"] = str(price)
-                
             if reduce_only:
                 params["reduceOnly"] = True
-                
             if close_on_trigger:
                 params["closeOnTrigger"] = True
-                
-            # Добавляем stop_loss и take_profit если указаны
             if stop_loss is not None:
                 params["stopLoss"] = str(stop_loss)
-                
             if take_profit is not None:
                 params["takeProfit"] = str(take_profit)
-                
+
             result = await self._make_request("POST", "/v5/order/create", params)
-            
-            if result and "orderId" in result:
+
+            if result and "orderId" in result and result["orderId"]:
                 order_id = result["orderId"]
-                log_info(self.user_id, f"Ордер размещен: {side} {qty} {symbol} по {price if price else 'рынку'} (ID: {order_id}, SL: {stop_loss}, TP: {take_profit})", module_name="bybit_api")
+                log_info(self.user_id,
+                         f"Ордер успешно размещен: {side} {qty} {symbol} по {price if price else 'рынку'} (ID: {order_id})",
+                         module_name="bybit_api")
                 return order_id
             else:
-                log_error(self.user_id, f"Не удалось разместить ордер: {result}", module_name="bybit_api")
-                
+                log_error(self.user_id, f"Не удалось разместить ордер. Ответ API: {result}", module_name="bybit_api")
+                return None
+
         except Exception as e:
-            log_error(self.user_id, f"Ошибка размещения ордера: {e}", module_name="bybit_api")
-            
-        return None
+            log_error(self.user_id, f"Исключение при размещении ордера: {e}", module_name="bybit_api")
+            return None
     
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
         """Отмена ордера"""

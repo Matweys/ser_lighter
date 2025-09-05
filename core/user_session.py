@@ -410,21 +410,38 @@ class UserSession:
             log_error(self.user_id, f"Ошибка остановки компонентов: {e}", module_name=__name__)
 
     async def start_enabled_strategies(self):
-        """Запуск включенных стратегий"""
+        """Запуск стратегий, включенных пользователем в настройках."""
         try:
+            log_info(self.user_id, "Запуск включенных стратегий для авто-торговли...", module_name=__name__)
             global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
             if not global_config:
+                log_error(self.user_id, "Не найден глобальный конфиг, запуск стратегий невозможен.", module_name=__name__)
                 return
 
-            enabled_strategies = global_config.get("enabled_strategies", [])
             watchlist_symbols = global_config.get("watchlist_symbols", [])
+            if not watchlist_symbols:
+                log_warning(self.user_id, "Список торговых пар (watchlist) пуст. Стратегии не будут запущены.",
+                            module_name=__name__)
+                return
 
-            for strategy_type in enabled_strategies:
-                for symbol in watchlist_symbols:
-                    await self.start_strategy(strategy_type, symbol)
+            started_count = 0
+            # Итерируемся по всем классам стратегий, известным системе
+            for strategy_key, strategy_class in STRATEGY_CLASSES.items():
+                config_enum = getattr(ConfigType, f"STRATEGY_{strategy_key.upper()}", None)
+                if not config_enum:
+                    continue
+
+                strategy_config = await redis_manager.get_config(self.user_id, config_enum)
+                if strategy_config and strategy_config.get("is_enabled", False):
+                    for symbol in watchlist_symbols:
+                        # Передаем конфиг напрямую, чтобы избежать лишних запросов в Redis
+                        if await self.start_strategy(strategy_key, symbol, config=strategy_config):
+                            started_count += 1
+
+            log_info(self.user_id, f"Запущено {started_count} экземпляров стратегий.", module_name=__name__)
 
         except Exception as e:
-            log_error(self.user_id, f"Ошибка запуска включенных стратегий: {e}", module_name=__name__)
+            log_error(self.user_id, f"Критическая ошибка при запуске включенных стратегий: {e}", module_name=__name__)
 
             
     async def _subscribe_to_events(self):

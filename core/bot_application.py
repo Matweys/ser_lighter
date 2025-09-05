@@ -471,20 +471,27 @@ class BotApplication:
         user_id = event.user_id
         log_info(user_id, "Получен запрос на запуск авто-торговли...", module_name=__name__)
 
-        # Сессия должна уже существовать (создается при /start или восстанавливается)
         session = self.active_sessions.get(user_id)
-        if not session:
-            # Если по какой-то причине сессии нет, создаем ее
-            log_warning(user_id, "Сессия не найдена, создается новая для старта торговли.", module_name=__name__)
+        if not session or not session.running:
+            log_warning(user_id, "Активная сессия не найдена, создается новая для старта торговли.", module_name=__name__)
             if not await self.create_user_session(user_id):
-                log_error(user_id, "Не удалось создать сессию для старта.", module_name=__name__)
+                log_error(user_id, "Не удалось создать и запустить сессию для старта.", module_name=__name__)
                 return
+            # После успешного создания сессия будет в self.active_sessions
+            session = self.active_sessions.get(user_id)
 
-        # Обновляем статус напрямую в Redis, чтобы команды его увидели
-        session_data = await redis_manager.get_user_session(user_id) or {}
-        session_data['autotrade_enabled'] = True
-        await redis_manager.create_user_session(user_id, session_data)
-        log_info(user_id, "Статус авто-торговли установлен в 'active' в Redis.", module_name=__name__)
+        if session:
+            # Обновляем статус в Redis
+            session_data = await redis_manager.get_user_session(user_id) or {}
+            session_data['autotrade_enabled'] = True
+            await redis_manager.create_user_session(user_id, session_data)
+            log_info(user_id, "Статус авто-торговли установлен в 'active' в Redis.", module_name=__name__)
+
+            # Запускаем все включенные стратегии
+            await session.start_enabled_strategies()
+        else:
+            log_error(user_id, "Не удалось получить сессию после попытки создания.", module_name=__name__)
+
 
     async def _handle_session_stop_request(self, event: UserSessionStopRequestedEvent):
         """Обработчик запроса на остановку авто-торговли."""
