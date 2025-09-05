@@ -59,30 +59,31 @@ class BidirectionalGridStrategy(BaseStrategy):
 
     def _get_strategy_type(self) -> StrategyType:
         return StrategyType.BIDIRECTIONAL_GRID
-        
+
     async def _execute_strategy_logic(self):
         """Основная логика стратегии - инициализация сетки"""
         try:
             log_info(self.user_id, f"Инициализация двунаправленной сетки для {self.symbol}", module_name=__name__)
-            
+
             # Загрузка параметров из конфигурации
             await self._load_grid_parameters()
-            
+
             # Установка плеча
             await self._set_leverage()
-            
-            # Получение текущей цены
-            current_price = await self._get_current_price()
-            if not current_price:
-                log_error(self.user_id, "Не удалось получить текущую цену", module_name=__name__)
+
+            # Получение текущей цены из данных сигнала
+            current_price = self._convert_to_decimal(self.signal_data.get('current_price', '0'))
+            if not current_price > 0:
+                log_error(self.user_id, "Не удалось получить текущую цену из сигнала", module_name=__name__)
+                await self.stop("Нет цены в сигнале")
                 return
-                
+
             # Расчет параметров сетки
             await self._calculate_grid_parameters(current_price)
-            
+
             # Создание начальной сетки
             await self._create_initial_grid()
-            
+
             log_info(
                 self.user_id,
                 f"Сетка инициализирована: центр={self.grid_center_price}, "
@@ -90,7 +91,7 @@ class BidirectionalGridStrategy(BaseStrategy):
                 f"шаг={self.grid_step_price}",
                 module_name=__name__
             )
-            
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка инициализации сетки: {e}", module_name=__name__)
             await self.stop("Ошибка инициализации")
@@ -202,21 +203,7 @@ class BidirectionalGridStrategy(BaseStrategy):
                     
         except Exception as e:
             log_error(self.user_id, f"Ошибка установки плеча: {e}", module_name=__name__)
-            
-    async def _get_current_price(self) -> Optional[Decimal]:
-        """Получение текущей цены"""
-        try:
-            if not self.api:
-                return None
-                
-            ticker = await self.api.get_ticker(self.symbol)
-            if ticker and "lastPrice" in ticker:
-                return Decimal(str(ticker["lastPrice"]))
-                
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка получения цены: {e}", module_name=__name__)
-            
-        return None
+
         
     async def _calculate_grid_parameters(self, center_price: Decimal):
         """Расчет параметров сетки"""

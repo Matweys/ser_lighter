@@ -66,19 +66,20 @@ class GridScalpingStrategy(BaseStrategy):
         """Основная логика стратегии - инициализация скальпинга"""
         try:
             log_info(self.user_id, f"Инициализация грид-скальпинга для {self.symbol}", module_name=__name__)
-            
+
             # Загрузка параметров из конфигурации
             await self._load_scalp_parameters()
-            
+
             # Установка плеча
             await self._set_leverage()
-            
-            # Получение текущей цены и спреда
-            current_price = await self._get_current_price()
-            if not current_price:
-                log_error(self.user_id, "Не удалось получить текущую цену", module_name=__name__)
+
+            # Получение текущей цены и спреда из данных сигнала
+            current_price = self._convert_to_decimal(self.signal_data.get('current_price', '0'))
+            if not current_price > 0:
+                log_error(self.user_id, "Не удалось получить текущую цену из сигнала", module_name=__name__)
+                await self.stop("Нет цены в сигнале")
                 return
-                
+
             # Анализ спреда и ликвидности
             await self._analyze_market_conditions(current_price)
             
@@ -200,20 +201,7 @@ class GridScalpingStrategy(BaseStrategy):
         except Exception as e:
             log_error(self.user_id, f"Ошибка установки плеча: {e}", module_name=__name__)
             
-    async def _get_current_price(self) -> Optional[Decimal]:
-        """Получение текущей цены"""
-        try:
-            if not self.api:
-                return None
-                
-            ticker = await self.api.get_ticker(self.symbol)
-            if ticker and "lastPrice" in ticker:
-                return Decimal(str(ticker["lastPrice"]))
-                
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка получения цены: {e}", module_name=__name__)
-            
-        return None
+
         
     async def _analyze_market_conditions(self, current_price: Decimal):
         """Анализ рыночных условий для скальпинга"""

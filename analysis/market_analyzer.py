@@ -33,7 +33,7 @@ class MarketAnalysis:
     volatility_level: str  # "LOW", "MEDIUM", "HIGH"
     recommendation: str  # Рекомендация по стратегии
     trend_confirmation: bool
-
+    current_price: Decimal
 
     def to_dict(self) -> Dict:
         """Преобразование в словарь для передачи через события"""
@@ -46,7 +46,8 @@ class MarketAnalysis:
             'trend_direction': self.trend_direction,
             'volatility_level': self.volatility_level,
             'recommendation': self.recommendation,
-            'trend_confirmation': self.trend_confirmation
+            'trend_confirmation': self.trend_confirmation,
+            'current_price': str(self.current_price)
         }
 
 class MarketAnalyzer:
@@ -306,7 +307,12 @@ class MarketAnalyzer:
             final_regime = max(regime_votes, key=regime_votes.get) if regime_votes else MarketCondition.FLAT
             final_trend = max(trend_votes, key=trend_votes.get) if trend_votes else "SIDEWAYS"
             final_volatility = max(volatility_votes, key=volatility_votes.get) if volatility_votes else "LOW"
-            
+
+            # Получаем текущую цену из наиболее релевантного (короткого) таймфрейма
+            # Ищем самый короткий таймфрейм из доступных (например, '5m' < '15m')
+            shortest_tf = sorted(tf_analyses.keys(), key=lambda x: int(x.replace('m', '').replace('h', '60').replace('d', '1440')))[0]
+            current_price = tf_analyses[shortest_tf]['price'] if shortest_tf in tf_analyses else Decimal('0')
+
             # Рассчитываем уверенность
             confidence = min(100, int(max(regime_votes.values()) / total_weight * 100)) if total_weight > 0 else 50
 
@@ -330,7 +336,8 @@ class MarketAnalyzer:
                 trend_direction=final_trend,
                 volatility_level=final_volatility,
                 recommendation=recommendation,
-                trend_confirmation=trend_confirmation
+                trend_confirmation=trend_confirmation,
+                current_price=current_price
             )
             
         except Exception as e:
@@ -361,7 +368,8 @@ class MarketAnalyzer:
             trend_direction="SIDEWAYS",
             volatility_level="LOW",
             recommendation="bidirectional_grid",
-            trend_confirmation=False
+            trend_confirmation=False,
+            current_price=Decimal('0')
         )
     
     def clear_cache(self):

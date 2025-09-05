@@ -290,7 +290,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
         except Exception as e:
             log_error(self.user_id, f"Ошибка определения направления: {e}", module_name=__name__)
             return None
-            
+
     async def _enter_position(self, direction: str):
         """Вход в позицию"""
         try:
@@ -299,27 +299,27 @@ class ImpulseTrailingStrategy(BaseStrategy):
             if position_size <= 0:
                 log_error(self.user_id, "Недостаточно средств для входа в позицию", module_name=__name__)
                 return
-                
-            # Получение текущей цены
-            current_price = await self._get_current_price()
-            if not current_price:
-                log_error(self.user_id, "Не удалось получить текущую цену", module_name=__name__)
+
+            # Получение текущей цены из данных сигнала
+            current_price = self._convert_to_decimal(self.signal_data.get('current_price', '0'))
+            if not current_price > 0:
+                log_error(self.user_id, "Не удалось получить текущую цену из сигнала", module_name=__name__)
                 return
-                
+
             # Конвертация размера в количество
             if self.api:
                 qty = await self.api.calculate_quantity_from_usdt(self.symbol, position_size, current_price)
                 if qty <= 0:
                     log_error(self.user_id, "Некорректное количество для ордера", module_name=__name__)
                     return
-                    
+
                 # Размещение рыночного ордера
                 order_id = await self._place_order(
                     side=direction,
                     order_type="Market",
                     qty=qty
                 )
-                
+
                 if order_id:
                     log_info(
                         self.user_id,
@@ -329,7 +329,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 else:
                     log_error(self.user_id, "Не удалось разместить ордер входа", module_name=__name__)
                     await self.stop("Ошибка размещения ордера")
-                    
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка входа в позицию: {e}", module_name=__name__)
             await self.stop("Ошибка входа в позицию")
@@ -355,21 +355,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
         except Exception as e:
             log_error(self.user_id, f"Ошибка расчета размера позиции: {e}", module_name=__name__)
             return Decimal('0')
-            
-    async def _get_current_price(self) -> Optional[Decimal]:
-        """Получение текущей цены"""
-        try:
-            if not self.api:
-                return None
-                
-            ticker = await self.api.get_ticker(self.symbol)
-            if ticker and "lastPrice" in ticker:
-                return Decimal(str(ticker["lastPrice"]))
-                
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка получения цены: {e}", module_name=__name__)
-            
-        return None
+
         
     async def _handle_entry_order_filled(self, side: str, price: Decimal, qty: Decimal):
         """Обработка исполнения ордера входа"""
