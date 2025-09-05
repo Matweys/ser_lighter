@@ -32,7 +32,9 @@ class MarketAnalysis:
     trend_direction: str  # "UP", "DOWN", "SIDEWAYS"
     volatility_level: str  # "LOW", "MEDIUM", "HIGH"
     recommendation: str  # Рекомендация по стратегии
-    
+    trend_confirmation: bool
+
+
     def to_dict(self) -> Dict:
         """Преобразование в словарь для передачи через события"""
         return {
@@ -43,7 +45,8 @@ class MarketAnalysis:
             'rsi': str(self.rsi),
             'trend_direction': self.trend_direction,
             'volatility_level': self.volatility_level,
-            'recommendation': self.recommendation
+            'recommendation': self.recommendation,
+            'trend_confirmation': self.trend_confirmation
         }
 
 class MarketAnalyzer:
@@ -260,7 +263,10 @@ class MarketAnalyzer:
             
             avg_rsi = Decimal('0')
             avg_atr = Decimal('0')
-            
+
+            # Список для подсчета направлений
+            trend_directions_list = []
+
             for tf, analysis in tf_analyses.items():
                 weight = weights.get(tf, 0.33)
                 total_weight += weight
@@ -275,7 +281,9 @@ class MarketAnalyzer:
                 # Голосование по направлению тренда
                 direction = analysis['trend_direction']
                 trend_votes[direction] = trend_votes.get(direction, 0) + weight
-                
+                if direction != "SIDEWAYS":  # Собираем только явные тренды
+                    trend_directions_list.append(direction)
+
                 # Голосование по волатильности
                 volatility = analysis['volatility_level']
                 volatility_votes[volatility] = volatility_votes.get(volatility, 0) + weight
@@ -301,7 +309,15 @@ class MarketAnalyzer:
             
             # Рассчитываем уверенность
             confidence = min(100, int(max(regime_votes.values()) / total_weight * 100)) if total_weight > 0 else 50
-            
+
+            # Логика подтверждения тренда: большинство ТФ должны показывать одно направление
+            min_confirming_timeframes = 2  # Требуем, чтобы хотя бы 2 ТФ совпадали
+            trend_confirmation = False
+            if final_trend != "SIDEWAYS":
+                confirmation_count = trend_directions_list.count(final_trend)
+                if confirmation_count >= min_confirming_timeframes:
+                    trend_confirmation = True
+
             # Рекомендация по стратегии
             recommendation = self._get_strategy_recommendation(final_regime, final_strength, final_volatility)
             
@@ -313,7 +329,8 @@ class MarketAnalyzer:
                 rsi=avg_rsi,
                 trend_direction=final_trend,
                 volatility_level=final_volatility,
-                recommendation=recommendation
+                recommendation=recommendation,
+                trend_confirmation=trend_confirmation
             )
             
         except Exception as e:
@@ -343,7 +360,8 @@ class MarketAnalyzer:
             rsi=Decimal('50'),
             trend_direction="SIDEWAYS",
             volatility_level="LOW",
-            recommendation="bidirectional_grid"
+            recommendation="bidirectional_grid",
+            trend_confirmation=False
         )
     
     def clear_cache(self):
