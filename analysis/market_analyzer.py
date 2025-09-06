@@ -64,10 +64,7 @@ class MarketAnalyzer:
     def __init__(self, user_id: int, bybit_api: BybitAPI):
         self.user_id = user_id
         self.api = bybit_api
-        log_info(user_id, f"MarketAnalyzer инициализирован для пользователя {user_id}", module_name="market_analyzer")
-        
-        # Настройки анализа
-        #self.timeframes = [TimeFrame.M15, TimeFrame.H1, TimeFrame.H4]
+
         self.candle_limit = 200
         self.cache_duration = timedelta(minutes=5)
         

@@ -286,28 +286,29 @@ class GridScalpingStrategy(BaseStrategy):
             
         except Exception as e:
             log_error(self.user_id, f"Ошибка создания скальп-ордеров: {e}", module_name=__name__)
-            
+
     async def calculate_order_size(self) -> Decimal:
-        """Расчет размера ордера для скальпинга"""
+        """
+        Возвращает размер одного ордера из настроек.
+        """
         try:
             if not self.config:
                 return Decimal('0')
-                
-            # Общий размер позиции для скальпинга
-            total_position_size = self._convert_to_decimal(self.config.get("order_amount", 10.0))
-            position_size_percent = self.config.get("position_size_percent", 30)
-            
-            # Размер для скальпинга
-            scalp_size = total_position_size * (self._convert_to_decimal(position_size_percent) / Decimal('100'))
-            
-            # Размер одного ордера
-            order_size = scalp_size / (self.scalp_levels * 2)  # *2 для buy и sell
-            
-            # Минимальный размер ордера
-            min_order_size = Decimal('5.0')
-            
-            return max(min_order_size, order_size)
-            
+
+            # 'order_amount' теперь означает сумму на КАЖДЫЙ ордер в сетке.
+            order_size = self._convert_to_decimal(self.config.get("order_amount", 10.0))
+
+            # Проверяем, что размер не меньше абсолютного минимума для биржи
+            min_order_size_usdt = Decimal(SystemConstants.MIN_ORDER_SIZE_USDT)
+
+            if order_size < min_order_size_usdt:
+                log_warning(self.user_id,
+                            f"Размер ордера в настройках ({order_size} USDT) меньше системного минимума ({min_order_size_usdt} USDT). Используется минимальное значение.",
+                            module_name=__name__)
+                return min_order_size_usdt
+
+            return order_size
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка расчета размера ордера: {e}", module_name=__name__)
             return Decimal('0')

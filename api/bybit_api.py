@@ -181,11 +181,11 @@ class BybitAPI:
                     error_msg = response_result.get("retMsg",
                                                     "получен пустой ответ от сервера") if response_result else "получен пустой ответ от сервера"
                     log_error(self.user_id, f"API ошибка: {error_msg} (код: {ret_code})", module_name="bybit_api")
-                    if ret_code in [10001, 10003, 10004]:  # Auth errors
+                    if ret_code in [10003, 10004]:
                         log_error(self.user_id,
-                                  f"КРИТИЧЕСКАЯ ОШИБКА АУТЕНТИФИКАЦИИ (код: {ret_code}): {error_msg}. Проверьте правильность API ключей для Testnet и их права доступа!",
+                                  f"КРИТИЧЕСКАЯ ОШИБКА АУТЕНТИФИКАЦИИ (код: {ret_code}): {error_msg}. Проверьте правильность API ключей и их права доступа!",
                                   module_name="bybit_api")
-                        return None
+                        return None  # Для ошибок ключей выходим сразу
                     if attempt < self.max_retries:
                         await asyncio.sleep(self.retry_delay * (attempt + 1))
                         continue

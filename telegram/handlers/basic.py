@@ -410,7 +410,7 @@ async def cmd_orders(message: Message, state: FSMContext):
 
     try:
         exchange_config = system_config.get_exchange_config("bybit")
-        use_sandbox = exchange_config.sandbox if exchange_config else False
+        use_demo = exchange_config.demo if exchange_config else False
 
         async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], demo=use_demo) as api:
             orders = await api.get_open_orders()
@@ -637,7 +637,7 @@ async def cmd_balance(message: Message, state: FSMContext):
 
     try:
         exchange_config = system_config.get_exchange_config("bybit")
-        use_sandbox = exchange_config.sandbox if exchange_config else False
+        use_demo = exchange_config.demo if exchange_config else False
 
         # Используем контекстный менеджер и передаем флаг testnet
         async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], demo=use_demo) as api:
@@ -676,9 +676,9 @@ async def cmd_positions(message: Message, state: FSMContext):
         return
 
     try:
-        # Явно получаем флаг 'sandbox' из глобальной конфигурации
+        # Явно получаем флаг 'demo' из глобальной конфигурации
         exchange_config = system_config.get_exchange_config("bybit")
-        use_sandbox = exchange_config.sandbox if exchange_config else False
+        use_demo = exchange_config.demo if exchange_config else False
 
         # Используем контекстный менеджер и передаем флаг testnet
         async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], demo=use_demo) as api:
