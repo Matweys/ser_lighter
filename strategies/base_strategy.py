@@ -18,7 +18,8 @@ from core.events import (
 )
 from cache.redis_manager import redis_manager
 from api.bybit_api import BybitAPI
-
+from .grid_scalping_strategy import GridScalpingStrategy
+from .impulse_trailing_strategy import ImpulseTrailingStrategy
 # Настройка точности для Decimal
 getcontext().prec = 28
 
@@ -707,10 +708,6 @@ def create_strategy(strategy_type: str, user_id: int, symbol: str, signal_data: 
     """
     Фабричная функция для создания стратегий.
     """
-    from .grid_scalping_strategy import GridScalpingStrategy
-
-    from .impulse_trailing_strategy import ImpulseTrailingStrategy
-
     strategy_map = {
         "grid_scalping": GridScalpingStrategy,
         "impulse_trailing": ImpulseTrailingStrategy,
