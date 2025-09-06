@@ -271,14 +271,17 @@ class BotApplication:
         except Exception as e:
             log_error(0, f"Ошибка получения статуса приложения: {e}", module_name=__name__)
             return {"running": self._running, "error": str(e)}
-            
+
     async def _initialize_global_components(self):
         """Инициализация глобальных компонентов"""
         try:
+            exchange_config = system_config.get_exchange_config("bybit")
+            use_demo = exchange_config.demo if exchange_config else False
+
             # Инициализация глобального WebSocket менеджера
-            self.global_websocket_manager = GlobalWebSocketManager(self.event_bus)
+            self.global_websocket_manager = GlobalWebSocketManager(self.event_bus, demo=use_demo)
             await self.global_websocket_manager.start()
-            
+
             log_info(0, "Глобальные компоненты инициализированы", module_name=__name__)
             
         except Exception as e:

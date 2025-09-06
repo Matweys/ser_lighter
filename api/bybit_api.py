@@ -25,26 +25,23 @@ class BybitAPI:
     - Поддержка всех типов ордеров
     """
     
-    def __init__(self, api_key: str, api_secret: str, user_id: int, testnet: bool = False):
+    def __init__(self, api_key: str, api_secret: str, user_id: int, demo: bool = False):
         self.api_key = api_key
         self.api_secret = api_secret
         self.user_id = user_id
-        self.testnet = testnet
+        self.demo = demo
 
-        # --- НАЧАЛО ИЗМЕНЕНИЙ ---
-        # ОТЛАДОЧНОЕ ЛОГИРОВАНИЕ: Проверяем, какой ключ используется при каждом создании объекта
         if self.api_key:
             log_info(self.user_id, f"BybitAPI инициализирован с ключом: {self.api_key[:4]}...{self.api_key[-4:]}",
                      module_name="bybit_api")
-        else:
-            log_warning(self.user_id, "BybitAPI инициализирован БЕЗ API ключа.", module_name="bybit_api")
-        # --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
-        # URL endpoints
-        if testnet:
-            self.base_url = "https://api-testnet.bybit.com"
+            # URL endpoints
+        if demo:
+            self.base_url = "https://api-demo.bybit.com"
         else:
             self.base_url = "https://api.bybit.com"
+
+        log_info(self.user_id, f"BybitAPI использует базовый URL: {self.base_url}", module_name="bybit_api")
             
         # Rate limiting
         self.rate_limit_delay = 0.1  # 100ms между запросами

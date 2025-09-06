@@ -89,15 +89,13 @@ class RiskManager:
         log_info(self.user_id, "RiskManager остановлен", module_name=__name__)
 
     async def get_account_balance(self) -> Decimal:
-        """Получение баланса: реального для production или виртуального для testnet."""
+        """Получение баланса: реального для production или виртуального для demo."""
         try:
-            # Если API работает в тестовом режиме (BYBIT_SANDBOX=True), используем виртуальный баланс.
-            if self.api.testnet:
-                # Загружаем конфиг, чтобы взять оттуда сумму виртуального баланса
+            # Если API работает в демо режиме, используем виртуальный баланс.
+            if self.api.demo:
                 await self._ensure_config_fresh()
-                # Для гибкости, можно добавить сумму в конфиг, если ее нет - используем 10000.
                 paper_balance = Decimal(str(self.user_config.get("paper_trading_balance", "10000.0")))
-                log_info(self.user_id, f"РЕЖИМ TESTNET: Используется виртуальный баланс: {paper_balance} USDT", module_name=__name__)
+                log_info(self.user_id, f"РЕЖИМ DEMO: Используется виртуальный баланс: {paper_balance} USDT", module_name=__name__)
                 return paper_balance
 
             # В реальном режиме получаем баланс через API

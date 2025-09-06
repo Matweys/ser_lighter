@@ -58,12 +58,6 @@ async def setup_admin_user():
         log_warning(0, "API ключи для Bybit не найдены в .env. Ключи администратора не будут сохранены.", module_name=__name__)
         return
 
-    # --- НАЧАЛО ИЗМЕНЕНИЙ ---
-    # ДОБАВЛЯЕМ ПРОВЕРОЧНОЕ ЛОГИРОВАНИЕ ПРЯМО ЗДЕСЬ
-    log_info(0, f"Ключ API, прочитанный из .env: '{bybit_config.api_key[:4]}...{bybit_config.api_key[-4:]}'",
-             module_name=__name__)
-    # --- КОНЕЦ ИЗМЕНЕНИЙ ---
-
     for admin_id in admin_ids:
         try:
             # 1. Создаем или обновляем профиль администратора

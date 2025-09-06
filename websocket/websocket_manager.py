@@ -26,12 +26,7 @@ from core.settings_config import system_config
 # Настройка точности для Decimal
 getcontext().prec = 28
 
-# Определяем, используется ли песочница, на основе глобальной конфигурации
-IS_SANDBOX = system_config.get_exchange_config("bybit").sandbox if system_config.get_exchange_config("bybit") else False
 
-# WebSocket URLs
-WS_URL_PUBLIC = "wss://stream-testnet.bybit.com/v5/public/linear" if IS_SANDBOX else "wss://stream.bybit.com/v5/public/linear"
-WS_URL_PRIVATE = "wss://stream-testnet.bybit.com/v5/private" if IS_SANDBOX else "wss://stream.bybit.com/v5/private"
 
 
 class GlobalWebSocketManager:
@@ -40,11 +35,24 @@ class GlobalWebSocketManager:
     Управляет одним публичным соединением для всех пользователей
     """
     
-    def __init__(self, event_bus: EventBus):
+    def __init__(self, event_bus: EventBus, demo: bool = False):
         self.public_connection: Optional[websockets.WebSocketClientProtocol] = None
         self.event_bus = event_bus
         self.running = False
-        
+
+        # Динамическое определение URL
+        if demo:
+            stream_domain = "stream-demo.bybit.com"
+        else:
+            stream_domain = "stream.bybit.com"
+
+        self.public_url = f"wss://{stream_domain}/v5/public/linear"
+        self.private_url_template = f"wss://{stream_domain}/v5/private"
+
+        log_info(0, f"WebSocket Manager использует домен: {stream_domain}", module_name=__name__)
+
+        self.public_connection: Optional[websockets.WebSocketClientProtocol] = None
+
         # Отслеживание подписок
         self.symbol_subscribers: Dict[str, Set[int]] = {}  # symbol -> set of user_ids
         self.subscribed_symbols: Set[str] = set()
@@ -128,14 +136,15 @@ class GlobalWebSocketManager:
             del self.symbol_subscribers[symbol]
             
         log_info(user_id, "Отписка от всех символов", module_name=__name__)
-        
+
     async def _public_websocket_loop(self):
         """Основной цикл публичного WebSocket"""
         while self.running:
             try:
-                log_info(0, "Подключение к публичному WebSocket...", module_name=__name__)
-                
-                async with websockets.connect(WS_URL_PUBLIC) as websocket:
+                log_info(0, f"Подключение к публичному WebSocket: {self.public_url}", module_name=__name__)
+
+                async with websockets.connect(self.public_url) as websocket:
+
                     self.public_connection = websocket
                     log_info(0, "Подключен к публичному WebSocket", module_name=__name__)
                     
@@ -393,14 +402,15 @@ class DataFeedHandler:
             log_info(self.user_id, f"Подписка на watchlist: {watchlist}", module_name=__name__)
         except Exception as e:
             log_error(self.user_id, f"Ошибка подписки на watchlist: {e}", module_name=__name__)
-            
+
     async def _private_websocket_loop(self):
         """Основной цикл приватного WebSocket"""
         while self.running:
             try:
-                log_info(self.user_id, "Подключение к приватному WebSocket...", module_name=__name__)
-                
-                async with websockets.connect(WS_URL_PRIVATE) as websocket:
+                private_url = self.global_ws_manager.private_url_template
+                log_info(self.user_id, f"Подключение к приватному WebSocket: {private_url}", module_name=__name__)
+
+                async with websockets.connect(private_url) as websocket:
                     self.private_connection = websocket
                     
                     # Аутентификация

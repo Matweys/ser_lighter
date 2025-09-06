@@ -106,7 +106,7 @@ class ExchangeConfig:
     api_key: str
     secret_key: str
     passphrase: Optional[str] = None
-    sandbox: bool = False
+    demo: bool = False
     base_url: Optional[str] = None
 
     # Настройки торговли
@@ -333,7 +333,7 @@ class ConfigLoader:
                 exchange_type=ExchangeType.BYBIT,
                 api_key=self.env.str("BYBIT_API_KEY"),
                 secret_key=self.env.str("BYBIT_SECRET_KEY"),
-                sandbox=self.env.bool("BYBIT_SANDBOX", False),
+                demo=self.env.bool("BYBIT_DEMO", False),
                 base_url=self.env.str("BYBIT_BASE_URL", "https://api.bybit.com"),
                 default_leverage=self.env.int("BYBIT_DEFAULT_LEVERAGE", 1),
                 max_leverage=self.env.int("BYBIT_MAX_LEVERAGE", 5),
@@ -348,7 +348,7 @@ class ConfigLoader:
                 exchange_type=ExchangeType.BINANCE,
                 api_key=self.env.str("BINANCE_API_KEY"),
                 secret_key=self.env.str("BINANCE_SECRET_KEY"),
-                sandbox=self.env.bool("BINANCE_SANDBOX", False),
+                demo=self.env.bool("BINANCE_DEMO", False),
                 base_url=self.env.str("BINANCE_BASE_URL", "https://api.binance.com"),
                 default_leverage=self.env.int("BINANCE_DEFAULT_LEVERAGE", 1),
                 max_leverage=self.env.int("BINANCE_MAX_LEVERAGE", 20),

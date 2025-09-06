@@ -339,13 +339,13 @@ class UserSession:
             api_key, secret_key, _ = keys
 
             exchange_config = system_config.get_exchange_config("bybit")
-            use_sandbox = exchange_config.sandbox if exchange_config else False
+            use_demo = exchange_config.demo if exchange_config else False
 
             self.api = BybitAPI(
                 user_id=self.user_id,
                 api_key=api_key,
                 api_secret=secret_key,
-                testnet=use_sandbox
+                demo=use_demo
             )
 
             # Инициализация компонентов
