@@ -15,7 +15,7 @@ from core.enums import MarketCondition, TimeFrame
 from core.logger import log_info, log_error, log_warning, log_debug
 from core.functions import to_decimal, calculate_atr, calculate_rsi, calculate_ema
 from api.bybit_api import BybitAPI
-
+from cache.redis_manager import redis_manager
 # Настройка точности Decimal
 getcontext().prec = 28
 

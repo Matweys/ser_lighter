@@ -116,7 +116,8 @@ class BybitAPI:
             method: str,
             endpoint: str,
             params: Dict[str, Any] = None,
-            private: bool = True
+            private: bool = True,
+            return_full_response: bool = False
     ) -> Optional[Dict[str, Any]]:
         """Выполнение HTTP запроса к API с retry механизмом"""
         if params is None:
@@ -170,6 +171,9 @@ class BybitAPI:
                     return None
 
                 # --- Общая логика обработки ответа ---
+                if return_full_response:
+                    return response_result
+
                 if response_result and response_result.get("retCode") == 0:
                     return response_result.get("result", {})
                 else:
@@ -583,18 +587,28 @@ class BybitAPI:
                 "buyLeverage": str(leverage),
                 "sellLeverage": str(leverage)
             }
-            
-            result = await self._make_request("POST", "/v5/position/set-leverage", params)
-            
-            if result:
-                log_info(self.user_id, f"Плечо установлено {leverage}x для {symbol}", module_name="bybit_api")
+
+            response = await self._make_request("POST", "/v5/position/set-leverage", params, return_full_response=True)
+
+            ret_code = response.get("retCode", -1) if response else -1
+
+            if ret_code == 0 or ret_code == 110043:
+                if ret_code == 0:
+                    log_info(self.user_id, f"Плечо успешно установлено {leverage}x для {symbol}",
+                             module_name="bybit_api")
+                else:
+                    log_info(self.user_id, f"Плечо для {symbol} уже было {leverage}x. Изменения не требуются.",
+                             module_name="bybit_api")
                 return True
             else:
-                log_error(self.user_id, f"Не удалось установить плечо для {symbol}", module_name="bybit_api")
-                
+                error_msg = response.get("retMsg", "Неизвестная ошибка") if response else "Пустой ответ"
+                log_error(self.user_id,
+                          f"Не удалось установить плечо для {symbol}. Ошибка: {error_msg} (код: {ret_code})",
+                          module_name="bybit_api")
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка установки плеча для {symbol}: {e}", module_name="bybit_api")
-            
+
         return False
     
     async def set_trading_stop(

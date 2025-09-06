@@ -296,8 +296,8 @@ class BaseStrategy(ABC):
     async def _unsubscribe_from_events(self):
         """Отписка от событий"""
         try:
-            self.self.event_bus.unsubscribe(EventType.PRICE_UPDATE, self._handle_price_update_wrapper)
-            self.self.event_bus.unsubscribe(EventType.ORDER_FILLED, self._handle_order_filled_wrapper)
+            self.event_bus.unsubscribe(EventType.PRICE_UPDATE, self._handle_price_update_wrapper)
+            self.event_bus.unsubscribe(EventType.ORDER_FILLED, self._handle_order_filled_wrapper)
             self.event_bus.unsubscribe(EventType.POSITION_UPDATE, self._handle_position_update)
             self.event_bus.unsubscribe(EventType.USER_SETTINGS_CHANGED, self._handle_settings_changed)
             
@@ -558,10 +558,8 @@ class BaseStrategy(ABC):
     async def _cleanup_redis_state(self):
         """Очистка состояния в Redis"""
         try:
-            await redis_manager.delete_strategy_state(
-                self.user_id, 
-                f"{self.strategy_type.value}:{self.symbol}"
-            )
+            await redis_manager.delete_strategy_state(user_id=self.user_id, strategy_name=self.strategy_type.value,
+                                                      symbol=self.symbol)
         except Exception as e:
             log_error(self.user_id, f"Ошибка очистки состояния: {e}", module_name=__name__)
 

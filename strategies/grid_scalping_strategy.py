@@ -75,10 +75,17 @@ class GridScalpingStrategy(BaseStrategy):
 
             # Получение текущей цены и спреда из данных сигнала
             current_price = self._convert_to_decimal(self.signal_data.get('current_price', '0'))
+
             if not current_price > 0:
-                log_error(self.user_id, "Не удалось получить текущую цену из сигнала", module_name=__name__)
-                await self.stop("Нет цены в сигнале")
-                return
+                log_info(self.user_id, "Цена не найдена в сигнале, запрашиваю через API...", module_name=__name__)
+                ticker_data = await self.api.get_ticker(self.symbol)
+                if ticker_data and 'lastPrice' in ticker_data:
+                    current_price = ticker_data['lastPrice']
+                else:
+                    log_error(self.user_id, f"Не удалось получить текущую цену для {self.symbol} через API.",
+                              module_name=__name__)
+                    await self.stop("Не удалось получить цену")
+                    return
 
             # Анализ спреда и ликвидности
             await self._analyze_market_conditions(current_price)

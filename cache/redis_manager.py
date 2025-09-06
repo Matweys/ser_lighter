@@ -46,6 +46,7 @@ class RedisManager:
         # Подписчики на изменения конфигураций
         self._config_subscribers: Dict[str, List] = {}
 
+
     async def init_redis(self):
         """Инициализация подключения к Redis"""
         try:
@@ -107,6 +108,7 @@ class RedisManager:
         except Exception as e:
             log_error(0, f"Ошибка Redis операции: {e}", module_name=__name__)
             return None
+
 
     # =============================================================================
     # УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЬСКИМИ СЕССИЯМИ
@@ -632,6 +634,22 @@ class RedisManager:
             
         except Exception as e:
             log_error(0, f"Ошибка удаления кэшированных данных {key}: {e}", module_name=__name__)
+            return False
+
+    async def add_to_list(self, key: str, value: str, max_length: int = 100) -> bool:
+        """
+        Добавляет значение в начало списка в Redis и обрезает список до max_length.
+        """
+        try:
+            list_key = self._get_key("list", key)
+
+            # Последовательно выполняем две команды. Для этой операции pipeline не обязателен.
+            await self.redis_client.lpush(list_key, value)
+            await self.redis_client.ltrim(list_key, 0, max_length - 1)
+
+            return True
+        except Exception as e:
+            log_error(0, f"Ошибка добавления в список {key}: {e}", module_name=__name__)
             return False
 
     # =============================================================================
