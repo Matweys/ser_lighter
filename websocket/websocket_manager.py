@@ -40,16 +40,19 @@ class GlobalWebSocketManager:
         self.event_bus = event_bus
         self.running = False
 
-        # Динамическое определение URL
+        # Публичный URL всегда один - боевой.
+        self.public_url = "wss://stream.bybit.com/v5/public/linear"
+
+        # Приватный URL зависит от режима demo
         if demo:
-            stream_domain = "stream-demo.bybit.com"
+            private_domain = "stream-demo.bybit.com"
         else:
-            stream_domain = "stream.bybit.com"
+            private_domain = "stream.bybit.com"
 
-        self.public_url = f"wss://{stream_domain}/v5/public/linear"
-        self.private_url_template = f"wss://{stream_domain}/v5/private"
+        self.private_url_template = f"wss://{private_domain}/v5/private"
 
-        log_info(0, f"WebSocket Manager использует домен: {stream_domain}", module_name=__name__)
+        log_info(0, f"WebSocket Manager использует Public URL: {self.public_url}", module_name=__name__)
+        log_info(0, f"WebSocket Manager использует Private URL: {self.private_url_template}", module_name=__name__)
 
         self.public_connection: Optional[websockets.WebSocketClientProtocol] = None
 
