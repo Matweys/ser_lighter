@@ -21,6 +21,8 @@ from core.user_session import UserSession
 from websocket.websocket_manager import GlobalWebSocketManager
 from core.default_configs import DefaultConfigs
 from core.enums import ConfigType
+from core.settings_config import system_config
+
 
 class BotApplication:
     """
