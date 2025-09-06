@@ -10,7 +10,7 @@ from decimal import Decimal, getcontext
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from api.bybit_api import BybitAPI
-from core.logger import log_info, log_error
+from core.logger import log_info, log_error, log_debug
 from core.events import EventType, SignalEvent, UserSettingsChangedEvent, EventBus, GlobalCandleEvent
 from cache.redis_manager import redis_manager, ConfigType
 

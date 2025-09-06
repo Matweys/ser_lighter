@@ -322,10 +322,18 @@ class BotApplication:
             restored_count = 0
             for user_id in active_users:
                 try:
+                    # Проверяем, включил ли пользователь автоторговлю
+                    session_data = await redis_manager.get_user_session(user_id)
+                    if not session_data or not session_data.get('autotrade_enabled'):
+                        log_info(user_id, "Автотрейдинг для пользователя не включен, сессия не будет восстановлена.",
+                                 module_name=__name__)
+                        continue
+
                     # Проверка конфигурации пользователя
                     global_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
                     if not global_config:
-                        log_warning(0,f"Нет конфигурации для активного пользователя {user_id}, сессия не будет восстановлена.",
+                        log_warning(0,
+                                    f"Нет конфигурации для активного пользователя {user_id}, сессия не будет восстановлена.",
                                     module_name=__name__)
                         continue
 
@@ -334,7 +342,8 @@ class BotApplication:
                     if await session.start():
                         self.active_sessions[user_id] = session
                         restored_count += 1
-                        log_info(user_id, "Сессия восстановлена", module_name=__name__)
+                        log_info(user_id, "Сессия восстановлена, так как автотрейдинг был активен.",
+                                 module_name=__name__)
 
                 except Exception as e:
                     log_error(0, f"Ошибка восстановления сессии для пользователя {user_id}: {e}", module_name=__name__)

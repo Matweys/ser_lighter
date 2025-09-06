@@ -257,10 +257,14 @@ class EventBus:
                     for handler in self._subscribers[event_type_attr]:
                         try: await handler(event)
                         except Exception as e: logger.error(f"Ошибка в обработчике события {event_type_attr}: {e}", extra={"user_id": event.user_id})
-                if event.user_id in self._user_subscribers:
-                    for handler in self._user_subscribers[event.user_id]:
-                        try: await handler(event)
-                        except Exception as e: logger.error(f"Ошибка в пользовательском обработчике события: {e}", extra={"user_id": event.user_id})
+                user_id = getattr(event, 'user_id', None)
+                if user_id is not None and user_id in self._user_subscribers:
+                    for handler in self._user_subscribers[user_id]:
+                        try:
+                            await handler(event)
+                        except Exception as e:
+                            logger.error(f"Ошибка в пользовательском обработчике события: {e}",
+                                         extra={"user_id": user_id})
                 self._queue.task_done()
             except asyncio.TimeoutError: continue
             except Exception as e:
