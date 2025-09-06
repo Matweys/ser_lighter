@@ -24,7 +24,8 @@ from database.db_trades import db_manager
 from core.settings_config import system_config
 
 # Импорт стратегий
-from strategies.base_strategy import create_strategy, BaseStrategy
+from strategies.base_strategy import BaseStrategy
+from strategies.factory import create_strategy
 from strategies.impulse_trailing_strategy import ImpulseTrailingStrategy
 from strategies.grid_scalping_strategy import GridScalpingStrategy
 
@@ -208,7 +209,7 @@ class UserSession:
         except Exception as e:
             log_error(self.user_id, f"Ошибка при запуске постоянных стратегий: {e}", module_name=__name__)
 
-            
+
     async def get_status(self) -> Dict[str, Any]:
         """
         Получение статуса сессии

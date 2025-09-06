@@ -18,8 +18,7 @@ from core.events import (
 )
 from cache.redis_manager import redis_manager
 from api.bybit_api import BybitAPI
-from .grid_scalping_strategy import GridScalpingStrategy
-from .impulse_trailing_strategy import ImpulseTrailingStrategy
+
 # Настройка точности для Decimal
 getcontext().prec = 28
 
@@ -704,20 +703,4 @@ class BaseStrategy(ABC):
         return f"<{self.__class__.__name__}: {self.strategy_type.value}, {self.symbol}, user={self.user_id}>"
 
 
-def create_strategy(strategy_type: str, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, event_bus: EventBus, config: Dict[str, Any]) -> Optional['BaseStrategy']:
-    """
-    Фабричная функция для создания стратегий.
-    """
-    strategy_map = {
-        "grid_scalping": GridScalpingStrategy,
-        "impulse_trailing": ImpulseTrailingStrategy,
-    }
-
-    strategy_class = strategy_map.get(strategy_type)
-    if not strategy_class:
-        log_error(user_id, f"Неподдерживаемый тип стратегии: {strategy_type}", module_name="base_strategy")
-        return None
-
-    # Передаем все необходимые аргументы в конструктор
-    return strategy_class(user_id, symbol, signal_data, api, event_bus, config)
 
