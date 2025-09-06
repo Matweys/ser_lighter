@@ -25,7 +25,6 @@ from core.settings_config import system_config
 
 # Импорт стратегий
 from strategies.base_strategy import create_strategy, BaseStrategy
-from strategies.bidirectional_grid_strategy import BidirectionalGridStrategy
 from strategies.impulse_trailing_strategy import ImpulseTrailingStrategy
 from strategies.grid_scalping_strategy import GridScalpingStrategy
 
@@ -34,7 +33,6 @@ getcontext().prec = 28
 
 # Маппинг типов стратегий на классы
 STRATEGY_CLASSES = {
-    "bidirectional_grid": BidirectionalGridStrategy,
     "impulse_trailing": ImpulseTrailingStrategy,
     "grid_scalping": GridScalpingStrategy
 }
@@ -122,6 +120,9 @@ class UserSession:
 
             self.running = True
 
+            # Автоматический запуск постоянных стратегий (например, Grid Scalping)
+            await self._launch_persistent_strategies()
+
             # Сохранение состояния сессии в Redis
             await self._save_session_state()
 
@@ -169,6 +170,45 @@ class UserSession:
         except Exception as e:
             log_error(self.user_id, f"Ошибка остановки сессии: {e}", module_name=__name__)
 
+    async def _launch_persistent_strategies(self):
+        """
+        Запускает стратегии, которые должны работать постоянно
+        для символов из watchlist пользователя.
+        """
+        log_info(self.user_id, "Проверка и запуск постоянных стратегий...", module_name=__name__)
+        try:
+            # 1. Загружаем конфиг для grid_scalping, чтобы проверить, включена ли стратегия
+            grid_config_enum = ConfigType.STRATEGY_GRID_SCALPING
+            grid_config = await redis_manager.get_config(self.user_id, grid_config_enum)
+
+            if not grid_config or not grid_config.get("is_enabled", False):
+                log_info(self.user_id, "Стратегия Grid Scalping отключена в настройках. Пропускаем запуск.",
+                         module_name=__name__)
+                return
+
+            # 2. Загружаем глобальный конфиг, чтобы получить watchlist
+            global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
+            if not global_config or not global_config.get("watchlist_symbols"):
+                log_info(self.user_id, "Watchlist пуст. Стратегии Grid Scalping не запущены.", module_name=__name__)
+                return
+
+            watchlist = global_config.get("watchlist_symbols", [])
+            log_info(self.user_id, f"Запуск Grid Scalping для символов из watchlist: {watchlist}", module_name=__name__)
+
+            # 3. Запускаем по одной стратегии для каждого символа
+            for symbol in watchlist:
+                # Для постоянных стратегий не нужен специальный сигнал,
+                # поэтому signal_data может быть пустым.
+                await self.start_strategy(
+                    strategy_type="grid_scalping",
+                    symbol=symbol,
+                    analysis_data={'trigger': 'persistent_start'}
+                )
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка при запуске постоянных стратегий: {e}", module_name=__name__)
+
+            
     async def get_status(self) -> Dict[str, Any]:
         """
         Получение статуса сессии

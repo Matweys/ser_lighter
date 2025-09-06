@@ -49,7 +49,8 @@ class RiskManager:
             "realized_pnl": Decimal('0'),
             "unrealized_pnl": Decimal('0'),
             "max_drawdown": Decimal('0'),
-            "start_balance": Decimal('0')
+            "start_balance": Decimal('0'),
+            "peak_daily_balance": Decimal('0')
         }
         
         # Активные позиции для мониторинга
@@ -173,118 +174,25 @@ class RiskManager:
         except Exception as e:
             log_error(self.user_id, f"Ошибка проверки возможности открытия сделки {symbol}: {e}", module_name=__name__)
             return False
-            
-    async def calculate_position_size(self, symbol: str, analysis_data: Dict) -> Decimal:
+
+    async def calculate_position_size(self, symbol: str, analysis_data: Optional[Dict] = None) -> Decimal:
         """
-        Динамический расчет размера позиции на основе ATR и персональных настроек риска
-        
-        Args:
-            symbol: Торговый символ
-            analysis_data: Данные анализа рынка (содержит ATR, current_price)
-            
-        Returns:
-            Decimal: Размер позиции в USDT
+        Возвращает фиксированный размер ордера из настроек пользователя.
         """
         try:
             await self._ensure_config_fresh()
-            
             if not self.user_config:
-                return Decimal('10.0')  # Fallback
-                
-            # Получение баланса пользователя
-            balance = await self.get_account_balance()
-            if balance <= 0:
-                return Decimal('0')
-                
-            # Процент риска на сделку
-            risk_per_trade_percent = Decimal(str(self.user_config.get("risk_per_trade_percent", 1.0)))
-            risk_amount_usd = balance * (risk_per_trade_percent / 100)
-            
-            # Получение данных для расчета
-            current_price = analysis_data.get('current_price', Decimal('0'))
-            atr = analysis_data.get('atr', Decimal('0'))
-            
-            if current_price <= 0 or atr <= 0:
-                # Fallback на фиксированный размер
-                fallback_amount = Decimal(str(self.user_config.get("order_amount", 10.0)))
-                log_info(
-                    self.user_id,
-                    f"Недостаточно данных для динамического расчета, используем фиксированный размер: {fallback_amount}",
-                    module_name=__name__
-                )
-                return fallback_amount
-                
-            # Динамический расчет на основе ATR
-            # Стоп-лосс на расстоянии 2 * ATR
-            stop_loss_distance_usd = atr * Decimal('2.0')
-            stop_loss_distance_percent = stop_loss_distance_usd / current_price
-            
-            # Размер позиции = Риск на сделку / Процент стоп-лосса
-            position_size = risk_amount_usd / stop_loss_distance_percent
-            
-            # Ограничения размера позиции
-            min_position = Decimal('5.0')  # Минимум 5 USDT
-            max_position = balance * Decimal('0.1')  # Максимум 10% от баланса
-            
-            position_size = max(min_position, min(position_size, max_position))
-            
-            log_info(
-                self.user_id,
-                f"Расчет размера позиции для {symbol}: "
-                f"Баланс={balance:.2f} USDT, Риск={risk_per_trade_percent:.1f}%, "
-                f"ATR={atr:.6f}, Цена={current_price:.4f}, "
-                f"Размер позиции={position_size:.2f} USDT",
-                module_name=__name__
-            )
-            
-            return position_size
-            
+                return Decimal('10.0')  # Аварийное значение
+
+            order_amount = Decimal(str(self.user_config.get("order_amount", 10.0)))
+            log_info(self.user_id, f"Используется фиксированный размер позиции для {symbol}: {order_amount} USDT",
+                     module_name=__name__)
+            return order_amount
+
         except Exception as e:
-            log_error(self.user_id, f"Ошибка расчета размера позиции для {symbol}: {e}", module_name=__name__)
-            # Fallback на настройки пользователя
-            await self._ensure_config_fresh()
-            fallback = Decimal(str(self.user_config.get("order_amount", 10.0) if self.user_config else 10.0))
-            return fallback
-            
-    async def calculate_stop_loss_price(self, symbol: str, entry_price: Decimal, side: str, analysis_data: Dict) -> Decimal:
-        """
-        Расчет цены стоп-лосса на основе ATR
-        
-        Args:
-            symbol: Торговый символ
-            entry_price: Цена входа
-            side: Направление сделки (Buy/Sell)
-            analysis_data: Данные анализа
-            
-        Returns:
-            Decimal: Цена стоп-лосса
-        """
-        try:
-            atr = analysis_data.get('atr', Decimal('0'))
-            
-            if atr <= 0:
-                # Fallback на процентный стоп-лосс
-                await self._ensure_config_fresh()
-                stop_loss_percent = Decimal(str(self.user_config.get("stop_loss_percent", 2.0) if self.user_config else 2.0))
-                multiplier = Decimal('1') - (stop_loss_percent / 100) if side == "Buy" else Decimal('1') + (stop_loss_percent / 100)
-                return entry_price * multiplier
-                
-            # Динамический стоп-лосс на основе ATR
-            atr_multiplier = Decimal('2.0')  # 2 * ATR
-            
-            if side == "Buy":
-                stop_loss_price = entry_price - (atr * atr_multiplier)
-            else:  # Sell
-                stop_loss_price = entry_price + (atr * atr_multiplier)
-                
-            return stop_loss_price
-            
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка расчета стоп-лосса для {symbol}: {e}", module_name=__name__)
-            # Fallback
-            stop_loss_percent = Decimal('2.0')
-            multiplier = Decimal('1') - (stop_loss_percent / 100) if side == "Buy" else Decimal('1') + (stop_loss_percent / 100)
-            return entry_price * multiplier
+            log_error(self.user_id, f"Ошибка получения размера позиции для {symbol}: {e}", module_name=__name__)
+            return Decimal('10.0')
+
             
     async def update_position(self, symbol: str, position_data: Dict):
         """Обновление данных позиции для мониторинга"""
@@ -378,6 +286,7 @@ class RiskManager:
         try:
             balance = await self.get_account_balance()
             self.daily_stats["start_balance"] = balance
+            self.daily_stats["peak_daily_balance"] = balance
 
             # Загрузка сохраненной статистики из Redis (используем get_cached_data)
             saved_stats = await redis_manager.get_cached_data(f"user:{self.user_id}:daily_stats")
@@ -400,6 +309,12 @@ class RiskManager:
             # Расчет общего нереализованного PnL
             total_unrealized = sum((pos.get("unrealized_pnl", Decimal('0')) for pos in self.active_positions.values()), Decimal('0'))
             self.daily_stats["unrealized_pnl"] = total_unrealized
+
+
+            # Обновление пикового баланса за день
+            current_balance = self.daily_stats["start_balance"] + self.daily_stats["realized_pnl"] + self.daily_stats["unrealized_pnl"]
+            if current_balance > self.daily_stats["peak_daily_balance"]:
+                self.daily_stats["peak_daily_balance"] = current_balance
 
             # Расчет текущей просадки
             current_drawdown = await self._calculate_current_drawdown_percent()
@@ -433,33 +348,40 @@ class RiskManager:
             return Decimal('0')
 
     async def _check_daily_loss_limit(self) -> bool:
-        """Проверка лимита суточного убытка в USDT."""
+        """
+        Проверка лимита суточного убытка с "умным" трейлингом от пика прибыли.
+        """
         try:
             await self._ensure_config_fresh()
             if not self.user_config:
                 return False
 
-            max_loss_usdt = Decimal(str(self.user_config.get("max_daily_loss_usdt", 100.0)))
+            # 1. Получаем лимит убытка из настроек (например, 10 USDT)
+            max_loss_usdt = Decimal(str(self.user_config.get("max_daily_loss_usdt", 10.0)))
 
-            # Расчет общего PnL за сегодня (realized + unrealized)
-            # Примечание: Эта логика предполагает, что daily_stats корректно обнуляются каждый день.
-            total_daily_pnl = self.daily_stats.get("realized_pnl", Decimal('0')) + self.daily_stats.get(
-                "unrealized_pnl", Decimal('0'))
+            # 2. Определяем пиковый баланс за сегодня
+            peak_balance = self.daily_stats.get("peak_daily_balance", self.daily_stats["start_balance"])
 
-            # Нас интересует только убыток
-            current_loss = abs(min(Decimal('0'), total_daily_pnl))
+            # 3. Рассчитываем уровень стоп-аута (например, 1050 - 10 = 1040 USDT)
+            stop_out_level = peak_balance - max_loss_usdt
 
-            if current_loss >= max_loss_usdt:
+            # 4. Получаем текущий баланс
+            current_balance = self.daily_stats["start_balance"] + self.daily_stats["realized_pnl"] + self.daily_stats["unrealized_pnl"]
+
+            # 5. Сравниваем
+            if current_balance <= stop_out_level:
                 log_warning(self.user_id,
-                            f"ПРЕВЫШЕН ЛИМИТ СУТОЧНОГО УБЫТКА! Лимит: {max_loss_usdt} USDT, Текущий убыток: {current_loss} USDT",
+                            f"ПРЕВЫШЕН СУТОЧНЫЙ ЛИМИТ УБЫТКА! "
+                            f"Текущий баланс: {current_balance:.2f} USDT опустился ниже стоп-уровня: {stop_out_level:.2f} USDT "
+                            f"(Пик: {peak_balance:.2f}, Лимит: {max_loss_usdt} USDT)",
                             module_name=__name__)
 
                 await self.event_bus.publish(RiskLimitExceededEvent(
                     user_id=self.user_id,
-                    limit_type="daily_loss_usdt",
-                    current_value=current_loss,
-                    limit_value=max_loss_usdt,
-                    action_required="stop_trading"  # Это событие будет обработано UserSession
+                    limit_type="daily_loss_trailing",
+                    current_value=current_balance,
+                    limit_value=stop_out_level,
+                    action_required="stop_trading"
                 ))
                 return True  # Лимит превышен
 

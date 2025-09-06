@@ -24,6 +24,17 @@ class EventType(Enum):
     RISK_LIMIT_EXCEEDED = "risk_limit_exceeded"
     DRAWDOWN_WARNING = "drawdown_warning"
     SYSTEM_STATUS = "system_status"
+    GLOBAL_CANDLE = "global_candle"
+
+@dataclass
+class GlobalCandleEvent:
+    """
+    Глобальное событие о новой свече от сканера рынка.
+    Не привязано к конкретному пользователю.
+    """
+    candle_data: Dict[str, Any]
+    timestamp: datetime = field(default_factory=datetime.now, init=False)
+    event_type: EventType = field(default=EventType.GLOBAL_CANDLE, init=False)
 
 
 @dataclass

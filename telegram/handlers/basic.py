@@ -412,7 +412,7 @@ async def cmd_orders(message: Message, state: FSMContext):
         exchange_config = system_config.get_exchange_config("bybit")
         use_sandbox = exchange_config.sandbox if exchange_config else False
 
-        async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], testnet=use_sandbox) as api:
+        async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], demo=use_demo) as api:
             orders = await api.get_open_orders()
 
         if not orders:
@@ -640,7 +640,7 @@ async def cmd_balance(message: Message, state: FSMContext):
         use_sandbox = exchange_config.sandbox if exchange_config else False
 
         # Используем контекстный менеджер и передаем флаг testnet
-        async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], testnet=use_sandbox) as api:
+        async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], demo=use_demo) as api:
             balance_data = await api.get_wallet_balance()
 
         if balance_data and 'totalEquity' in balance_data:
@@ -681,7 +681,7 @@ async def cmd_positions(message: Message, state: FSMContext):
         use_sandbox = exchange_config.sandbox if exchange_config else False
 
         # Используем контекстный менеджер и передаем флаг testnet
-        async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], testnet=use_sandbox) as api:
+        async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], demo=use_demo) as api:
             positions = await api.get_positions()
 
         if not positions:

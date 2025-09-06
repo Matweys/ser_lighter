@@ -50,14 +50,6 @@ class UserStates(StatesGroup):
     # --- ОБЩЕЕ СОСТОЯНИЕ ДЛЯ ВВОДА ЗНАЧЕНИЯ ПАРАМЕТРА ---
     AWAITING_STRATEGY_PARAM_VALUE = State()
     
-    # Состояния для Bidirectional Grid Strategy
-    BIDIRECTIONAL_GRID_LEVELS = State()
-    BIDIRECTIONAL_SPACING_PERCENT = State()
-    BIDIRECTIONAL_ORDER_SIZE = State()
-    BIDIRECTIONAL_REBALANCE_THRESHOLD = State()
-    BIDIRECTIONAL_MAX_POSITION_SIZE = State()
-    BIDIRECTIONAL_GRID_BOUNDS = State()
-    
     # Состояния для Grid Scalping Strategy
     GRID_SCALPING_ORDER_TIMEOUT = State()
     GRID_SCALPING_MIN_SPREAD = State()

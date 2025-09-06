@@ -9,7 +9,6 @@ from enum import Enum, IntEnum
 class StrategyType(Enum):
     """Типы торговых стратегий"""
     GRID_SCALPING = "grid_scalping"
-    BIDIRECTIONAL_GRID = "bidirectional_grid"
     IMPULSE_TRAILING = "impulse_trailing"
 
 
@@ -206,7 +205,6 @@ class ConfigType(Enum):
     GLOBAL = "global_config"
 
     # Типы для каждой стратегии
-    STRATEGY_BIDIRECTIONAL_GRID = "strategy_bidirectional_grid"
     STRATEGY_GRID_SCALPING = "strategy_grid_scalping"
     STRATEGY_IMPULSE_TRAILING = "strategy_impulse_trailing"
 

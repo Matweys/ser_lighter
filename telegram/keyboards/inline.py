@@ -216,7 +216,7 @@ def get_strategy_settings_keyboard(configs: Dict[str, Dict[str, Any]]) -> Inline
 
     buttons = [
         [
-            {"text": f"{get_status_icon('bidirectional_grid')} Двунаправленная сетка",
+            {"text": f"{get_status_icon('bidirectional_grid')} В разработке",
              "callback_data": "configure_strategy_bidirectional_grid"},
             {"text": f"{get_status_icon('grid_scalping')} Сеточный скальпинг",
              "callback_data": "configure_strategy_grid_scalping"}

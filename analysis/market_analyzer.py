@@ -65,9 +65,6 @@ class MarketAnalyzer:
         self.user_id = user_id
         self.api = bybit_api
         log_info(user_id, f"MarketAnalyzer инициализирован для пользователя {user_id}", module_name="market_analyzer")
-        # Кэш для данных свечей
-        self.candles_cache: Dict[str, Dict[str, pd.DataFrame]] = {}
-        self.cache_expiry: Dict[str, Dict[str, datetime]] = {}
         
         # Настройки анализа
         #self.timeframes = [TimeFrame.M15, TimeFrame.H1, TimeFrame.H4]
@@ -82,14 +79,6 @@ class MarketAnalyzer:
         ...
         """
         try:
-            # ПРОВЕРКА РЕЖИМА TESTNET
-            # if self.api.testnet:
-            #     # В режиме testnet принудительно используем таймфреймы с доступными данными
-            #     overridden_timeframes = ["1m", "5m", "15m"]
-            #     log_info(self.user_id, f"РЕЖИМ TESTNET: Таймфреймы для анализа {symbol} принудительно заменены на {overridden_timeframes}", module_name="market_analyzer")
-            #     timeframes = overridden_timeframes
-
-            # log_info(self.user_id, f"Начинаю анализ рынка для {symbol}", module_name="market_analyzer")
             # Получаем данные по всем таймфреймам
             timeframe_data = {}
             for tf_value in timeframes:
@@ -119,46 +108,55 @@ class MarketAnalyzer:
         except Exception as e:
             log_error(self.user_id, f"Ошибка анализа рынка для {symbol}: {e}", module_name="market_analyzer")
             return self._create_default_analysis()
-    
+
     async def _get_candles_cached(self, symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
-        """Получить данные свечей с кэшированием"""
+        """Получить данные свечей, используя глобальный кэш в Redis."""
         try:
-            # Проверяем кэш
-            cache_key = f"{symbol}_{timeframe}"
-            if (cache_key in self.candles_cache and 
-                cache_key in self.cache_expiry and
-                datetime.now() < self.cache_expiry[cache_key]):
-                return self.candles_cache[cache_key]
-            
-            # Получаем новые данные
+            # 1. Генерируем ключ для кэша в Redis
+            redis_cache_key = f"klines:{symbol}:{timeframe}"
+
+            # 2. Пытаемся получить данные из Redis
+            cached_data = await redis_manager.get_cached_data(redis_cache_key)
+
+            if cached_data:
+                # Если данные в кэше есть, преобразуем их из JSON в DataFrame
+                df = pd.read_json(cached_data, orient='records')
+                df['timestamp'] = pd.to_datetime(df['start_time'], unit='ms')
+                df.set_index('timestamp', inplace=True)
+                for col in ['open', 'high', 'low', 'close', 'volume']:
+                    df[col] = df[col].apply(to_decimal)
+                return df
+
+            # 3. Если в кэше данных нет (cache miss), запрашиваем их у API
             candles_data = await self.api.get_klines(
                 symbol=symbol,
                 interval=timeframe,
                 limit=self.candle_limit
             )
-            
+
             if not candles_data:
                 return None
-            
-            # Преобразуем в DataFrame
+
+            # 4. Преобразуем в DataFrame
             df = pd.DataFrame(candles_data)
+            # Сохраняем start_time как обычную колонку для сериализации в JSON
             df['timestamp'] = pd.to_datetime(df['start_time'], unit='ms')
             df.set_index('timestamp', inplace=True)
-            
-            # Преобразуем в Decimal
+
             for col in ['open', 'high', 'low', 'close', 'volume']:
                 df[col] = df[col].apply(to_decimal)
-            
-            # Кэшируем
-            if symbol not in self.candles_cache:
-                self.candles_cache[symbol] = {}
-                self.cache_expiry[symbol] = {}
-            
-            self.candles_cache[symbol][timeframe] = df
-            self.cache_expiry[symbol][timeframe] = datetime.now() + self.cache_duration
-            
+
+            # 5. Сериализуем DataFrame в JSON и сохраняем в Redis
+            # Используем to_json с 'records' для корректного сохранения/чтения
+            # Сбрасываем индекс, чтобы 'start_time' сохранился как колонка
+            df_for_json = df.reset_index(drop=True)
+            json_data = df_for_json.to_json(orient='records')
+
+            # Кэшируем на 60 секунд. Этого достаточно, т.к. минутная свеча - самый частый триггер.
+            await redis_manager.cache_data(redis_cache_key, json_data, ttl=60)
+
             return df
-            
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка получения свечей {symbol} {timeframe}: {e}", module_name="market_analyzer")
             return None
@@ -349,12 +347,9 @@ class MarketAnalyzer:
         """Рекомендация стратегии на основе анализа"""
         if regime in [MarketCondition.STRONG_TREND, MarketCondition.TREND] and strength > 60:
             return "impulse_trailing"
-        elif regime in [MarketCondition.STRONG_FLAT, MarketCondition.FLAT]:
-            return "bidirectional_grid"
         elif regime == MarketCondition.WEAK_TREND and volatility == "HIGH":
             return "grid_scalping"
-        else:
-            return "bidirectional_grid"  # По умолчанию
+
 
     @staticmethod
     def _create_default_analysis() -> MarketAnalysis:
@@ -367,7 +362,7 @@ class MarketAnalyzer:
             rsi=Decimal('50'),
             trend_direction="SIDEWAYS",
             volatility_level="LOW",
-            recommendation="bidirectional_grid",
+            recommendation="grid_scalping",
             trend_confirmation=False,
             current_price=Decimal('0')
         )

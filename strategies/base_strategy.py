@@ -710,12 +710,11 @@ def create_strategy(strategy_type: str, user_id: int, symbol: str, signal_data: 
     Фабричная функция для создания стратегий.
     """
     from .grid_scalping_strategy import GridScalpingStrategy
-    from .bidirectional_grid_strategy import BidirectionalGridStrategy
+
     from .impulse_trailing_strategy import ImpulseTrailingStrategy
 
     strategy_map = {
         "grid_scalping": GridScalpingStrategy,
-        "bidirectional_grid": BidirectionalGridStrategy,
         "impulse_trailing": ImpulseTrailingStrategy,
     }
 

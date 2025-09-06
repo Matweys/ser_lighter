@@ -22,7 +22,7 @@ from websocket.websocket_manager import GlobalWebSocketManager
 from core.default_configs import DefaultConfigs
 from core.enums import ConfigType
 from core.settings_config import system_config
-
+from core.impulse_scanner import ImpulseScanner
 
 class BotApplication:
     """
@@ -38,7 +38,8 @@ class BotApplication:
         
         # Глобальные компоненты
         self.global_websocket_manager: Optional[GlobalWebSocketManager] = None
-        
+        self.impulse_scanner: Optional[ImpulseScanner] = None
+
         # Статистика приложения
         self.app_stats = {
             "start_time": datetime.now(),
@@ -284,20 +285,28 @@ class BotApplication:
             self.global_websocket_manager = GlobalWebSocketManager(self.event_bus, demo=use_demo)
             await self.global_websocket_manager.start()
 
+            # 3. Инициализация глобального сканера импульсов
+            self.impulse_scanner = ImpulseScanner(self.event_bus)
+            await self.impulse_scanner.start()
+
             log_info(0, "Глобальные компоненты инициализированы", module_name=__name__)
-            
+
         except Exception as e:
             log_error(0, f"Ошибка инициализации глобальных компонентов: {e}", module_name=__name__)
             raise
-            
+
     async def _stop_global_components(self):
         """Остановка глобальных компонентов"""
         try:
             if self.global_websocket_manager:
                 await self.global_websocket_manager.stop()
-                
+
+            # 4. Остановка глобального сканера импульсов
+            if self.impulse_scanner:
+                await self.impulse_scanner.stop()
+
             log_info(0, "Глобальные компоненты остановлены", module_name=__name__)
-            
+
         except Exception as e:
             log_error(0, f"Ошибка остановки глобальных компонентов: {e}", module_name=__name__)
 

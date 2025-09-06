@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from api.bybit_api import BybitAPI
 from core.logger import log_info, log_error
-from core.events import EventType, NewCandleEvent, SignalEvent, UserSettingsChangedEvent, EventBus
+from core.events import EventType, SignalEvent, UserSettingsChangedEvent, EventBus, GlobalCandleEvent
 from cache.redis_manager import redis_manager, ConfigType
 
 # Настройка точности для Decimal
@@ -37,25 +37,21 @@ class MetaStrategist:
         
         # Настройки пользователя
         self.user_config: Optional[Dict] = None
-        
+
     async def start(self):
         """Запуск MetaStrategist"""
         if self.running:
             return
-            
         log_info(self.user_id, "Запуск MetaStrategist...", module_name=__name__)
-        
         try:
-            # Загрузка конфигурации пользователя
             await self._load_user_config()
-            
-            # Подписка на события
-            self.event_bus.subscribe(EventType.NEW_CANDLE, self._handle_new_candle)
+
+            # 2. Меняем подписку с NewCandleEvent на GlobalCandleEvent
+            self.event_bus.subscribe(EventType.GLOBAL_CANDLE, self._handle_global_candle)
             self.event_bus.subscribe(EventType.USER_SETTINGS_CHANGED, self._handle_settings_changed)
-            
+
             self.running = True
             log_info(self.user_id, "MetaStrategist запущен", module_name=__name__)
-            
         except Exception as e:
             log_error(self.user_id, f"Ошибка запуска MetaStrategist: {e}", module_name=__name__)
             raise
@@ -75,56 +71,51 @@ class MetaStrategist:
         """
         await self._handle_settings_changed(event)
 
+    async def _handle_global_candle(self, event: GlobalCandleEvent):
+        """Обработчик глобального события о новой свече от ImpulseScanner."""
+        symbol = event.candle_data.get("symbol")
+        if not symbol:
+            return
 
-    async def _handle_new_candle(self, event: NewCandleEvent):
-        """Обработчик события новой свечи"""
-        # Фильтруем события только для нашего пользователя
-        if event.user_id != self.user_id:
-            return
-            
-        # Проверяем, нужно ли анализировать этот символ
-        if not await self._should_analyze_symbol(event.symbol):
-            return
-            
-        # Проверяем cooldown
         now = datetime.now()
-        last_analysis = self.last_analysis_time.get(event.symbol)
+        last_analysis = self.last_analysis_time.get(symbol)
         if last_analysis and (now - last_analysis) < self.analysis_cooldown:
             return
-            
+
         try:
-            log_info(self.user_id, f"Анализ рынка для {event.symbol} по новой свече", module_name=__name__)
+            # Проверяем, включена ли стратегия impulse_trailing у данного пользователя
+            # Для этого нам нужно загрузить конфиг именно этой стратегии
+            impulse_config = await redis_manager.get_config(self.user_id, ConfigType.STRATEGY_IMPULSE_TRAILING)
+            if not impulse_config or not impulse_config.get("is_enabled", False):
+                return  # Если стратегия выключена, просто игнорируем событие
 
-            # Получаем таймфреймы из конфигурации пользователя
+            log_debug(self.user_id, f"Анализ рынка для {symbol} по глобальной свече", module_name=__name__)
+
             analysis_timeframes = self.user_config.get("analysis_timeframes", ["15m", "1h", "4h"])
+            analysis = await self.analyzer.get_market_analysis(symbol, timeframes=analysis_timeframes)
 
-            # Проводим анализ рынка с указанием таймфреймов
-            analysis = await self.analyzer.get_market_analysis(event.symbol, timeframes=analysis_timeframes)
+            self.last_analysis_time[symbol] = now
 
-            # Обновляем время последнего анализа
-            self.last_analysis_time[event.symbol] = now
-            
-            # Принимаем решение о запуске стратегии
             strategy_decision = await self._make_strategy_decision(analysis)
 
             if strategy_decision:
-                # Преобразуем результат анализа в словарь для события
                 analysis_dict = analysis.to_dict()
 
-                # Публикуем сигнал, используя прямой доступ к атрибутам
+                # Создаем ПЕРСОНАЛЬНЫЙ сигнал для конкретного пользователя
                 signal_event = SignalEvent(
                     user_id=self.user_id,
-                    symbol=event.symbol,
+                    symbol=symbol,
                     strategy_type=strategy_decision["strategy_type"],
                     signal_strength=analysis.strength,
                     analysis_data=analysis_dict
                 )
 
                 await self.event_bus.publish(signal_event)
-                log_info(self.user_id, f"Сигнал отправлен: {strategy_decision['strategy_type']} для {event.symbol} "
-                                       f"(сила: {analysis.strength})", module_name=__name__)
+                log_info(self.user_id,
+                         f"Сигнал отправлен: {strategy_decision['strategy_type']} для {symbol} (сила: {analysis.strength})",
+                         module_name=__name__)
         except Exception as e:
-            log_error(self.user_id, f"Ошибка обработки новой свечи {event.symbol}: {e}", module_name=__name__)
+            log_error(self.user_id, f"Ошибка обработки глобальной свечи {symbol}: {e}", module_name=__name__)
             
     async def _handle_settings_changed(self, event: UserSettingsChangedEvent):
         """Обработчик изменения настроек пользователя"""
@@ -144,54 +135,32 @@ class MetaStrategist:
         except Exception as e:
             log_error(self.user_id, f"Ошибка загрузки конфигурации: {e}", module_name=__name__)
             raise
-            
-    async def _should_analyze_symbol(self, symbol: str) -> bool:
-        """Проверка, нужно ли анализировать символ"""
-        if not self.user_config:
-            return False
-            
-        # Проверяем, есть ли символ в watchlist
-        watchlist = self.user_config.get("watchlist_symbols", [])
-        return symbol in watchlist
-        
+
+
     async def _make_strategy_decision(self, analysis: 'MarketAnalysis') -> Optional[Dict[str, str]]:
         """
-        Принятие решения о запуске стратегии на основе анализа
-        Returns:
-            Dict с типом стратегии или None если стратегию запускать не нужно
+        Принятие решения о запуске стратегии на основе анализа.
+        Генерирует сигнал только для impulse_trailing при наличии сильного тренда.
         """
         try:
-            # Используем прямой доступ к атрибутам датакласса MarketAnalysis
             regime = analysis.regime.value if hasattr(analysis.regime, 'value') else analysis.regime
             signal_strength = analysis.strength
-            
-            # Минимальная сила сигнала для запуска стратегии
-            min_signal_strength = 40
-            
+
+            # Получаем минимальную силу сигнала из конфигурации пользователя
+            min_signal_strength = self.user_config.get("min_signal_strength", 70)
+
             if signal_strength < min_signal_strength:
                 return None
-                
-            # Выбор стратегии на основе режима рынка
+
+            # Генерируем сигнал только для импульсной стратегии при сильном тренде
             if regime in ['STRONG_TREND', 'TREND']:
-                # Для трендового рынка - импульсная стратегия
                 return {
                     "strategy_type": "impulse_trailing",
-                    "reason": f"Трендовый рынок, сила сигнала: {signal_strength}"
+                    "reason": f"Обнаружен трендовый рынок, сила сигнала: {signal_strength}"
                 }
-            elif regime in ['STRONG_FLAT', 'FLAT']:
-                # Для флэтового рынка - сеточная стратегия
-                return {
-                    "strategy_type": "bidirectional_grid",
-                    "reason": f"Флэтовый рынок, сила сигнала: {signal_strength}"
-                }
-            elif regime == 'WEAK_TREND' and signal_strength > 60:
-                # Для слабого тренда при высокой силе сигнала - скальпинг
-                return {
-                    "strategy_type": "grid_scalping",
-                    "reason": f"Слабый тренд с высокой силой сигнала: {signal_strength}"
-                }
-                
+
             return None
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка принятия решения о стратегии: {e}", module_name=__name__)
             return None

@@ -72,27 +72,6 @@ class DefaultConfigs:
         }
 
     @staticmethod
-    def get_bidirectional_grid_config() -> Dict[str, Any]:
-        """Конфигурация стратегии двунаправленной сетки."""
-        return {
-            # --- Пользовательские настройки (видны в Telegram) ---
-            "is_enabled": True,
-            "order_amount": 10.0,
-            "grid_levels": 3,
-            "profit_percent": 0.8,
-            "stop_loss_percent": 1.0,
-
-            # --- Внутренние параметры (для логики бота) ---
-            "grid_spacing_percent": 0.8,  # Используется как базовый шаг
-            "adaptive_spacing": True,
-            "atr_multiplier": 0.5,
-            "auto_rebuild_grid": True,
-            "rebuild_threshold_percent": 80,
-            "required_market_conditions": ["STRONG_FLAT", "FLAT"],
-            "min_signal_strength": 60
-        }
-
-    @staticmethod
     def get_impulse_trailing_config() -> Dict[str, Any]:
         """Конфигурация стратегии импульсного трейлинга."""
         return {
@@ -235,7 +214,6 @@ class DefaultConfigs:
         return {
             "global_config": DefaultConfigs.get_global_config(),
             "strategy_configs": {
-                "bidirectional_grid": DefaultConfigs.get_bidirectional_grid_config(),
                 "impulse_trailing": DefaultConfigs.get_impulse_trailing_config(),
                 "grid_scalping": DefaultConfigs.get_grid_scalping_config()
             },
@@ -264,10 +242,7 @@ class DefaultConfigs:
                     "risk_per_trade_percent", "global_daily_drawdown_percent",
                     "watchlist_symbols"
                 ]
-            elif config_type == "bidirectional_grid":
-                required_fields = [
-                    "grid_levels", "grid_spacing_percent", "profit_percent"
-                ]
+
             elif config_type == "impulse_trailing":
                 required_fields = [
                     "initial_stop_percent", "trailing_step_percent", "impulse_threshold_percent"

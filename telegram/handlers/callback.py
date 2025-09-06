@@ -42,16 +42,6 @@ class CallbackHandler:
     def __init__(self, event_bus: EventBus):
         self.event_bus = event_bus
         self.strategy_descriptions = {
-            StrategyType.BIDIRECTIONAL_GRID.value: {
-                "name": "🔄 Двунаправленная сетка",
-                "description": (
-                    "Стратегия для торговли в боковом рынке.\n"
-                    "Размещает ордера на покупку и продажу вокруг текущей цены.\n"
-                    "Подходит для флэтовых рынков с низкой волатильностью."
-                ),
-                "risk_level": "MEDIUM",
-                "min_balance": Decimal('100')
-            },
             StrategyType.GRID_SCALPING.value: {
                 "name": "⚡ Сеточный скальпинг", 
                 "description": (
@@ -709,7 +699,6 @@ async def callback_confirm_reset_settings(callback: CallbackQuery, state: FSMCon
         default_strategies = all_default_configs.get("strategy_configs", {})
 
         for strategy_type, strategy_config in default_strategies.items():
-            # Получаем правильный enum, например, ConfigType.STRATEGY_BIDIRECTIONAL_GRID
             config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
             await redis_manager.save_config(user_id, config_enum, strategy_config)
         # --- КОНЕЦ ИСПРАВЛЕННОЙ ЛОГИКИ ---
