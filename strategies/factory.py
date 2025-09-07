@@ -4,7 +4,7 @@
 Разрывает циклические зависимости между базовой и конкретными стратегиями.
 """
 from typing import Dict, Any, Optional
-
+from aiogram import Bot
 # Импортируем все необходимые компоненты
 from api.bybit_api import BybitAPI
 from core.events import EventBus
@@ -20,6 +20,7 @@ def create_strategy(
     signal_data: Dict[str, Any],
     api: BybitAPI,
     event_bus: EventBus,
+    bot: Bot,
     config: Optional[Dict[str, Any]] = None
 ) -> Optional[BaseStrategy]:
     """
@@ -36,4 +37,4 @@ def create_strategy(
         return None
 
     # Передаем все необходимые аргументы в конструктор
-    return strategy_class(user_id, symbol, signal_data, api, event_bus, config)
+    return strategy_class(user_id, symbol, signal_data, api, event_bus, bot, config)

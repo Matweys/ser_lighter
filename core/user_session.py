@@ -22,7 +22,7 @@ from api.bybit_api import BybitAPI
 from websocket.websocket_manager import GlobalWebSocketManager, DataFeedHandler
 from database.db_trades import db_manager
 from core.settings_config import system_config
-
+from telegram.bot import bot_manager
 # Импорт стратегий
 from strategies.base_strategy import BaseStrategy
 from strategies.factory import create_strategy
@@ -281,9 +281,10 @@ class UserSession:
                 strategy_type=strategy_type,
                 user_id=self.user_id,
                 symbol=symbol,
-                signal_data=analysis_data or {},  # Явно передаем данные анализа
+                signal_data=analysis_data or {},
                 api=self.api,
-                config=None, # Конфиг будет загружен внутри самой стратегии
+                bot=bot_manager.bot,
+                config=None,
                 event_bus=self.event_bus
             )
 

@@ -9,6 +9,7 @@ from decimal import Decimal, getcontext
 from core.logger import log_info, log_error, log_warning
 from core.functions import to_decimal
 from urllib.parse import urlencode
+from core.functions import format_number
 # Настройка точности для Decimal
 getcontext().prec = 28
 
@@ -446,7 +447,7 @@ class BybitAPI:
                 "symbol": symbol,
                 "side": side,
                 "orderType": order_type,
-                "qty": str(qty),
+                "qty": format_number(qty),  # Используем форматирование для удаления лишних нулей
                 "timeInForce": time_in_force
             }
 

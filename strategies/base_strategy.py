@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from decimal import Decimal, getcontext
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
-
+from aiogram import Bot
 from core.logger import log_info, log_error, log_warning
 from core.enums import StrategyType, PositionSide, ConfigType
 from core.events import (
@@ -19,7 +19,7 @@ from core.events import (
 from cache.redis_manager import redis_manager
 from api.bybit_api import BybitAPI
 from aiogram.utils.markdown import hbold, hcode
-from telegram.bot import bot_manager
+
 
 
 # Настройка точности для Decimal
@@ -39,7 +39,7 @@ class BaseStrategy(ABC):
     - Мониторинг состояния и статистики
     """
     
-    def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, event_bus: EventBus, config: Optional[Dict] = None):
+    def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, event_bus: EventBus, bot: "Bot", config: Optional[Dict] = None):
         """
         Инициализация базовой стратегии
         
@@ -53,6 +53,7 @@ class BaseStrategy(ABC):
         self.signal_data = signal_data
         self.api: BybitAPI = api
         self.event_bus = event_bus
+        self.bot = bot
         self.config: Dict[str, Any] = config or {}
         # Состояние стратегии
         self.is_running = False
@@ -711,7 +712,7 @@ class BaseStrategy(ABC):
                 f"▫️ {hbold('Цена входа:')} {hcode(f'{price:.4f} USDT')}\n"
                 f"▫️ {hbold('Объем:')} {hcode(str(quantity))}"
             )
-            await bot_manager.bot.send_message(self.user_id, text, parse_mode="HTML")
+            await self.bot.send_message(self.user_id, text, parse_mode="HTML")
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления об открытии сделки: {e}", "base_strategy")
 
@@ -740,7 +741,7 @@ class BaseStrategy(ABC):
                 f"▫️ {hbold('PnL:')} {hcode(pnl_text)}\n"
                 f"▫️ {hbold('Win Rate стратегии:')} {hcode(f'{win_rate:.2f}%')}"
             )
-            await bot_manager.bot.send_message(self.user_id, text, parse_mode="HTML")
+            await self.bot.send_message(self.user_id, text, parse_mode="HTML")
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления о закрытии сделки: {e}", "base_strategy")
 

@@ -29,8 +29,8 @@ class ImpulseTrailingStrategy(BaseStrategy):
     """
 
     def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, event_bus: EventBus,
-                 config: Optional[Dict] = None):
-        super().__init__(user_id, symbol, signal_data, api, event_bus, config)
+                 bot: "Bot", config: Optional[Dict] = None):
+        super().__init__(user_id, symbol, signal_data, api, event_bus, bot, config)
         
         # Параметры трейлинга (загружаются из конфигурации)
         self.initial_stop_percent: Decimal = Decimal('2.0')      # Начальный стоп-лосс

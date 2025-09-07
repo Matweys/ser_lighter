@@ -211,13 +211,10 @@ def get_strategy_settings_keyboard(configs: Dict[str, Dict[str, Any]]) -> Inline
     """Клавиатура настроек стратегий с отображением статуса (вкл/выкл)."""
 
     def get_status_icon(strategy_type: str) -> str:
-        # is_enabled - наш новый флаг в конфиге стратегии
         return "✅" if configs.get(strategy_type, {}).get("is_enabled", False) else "❌"
 
     buttons = [
         [
-            {"text": f"{get_status_icon('bidirectional_grid')} В разработке",
-             "callback_data": "configure_strategy_bidirectional_grid"},
             {"text": f"{get_status_icon('grid_scalping')} Сеточный скальпинг",
              "callback_data": "configure_strategy_grid_scalping"}
         ],

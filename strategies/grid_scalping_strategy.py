@@ -30,8 +30,8 @@ class GridScalpingStrategy(BaseStrategy):
     """
 
     def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, event_bus: EventBus,
-                 config: Optional[Dict] = None):
-        super().__init__(user_id, symbol, signal_data, api, event_bus, config)
+                 bot: "Bot", config: Optional[Dict] = None):
+        super().__init__(user_id, symbol, signal_data, api, event_bus, bot, config)
         
         # Параметры скальпинга (загружаются из конфигурации)
         self.scalp_levels: int = 3
@@ -258,35 +258,39 @@ class GridScalpingStrategy(BaseStrategy):
             log_error(self.user_id, f"Ошибка расчета параметров скальпинга: {e}", module_name=__name__)
             
     async def _create_initial_scalp_orders(self):
-        """Создание начальных ордеров скальпинга"""
+        """Создание начального ордера для LONG-only стратегии."""
         try:
             if not self.scalp_center_price:
+                log_error(self.user_id, "Невозможно создать ордер: цена не определена.", module_name=__name__)
                 return
-                
-            # Размер ордера
+
+            # Проверяем, нет ли уже активных ордеров, чтобы избежать дублирования
+            if self.active_scalp_orders:
+                log_info(self.user_id, "Начальный ордер уже существует, новый не создается.", module_name=__name__)
+                return
+
             order_size = await self.calculate_order_size()
             if order_size <= 0:
-                log_error(self.user_id, "Недостаточно средств для скальпинга", module_name=__name__)
+                log_error(self.user_id, "Недостаточно средств или неверный размер ордера.", module_name=__name__)
                 return
-                
-            # Создание ордеров на покупку и продажу
-            for i in range(1, self.scalp_levels + 1):
-                # Ордер на покупку (ниже центра)
-                buy_price = self.scalp_center_price * (1 - (self.scalp_spacing_percent / 100) * i)
-                await self._place_scalp_order("Buy", buy_price, order_size)
-                
-                # Ордер на продажу (выше центра)
-                sell_price = self.scalp_center_price * (1 + (self.scalp_spacing_percent / 100) * i)
-                await self._place_scalp_order("Sell", sell_price, order_size)
-                
-            log_info(
-                self.user_id,
-                f"Скальп-ордера созданы: {len(self.active_scalp_orders)} ордеров",
-                module_name=__name__
-            )
-            
+
+            # Создаем только ОДИН начальный ордер на покупку по текущей рыночной цене
+            # или чуть ниже, чтобы войти в позицию.
+            # Для простоты и надежности используем рыночный ордер.
+            qty = await self.api.calculate_quantity_from_usdt(self.symbol, order_size, self.scalp_center_price)
+            if qty > 0:
+                await self._place_order(side="Buy", order_type="Market", qty=qty)
+                log_info(
+                    self.user_id,
+                    f"Размещен начальный рыночный LONG-ордер для Grid Scalping, объем: {qty}",
+                    module_name=__name__
+                )
+            else:
+                log_warning(self.user_id, f"Рассчитанное количество для ордера равно нулю для суммы {order_size} USDT.", module_name=__name__)
+
+
         except Exception as e:
-            log_error(self.user_id, f"Ошибка создания скальп-ордеров: {e}", module_name=__name__)
+            log_error(self.user_id, f"Ошибка создания начального ордера: {e}", module_name=__name__)
 
     async def calculate_order_size(self) -> Decimal:
         """
