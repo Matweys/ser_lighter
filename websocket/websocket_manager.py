@@ -34,60 +34,39 @@ class GlobalWebSocketManager:
     Глобальный менеджер WebSocket соединений
     Управляет одним публичным соединением для всех пользователей
     """
-    
+
     def __init__(self, event_bus: EventBus, demo: bool = False):
         self.public_connection: Optional[websockets.WebSocketClientProtocol] = None
         self.event_bus = event_bus
         self.running = False
 
-        # Публичный URL всегда один - боевой.
+        # Публичный URL всегда один - боевой, т.к. он для всех пользователей
         self.public_url = "wss://stream.bybit.com/v5/public/linear"
 
-        # Приватный URL зависит от режима demo
-        if demo:
-            private_domain = "stream-demo.bybit.com"
-        else:
-            private_domain = "stream.bybit.com"
-
+        # Приватный URL зависит от режима demo, он будет использоваться в DataFeedHandler
+        private_domain = "stream-demo.bybit.com" if demo else "stream.bybit.com"
         self.private_url_template = f"wss://{private_domain}/v5/private"
 
         log_info(0, f"WebSocket Manager использует Public URL: {self.public_url}", module_name=__name__)
-        log_info(0, f"WebSocket Manager использует Private URL: {self.private_url_template}", module_name=__name__)
-
-        # Приватное WebSocket соединение
-        self.public_connection: Optional[websockets.WebSocketClientProtocol] = None
-        self._private_task: Optional[asyncio.Task] = None
+        log_info(0, f"WebSocket Manager использует Private URL Template: {self.private_url_template}",
+                 module_name=__name__)
 
         # Отслеживание подписок
         self.symbol_subscribers: Dict[str, Set[int]] = {}  # symbol -> set of user_ids
         self.subscribed_symbols: Set[str] = set()
-        
-        # Задачи
+
+        # Задача только для публичного соединения
         self._public_task: Optional[asyncio.Task] = None
 
     async def start(self):
-        """Запуск DataFeedHandler"""
+        """Запуск глобального WebSocket менеджера"""
         if self.running:
             return
 
-        log_info(self.user_id, "Запуск DataFeedHandler...", module_name=__name__)
-
-        try:
-            await self._load_api_credentials()
-            await self._subscribe_to_watchlist()
-
-            # Подписываемся на УЖЕ СУЩЕСТВУЮЩЕЕ событие обновления позиции
-            self.event_bus.subscribe(EventType.POSITION_UPDATE, self._handle_position_activity)
-
-            if self.api_key and self.api_secret:
-                self._private_task = asyncio.create_task(self._private_websocket_loop())
-
-            self.running = True
-            log_info(self.user_id, "DataFeedHandler запущен", module_name=__name__)
-
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка запуска DataFeedHandler: {e}", module_name=__name__)
-            raise
+        log_info(0, "Запуск GlobalWebSocketManager...", module_name=__name__)
+        self.running = True
+        self._public_task = asyncio.create_task(self._public_websocket_loop())
+        log_info(0, "GlobalWebSocketManager запущен", module_name=__name__)
         
     async def stop(self):
         """Остановка глобального WebSocket менеджера"""
