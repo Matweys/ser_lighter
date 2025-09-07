@@ -21,6 +21,8 @@ from telegram.bot import bot_manager
 from telegram.handlers import basic, callback
 from core.default_configs import DefaultConfigs
 from core.enums import ConfigType
+from aiogram.exceptions import TelegramRetryAfter
+
 # --- 3. Настройка точности ---
 getcontext().prec = 28
 
@@ -137,7 +139,14 @@ async def lifespan_context():
         # Вызов ваших функций
         await setup_admin_user()
         await initialize_default_configs()
-        await set_commands()
+        try:
+            await set_commands()
+        except TelegramRetryAfter as e:
+            log_warning(0,
+                        f"Не удалось установить команды из-за флуд-лимита Telegram. Повторная попытка будет при следующем запуске. Ошибка: {e}",
+                        module_name=__name__)
+        except Exception as e:
+            log_error(0, f"Непредвиденная ошибка при установке команд: {e}", module_name=__name__)
 
         # Создание и запуск основного приложения
         bot_app = BotApplication()
