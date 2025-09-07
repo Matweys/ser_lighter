@@ -35,6 +35,7 @@ async def set_commands():
         BotCommand(command="/manual", description="🛠️ Ручные стратегии"),
         BotCommand(command="/positions", description="📈 Открытые позиции"),
         BotCommand(command="/stop_all", description="🚫 Остановить ВСЕ и закрыть позиции"),
+        BotCommand(command="/stats", description="📊 Моя статистика"),
         BotCommand(command="/balance", description="💰 Баланс"),
         BotCommand(command="/settings", description="⚙️ Настройки бота"),
         BotCommand(command="/help", description="ℹ️ Помощь"),

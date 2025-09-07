@@ -356,7 +356,18 @@ class DatabaseManager:
                     UNIQUE(user_id, strategy_type, symbol)
                 )
             """)
-            
+            await self._execute_query("""
+                            CREATE TABLE IF NOT EXISTS user_strategy_stats (
+                                id SERIAL PRIMARY KEY,
+                                user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                                strategy_type VARCHAR(50) NOT NULL,
+                                total_trades INTEGER DEFAULT 0,
+                                winning_trades INTEGER DEFAULT 0,
+                                total_pnl DECIMAL(20, 8) DEFAULT 0,
+                                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                                UNIQUE(user_id, strategy_type)
+                            )
+                        """)
             # Таблица уведомлений
             await self._execute_query("""
                 CREATE TABLE IF NOT EXISTS notifications (
@@ -625,6 +636,45 @@ class DatabaseManager:
                 log_info(0, "Пул соединений закрыт", module_name='database')
         except Exception as e:
             log_error(0, f"Ошибка закрытия пула соединений: {e}", module_name='database')
+
+    async def update_strategy_stats(self, user_id: int, strategy_type: str, pnl: Decimal) -> Decimal:
+        """
+        Обновляет статистику для конкретной стратегии пользователя и возвращает обновленный Win Rate.
+        """
+        try:
+            win_increment = 1 if pnl > 0 else 0
+
+            query = """
+                INSERT INTO user_strategy_stats (user_id, strategy_type, total_trades, winning_trades, total_pnl)
+                VALUES ($1, $2, 1, $3, $4)
+                ON CONFLICT (user_id, strategy_type) DO UPDATE SET
+                    total_trades = user_strategy_stats.total_trades + 1,
+                    winning_trades = user_strategy_stats.winning_trades + $3,
+                    total_pnl = user_strategy_stats.total_pnl + $4,
+                    updated_at = NOW()
+                RETURNING total_trades, winning_trades;
+            """
+
+            result = await self._execute_query(query, (user_id, strategy_type, win_increment, pnl), fetch_one=True)
+
+            if result and result['total_trades'] > 0:
+                win_rate = (Decimal(result['winning_trades']) / Decimal(result['total_trades'])) * 100
+                return win_rate
+
+            return Decimal('0')
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка обновления статистики стратегии {strategy_type}: {e}", module_name='database')
+            return Decimal('0')
+
+    async def get_strategy_stats(self, user_id: int) -> List[Dict]:
+        """Получение статистики по всем стратегиям пользователя."""
+        try:
+            query = "SELECT * FROM user_strategy_stats WHERE user_id = $1 ORDER BY total_pnl DESC"
+            return await self._execute_query(query, (user_id,), fetch_all=True)
+        except Exception as e:
+            log_error(user_id, f"Ошибка получения статистики по стратегиям: {e}", module_name='database')
+            return []
 
 # Глобальный экземпляр менеджера базы данных
 db_manager = DatabaseManager()

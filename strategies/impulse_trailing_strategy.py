@@ -361,7 +361,6 @@ class ImpulseTrailingStrategy(BaseStrategy):
             log_error(self.user_id, f"Ошибка расчета размера позиции: {e}", module_name=__name__)
             return Decimal('0')
 
-        
     async def _handle_entry_order_filled(self, side: str, price: Decimal, qty: Decimal):
         """Обработка исполнения ордера входа"""
         try:
@@ -370,52 +369,71 @@ class ImpulseTrailingStrategy(BaseStrategy):
             self.position_size = qty
             self.position_opened_at = datetime.now()
             self.peak_price = price
-            
-            # Расчет начального стоп-лосса
+
             if side == "Buy":
                 self.current_stop_price = price * (1 - self.initial_stop_percent / 100)
             else:
                 self.current_stop_price = price * (1 + self.initial_stop_percent / 100)
-                
-            # Обновление статистики
+
             self.trailing_stats["positions_opened"] += 1
-            
+
             log_info(
                 self.user_id,
                 f"Позиция открыта: {side} {qty} по {price}, стоп={self.current_stop_price}",
                 module_name=__name__
             )
-            
+
+            # 1. Отправляем уведомление пользователю
+            await self._send_trade_open_notification(side, price, qty)
+
+            # 2. Сообщаем системе, что нужно подписаться на цену этого символа
+            await self.event_bus.publish(PositionOpenedEvent(
+                user_id=self.user_id,
+                symbol=self.symbol,
+                side=side,
+                size=qty,
+                entry_price=price,
+                exit_price=Decimal('0'),
+                realized_pnl=Decimal('0'),
+                strategy_type=self.strategy_type.value
+            ))
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки входа в позицию: {e}", module_name=__name__)
 
     async def _handle_exit_order_filled(self, side: str, price: Decimal, qty: Decimal):
         """Обработка исполнения ордера выхода"""
         try:
-            pnl = None  # Инициализируем pnl значением по умолчанию
-            # Расчет PnL
+            pnl = Decimal('0')
             if self.entry_price and self.position_side:
                 if self.position_side == "Buy":
                     pnl = (price - self.entry_price) * qty
                 else:
                     pnl = (self.entry_price - price) * qty
 
-                # Обновление статистики
                 if pnl > 0:
                     self.stats["profit_orders"] += 1
                 else:
                     self.stats["loss_orders"] += 1
-
                 self.stats["total_pnl"] += pnl
 
-            log_info(
-                self.user_id,
-                f"Позиция закрыта: {side} {qty} по {price}, PnL={pnl if pnl is not None else 'N/A'}",
-                module_name=__name__
-            )
-            # Сброс состояния позиции
-            await self._reset_position_state()
+            log_info(self.user_id, f"Позиция закрыта: {side} {qty} по {price}, PnL={pnl}", module_name=__name__)
 
+            # 1. Отправляем уведомление о закрытии
+            await self._send_trade_close_notification(pnl)
+
+            # 2. Сообщаем системе, что можно отписаться от цены
+            await self.event_bus.publish(PositionClosedEvent(
+                user_id=self.user_id,
+                symbol=self.symbol,
+                side=self.position_side if self.position_side else "Unknown",
+                size=qty,
+                entry_price=self.entry_price if self.entry_price else Decimal('0'),
+                exit_price=price,
+                realized_pnl=pnl,
+                strategy_type=self.strategy_type.value
+            ))
+
+            await self._reset_position_state()
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки выхода из позиции: {e}", module_name=__name__)
             

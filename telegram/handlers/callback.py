@@ -33,6 +33,11 @@ from core.logger import log_info, log_error, log_warning
 from core.settings_config import DEFAULT_SYMBOLS, system_config
 from api.bybit_api import BybitAPI
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.utils.markdown import hbold
+from core.functions import to_decimal
+from datetime import datetime, timedelta
+
+
 
 router = Router()
 
@@ -125,6 +130,81 @@ async def callback_main_menu(callback: CallbackQuery, state: FSMContext):
     except Exception as e:
         log_error(user_id, f"Ошибка в главном меню: {e}", module_name='callback')
         await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+
+# >>> НАЧАЛО НОВОГО БЛОКА: ОБРАБОТЧИКИ СТАТИСТИКИ <<<
+
+async def _generate_stats_report(user_id: int, start_date: Optional[datetime] = None,
+                                 end_date: Optional[datetime] = None) -> str:
+    """Вспомогательная функция для генерации текста отчета по статистике."""
+    # !!! ВАЖНО: Здесь должна быть ваша логика получения статистики из БД для заданного периода.
+    # Сейчас она будет использовать общую статистику для примера.
+    # В будущем нужно будет дописать функции в db_manager.py для фильтрации по датам.
+
+    user_profile = await db_manager.get_user(user_id)
+    strategy_stats = await db_manager.get_strategy_stats(user_id)  # Эта функция тоже должна будет принимать даты
+
+    if not user_profile:
+        return "❌ Профиль пользователя не найден."
+
+    stats_text = (
+        f"📊 {hbold('Общая статистика торговли')}\n\n"
+        f"💰 {hbold('Общая прибыль:')} {format_currency(user_profile.total_profit)}\n"
+        f"📈 {hbold('Всего сделок:')} {user_profile.total_trades}\n"
+        f"🎯 {hbold('Общий Win Rate:')} {format_percentage(user_profile.win_rate)}\n"
+    )
+
+    if strategy_stats:
+        stats_text += f"\n───────────────\n\n🏆 {hbold('Статистика по стратегиям:')}\n"
+        for stat in strategy_stats:
+            strategy_name = stat['strategy_type'].replace('_', ' ').title()
+            pnl = to_decimal(stat['total_pnl'])
+            trades = stat['total_trades']
+            wins = stat['winning_trades']
+            win_rate = (Decimal(wins) / Decimal(trades) * 100) if trades > 0 else 0
+            pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+            stats_text += (
+                f"\n🔹 {hbold(strategy_name)}\n"
+                f"   {pnl_emoji} {hbold('PnL:')} {format_currency(pnl)}\n"
+                f"   {hbold('Сделок:')} {trades} | {hbold('Win Rate:')} {format_percentage(win_rate)}"
+            )
+    return stats_text
+
+
+@router.callback_query(F.data.startswith("stats_period_"))
+async def callback_stats_period(callback: CallbackQuery, state: FSMContext):
+    """Обрабатывает выбор периода и показывает статистику."""
+    user_id = callback.from_user.id
+    period = callback.data.replace("stats_period_", "")
+
+    await callback.message.edit_text("⏳ <i>Генерирую отчет...</i>", parse_mode="HTML")
+
+    if period == "day":
+        # Логика для статистики за сутки (по МСК)
+        now_utc = datetime.now(timezone.utc)
+        start_of_day_msk = now_utc.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None) - timedelta(hours=3)
+        report_text = await _generate_stats_report(user_id, start_date=start_of_day_msk)
+
+    elif period == "all":
+        # Логика для статистики за все время
+        report_text = await _generate_stats_report(user_id)
+
+    elif period == "month_select":
+        # TODO: Реализовать выбор месяца. Сейчас покажем за все время.
+        await callback.message.edit_text(
+            "🗓️ <i>Функция выбора месяца в разработке. Показываю статистику за всё время.</i>", parse_mode="HTML")
+        report_text = await _generate_stats_report(user_id)
+
+    else:  # Обработка выбора конкретного месяца
+        # TODO: Реализовать логику для `stats_period_2025-08`
+        report_text = await _generate_stats_report(user_id)
+
+    await callback.message.edit_text(report_text, parse_mode="HTML", reply_markup=get_back_keyboard("main_menu"))
+    await callback.answer()
+
+
+# >>> КОНЕЦ НОВОГО БЛОКА <<<
+
 
 
 # Настройки

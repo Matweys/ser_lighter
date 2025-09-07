@@ -7,6 +7,7 @@ import asyncio
 from typing import Dict, Any, Optional, List
 from decimal import Decimal, getcontext
 from datetime import datetime, timedelta
+
 from api.bybit_api import BybitAPI
 from .base_strategy import BaseStrategy
 from core.enums import StrategyType, OrderType, SystemConstants
@@ -351,75 +352,67 @@ class GridScalpingStrategy(BaseStrategy):
             log_error(self.user_id, f"Ошибка размещения скальп-ордера: {e}", module_name=__name__)
             
         return None
-        
+
     async def _handle_scalp_order_filled(self, order_id: str, side: str, price: Decimal, qty: Decimal):
         """Обработка исполнения ордера скальпинга"""
         try:
-            # Определение цены прибыли
+            await self._send_trade_open_notification(side, price, qty)
+
             if side == "Buy":
                 profit_side = "Sell"
                 profit_price = price * (1 + self.quick_profit_percent / 100)
-            else:
+            else:  # Sell
                 profit_side = "Buy"
                 profit_price = price * (1 - self.quick_profit_percent / 100)
-                
-            # Размещение ордера прибыли
+
             profit_order_id = await self._place_order(
-                side=profit_side,
-                order_type="Limit",
-                qty=qty,
-                price=profit_price
+                side=profit_side, order_type="Limit", qty=qty, price=profit_price
             )
-            
+
             if profit_order_id:
-                # Сохранение ордера прибыли
                 self.profit_orders[profit_order_id] = {
-                    "order_id": profit_order_id,
-                    "side": profit_side,
-                    "price": profit_price,
-                    "qty": qty,
-                    "original_order_id": order_id,
-                    "original_price": price,
+                    "order_id": profit_order_id, "side": profit_side, "price": profit_price,
+                    "qty": qty, "original_order_id": order_id, "original_price": price,
                     "created_at": datetime.now()
                 }
-                
-                log_info(
-                    self.user_id,
-                    f"Ордер прибыли размещен: {profit_side} {qty} по {profit_price}",
-                    module_name=__name__
-                )
-                
-            # Размещение нового скальп-ордера на том же уровне
+                log_info(self.user_id, f"Ордер прибыли размещен: {profit_side} {qty} по {profit_price}",
+                         module_name=__name__)
+
             order_data = self.active_scalp_orders.get(order_id, {})
             if order_data:
                 size_usdt = order_data.get("size_usdt", Decimal('5'))
                 await self._place_scalp_order(side, price, size_usdt)
-                
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки исполнения скальп-ордера: {e}", module_name=__name__)
 
     async def _handle_profit_order_filled(self, order_id: str, side: str, price: Decimal, qty: Decimal):
         """Обработка исполнения ордера прибыли"""
         try:
-            # Обновление статистики
             self.scalp_stats["quick_profits"] += 1
             self.scalp_stats["scalp_cycles"] += 1
-            
-            # Расчет прибыли цикла
+
+            cycle_profit = Decimal('0')
             profit_order = self.profit_orders.get(order_id, {})
             if profit_order:
                 original_price = profit_order.get("original_price", price)
-                cycle_profit = abs(price - original_price) * qty
-                
-                # Обновление средней прибыли
+                pnl_side = "Buy" if side.lower() == "sell" else "Sell"
+
+                if pnl_side == "Buy":
+                    cycle_profit = (price - original_price) * qty
+                else:
+                    cycle_profit = (original_price - price) * qty
+
                 total_cycles = self.scalp_stats["scalp_cycles"]
                 current_avg = self.scalp_stats["average_profit_per_cycle"]
-                self.scalp_stats["average_profit_per_cycle"] = (
-                    (current_avg * (total_cycles - 1) + cycle_profit) / total_cycles
-                )
-            log_info(self.user_id,
-                f"Цикл скальпинга завершен: ордер прибыли {side} исполнен. (цикл #{self.scalp_stats['scalp_cycles']})",
-                module_name=__name__)
+                if total_cycles > 0:
+                    self.scalp_stats["average_profit_per_cycle"] = (
+                                (current_avg * (total_cycles - 1) + cycle_profit) / total_cycles)
+
+            log_info(self.user_id, f"Цикл скальпинга завершен: ордер прибыли {side} исполнен. PnL: {cycle_profit:.2f}",
+                     module_name=__name__)
+
+            await self._send_trade_close_notification(cycle_profit)
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки исполнения ордера прибыли: {e}", module_name=__name__)
             

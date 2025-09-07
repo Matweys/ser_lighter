@@ -16,7 +16,7 @@ import time
 from core.logger import log_error, log_info
 from core.events import (
     EventType, NewCandleEvent, PriceUpdateEvent, OrderUpdateEvent,
-    OrderFilledEvent, PositionUpdateEvent, PositionClosedEvent, EventBus
+    OrderFilledEvent, PositionUpdateEvent, PositionClosedEvent, EventBus,PositionOpenedEvent
 )
 from cache.redis_manager import redis_manager, ConfigType
 from database.db_trades import db_manager
@@ -327,31 +327,56 @@ class DataFeedHandler:
         # API ключи пользователя
         self.api_key: Optional[str] = None
         self.api_secret: Optional[str] = None
-        
+
     async def start(self):
         """Запуск DataFeedHandler"""
         if self.running:
             return
-            
+
         log_info(self.user_id, "Запуск DataFeedHandler...", module_name=__name__)
-        
+
         try:
-            # Загрузка API ключей
             await self._load_api_credentials()
-            
-            # Подписка на символы из watchlist
             await self._subscribe_to_watchlist()
-            
-            # Запуск приватного WebSocket
+
+            # Подписка на события открытия/закрытия позиций для динамического управления потоком данных
+            self.event_bus.subscribe(EventType.POSITION_OPENED, self._handle_position_opened)
+            self.event_bus.subscribe(EventType.POSITION_CLOSED, self._handle_position_closed)
+
             if self.api_key and self.api_secret:
                 self._private_task = asyncio.create_task(self._private_websocket_loop())
-            
+
             self.running = True
             log_info(self.user_id, "DataFeedHandler запущен", module_name=__name__)
-            
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка запуска DataFeedHandler: {e}", module_name=__name__)
             raise
+
+    # >>> ДОБАВИТЬ ДВА НОВЫХ МЕТОДА В КЛАСС DataFeedHandler <<<
+    async def _handle_position_opened(self, event: PositionOpenedEvent):
+        """Обработчик события открытия позиции: подписывается на данные по символу."""
+        if event.user_id != self.user_id:
+            return
+        log_info(self.user_id, f"Позиция по {event.symbol} открыта, подписываюсь на обновления цены.",
+                 module_name=__name__)
+        await self.global_ws_manager.subscribe_symbol(self.user_id, event.symbol)
+
+    async def _handle_position_closed(self, event: PositionClosedEvent):
+        """Обработчик события закрытия позиции: отписывается от данных по символу."""
+        if event.user_id != self.user_id:
+            return
+        # Отписываемся, только если символ не в основном watchlist пользователя
+        global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
+        watchlist = global_config.get("watchlist_symbols", []) if global_config else []
+
+        if event.symbol not in watchlist:
+            log_info(self.user_id, f"Позиция по {event.symbol} (вне watchlist) закрыта, отписываюсь от обновлений.",
+                     module_name=__name__)
+            await self.global_ws_manager.unsubscribe_symbol(self.user_id, event.symbol)
+        else:
+            log_info(self.user_id, f"Позиция по {event.symbol} (из watchlist) закрыта, подписка остается активной.",
+                     module_name=__name__)
             
     async def stop(self):
         """Остановка DataFeedHandler"""
@@ -553,8 +578,6 @@ class DataFeedHandler:
             log_error(self.user_id, f"Ошибка обработки позиции: {e}", module_name=__name__)
 
 
-        # Глобальный экземпляр WebSocket менеджера
-        await self.global_ws_manager.unsubscribe_user(self.user_id)
 
 
 

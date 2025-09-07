@@ -29,6 +29,9 @@ from ..keyboards.inline import (
 )
 from core.logger import log_info, log_error, log_warning
 from core.settings_config import system_config, DEFAULT_SYMBOLS
+from aiogram.utils.markdown import hbold
+
+
 
 router = Router()
 
@@ -438,51 +441,25 @@ async def cmd_orders(message: Message, state: FSMContext):
 
 @router.message(Command("stats"))
 async def cmd_stats(message: Message, state: FSMContext):
-    """Обработчик команды /stats"""
+    """Шаг 1: Предлагает пользователю выбрать период для статистики."""
     user_id = message.from_user.id
+    await basic_handler.log_command_usage(user_id, "stats")
 
-    try:
-        await basic_handler.log_command_usage(user_id, "stats")
+    # Создаем клавиатуру для выбора периода
+    period_buttons = [
+        [
+            {"text": "📊 За сутки", "callback_data": "stats_period_day"},
+            {"text": "🗓 За месяц", "callback_data": "stats_period_month_select"}
+        ],
+        [{"text": "📈 За всё время", "callback_data": "stats_period_all"}]
+    ]
+    keyboard = KeyboardBuilder.build_keyboard(period_buttons)
 
-        # Получаем статистику пользователя
-        user_profile = await db_manager.get_user(user_id)
-        if not user_profile:
-            await message.answer("❌ Профиль пользователя не найден")
-            return
-
-        # Получаем последние сделки
-        recent_trades = await db_manager.get_user_trades(user_id, limit=5)
-
-        stats_text = (
-            f"📊 <b>Статистика торговли</b>\n\n"
-            f"👤 <b>Пользователь:</b> {user_profile.username or 'Не указано'}\n"
-            f"📅 <b>Регистрация:</b> {user_profile.registration_date.strftime('%d.%m.%Y') if user_profile.registration_date else 'Не указано'}\n\n"
-            f"💰 <b>Общая прибыль:</b> {format_currency(user_profile.total_profit)}\n"
-            f"📈 <b>Всего сделок:</b> {user_profile.total_trades}\n"
-            f"🎯 <b>Win Rate:</b> {format_percentage(user_profile.win_rate)}\n"
-            f"📉 <b>Макс. просадка:</b> {format_percentage(user_profile.max_drawdown)}\n\n"
-        )
-
-        if recent_trades:
-            stats_text += f"📋 <b>Последние сделки:</b>\n"
-            for i, trade in enumerate(recent_trades, 1):
-                profit_emoji = "📈" if trade.profit > 0 else "📉"
-                stats_text += (
-                    f"{i}. {profit_emoji} {trade.symbol} "
-                    f"{format_currency(trade.profit)} "
-                    f"({trade.entry_time.strftime('%d.%m %H:%M') if trade.entry_time else 'N/A'})\n"
-                )
-        else:
-            stats_text += "📋 <b>Сделок пока нет</b>\n"
-
-        await message.answer(
-            stats_text,
-            parse_mode="HTML"
-        )
-
-    except Exception as e:
-        log_error(user_id, f"Ошибка в команде /stats: {e}", module_name='basic_handlers')
-        await message.answer("❌ Ошибка получения статистики")
+    await message.answer(
+        "⏳ <b>Выберите период для отображения статистики:</b>",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
 
 
 @router.message(Command("settings"))

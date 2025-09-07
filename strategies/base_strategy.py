@@ -18,6 +18,9 @@ from core.events import (
 )
 from cache.redis_manager import redis_manager
 from api.bybit_api import BybitAPI
+from aiogram.utils.markdown import hbold, hcode
+from telegram.bot import bot_manager
+
 
 # Настройка точности для Decimal
 getcontext().prec = 28
@@ -693,6 +696,54 @@ class BaseStrategy(ABC):
             return False
 
         return True
+
+    async def _send_trade_open_notification(self, side: str, price: Decimal, quantity: Decimal):
+        """Отправляет уведомление об открытии новой сделки."""
+        try:
+            side_text = "LONG 🟢" if side.lower() == 'buy' else "SHORT 🔴"
+            strategy_name = self.strategy_type.value.replace('_', ' ').title()
+
+            text = (
+                f"📈 {hbold('ОТКРЫТА НОВАЯ СДЕЛКА')} 📈\n\n"
+                f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
+                f"▫️ {hbold('Инструмент:')} {hcode(self.symbol)}\n"
+                f"▫️ {hbold('Направление:')} {side_text}\n"
+                f"▫️ {hbold('Цена входа:')} {hcode(f'{price:.4f} USDT')}\n"
+                f"▫️ {hbold('Объем:')} {hcode(str(quantity))}"
+            )
+            await bot_manager.bot.send_message(self.user_id, text, parse_mode="HTML")
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка отправки уведомления об открытии сделки: {e}", "base_strategy")
+
+    async def _send_trade_close_notification(self, pnl: Decimal):
+        """Отправляет уведомление о закрытии сделки."""
+        try:
+            # Обновляем статистику и получаем свежий Win Rate
+            win_rate = await db_manager.update_strategy_stats(
+                user_id=self.user_id,
+                strategy_type=self.strategy_type.value,
+                pnl=pnl
+            )
+
+            if pnl >= 0:
+                result_text, pnl_text, icon = "ПРИБЫЛЬ ✅", f"+{pnl:.2f} USDT", "💰"
+            else:
+                result_text, pnl_text, icon = "УБЫТОК 🔻", f"{pnl:.2f} USDT", "📉"
+
+            strategy_name = self.strategy_type.value.replace('_', ' ').title()
+
+            text = (
+                f"{icon} {hbold('СДЕЛКА ЗАКРЫТА')} {icon}\n\n"
+                f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
+                f"▫️ {hbold('Инструмент:')} {hcode(self.symbol)}\n"
+                f"▫️ {hbold('Результат:')} {result_text}\n"
+                f"▫️ {hbold('PnL:')} {hcode(pnl_text)}\n"
+                f"▫️ {hbold('Win Rate стратегии:')} {hcode(f'{win_rate:.2f}%')}"
+            )
+            await bot_manager.bot.send_message(self.user_id, text, parse_mode="HTML")
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка отправки уведомления о закрытии сделки: {e}", "base_strategy")
+
 
     def __str__(self) -> str:
         """Строковое представление стратегии."""
