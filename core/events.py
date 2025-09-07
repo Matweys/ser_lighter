@@ -16,6 +16,7 @@ class EventType(Enum):
     SIGNAL = "signal"
     STRATEGY_START = "strategy_start"
     STRATEGY_STOP = "strategy_stop"
+    STRATEGY_RESTART_REQUESTED = "strategy_restart_requested"
     USER_SESSION_START_REQUESTED = "user_session_start_requested"
     USER_SESSION_STOP_REQUESTED = "user_session_stop_requested"
     USER_SESSION_STARTED = "user_session_started"
@@ -120,6 +121,16 @@ class SignalEvent(BaseEvent):
     analysis_data: Dict[str, Any]
     event_type: EventType = field(default=EventType.SIGNAL, init=False)
 
+@dataclass
+class StrategyRestartRequestEvent(BaseEvent):
+    """
+    Событие-запрос на немедленный перезапуск стратегии.
+    Обычно публикуется самой стратегией после успешного завершения цикла.
+    """
+    strategy_type: str
+    symbol: str
+    reason: str = "cycle_completed"
+    event_type: EventType = field(default=EventType.STRATEGY_RESTART_REQUESTED, init=False)
 
 @dataclass
 class StrategyStartEvent(BaseEvent):

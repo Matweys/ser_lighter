@@ -529,6 +529,8 @@ class UserSession:
                 await self._handle_risk_event(event)
             elif isinstance(event, UserSettingsChangedEvent):
                 await self._handle_settings_changed(event)
+            elif isinstance(event, StrategyRestartRequestEvent):
+                await self._handle_strategy_restart_request(event)
         except Exception as e:
             log_error(self.user_id,
                       f"Ошибка в главном обработчике событий для события типа {type(event).__name__}: {e}",
@@ -617,3 +619,15 @@ class UserSession:
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка остановки всех стратегий: {e}", module_name=__name__)
+
+    async def _handle_strategy_restart_request(self, event: StrategyRestartRequestEvent):
+        """Обработчик запроса на перезапуск стратегии."""
+        log_info(self.user_id, f"Получен запрос на перезапуск стратегии {event.strategy_type} для {event.symbol}",
+                 module_name=__name__)
+        # Для перезапуска мы просто вызываем start_strategy снова.
+        # Логика внутри start_strategy уже обработает существующие позиции, если это необходимо.
+        await self.start_strategy(
+            strategy_type=event.strategy_type,
+            symbol=event.symbol,
+            analysis_data={'trigger': 'restart_request'}  # Передаем минимальные данные
+        )
