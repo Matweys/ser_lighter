@@ -435,7 +435,7 @@ class BybitAPI:
         qty: Decimal,
         price: Optional[Decimal] = None,
         time_in_force: str = "GTC",
-        reduce_only: bool = False,
+        reduce_only: bool = False, # <-- ДОБАВЛЕН ПАРАМЕТР
         close_on_trigger: bool = False,
         stop_loss: Optional[Decimal] = None,
         take_profit: Optional[Decimal] = None
@@ -454,7 +454,7 @@ class BybitAPI:
                 "symbol": symbol,
                 "side": side,
                 "orderType": order_type,
-                "qty": format_number(qty),  # Используем форматирование для удаления лишних нулей
+                "qty": format_number(qty),
                 "timeInForce": time_in_force
             }
 
