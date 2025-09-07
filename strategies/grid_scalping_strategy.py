@@ -1,8 +1,5 @@
 # strategies/grid_scalping_strategy.py
-"""
-Стратегия грид-скальпинга для многопользовательской торговой системы
-Реализует быстрые сделки с небольшой прибылью в условиях низкой волатильности
-"""
+
 import asyncio
 from typing import Dict, Any, Optional, List
 from decimal import Decimal, getcontext
@@ -10,528 +7,163 @@ from datetime import datetime, timedelta
 
 from api.bybit_api import BybitAPI
 from .base_strategy import BaseStrategy
-from core.enums import StrategyType, OrderType, SystemConstants
+from core.enums import StrategyType, OrderType
 from core.logger import log_info, log_error, log_warning
-from core.events import PriceUpdateEvent, OrderFilledEvent, EventBus
+from core.events import OrderFilledEvent, EventBus, StrategyRestartRequestEvent
 
-# Настройка точности для Decimal
 getcontext().prec = 28
 
 
 class GridScalpingStrategy(BaseStrategy):
     """
-    Стратегия грид-скальпинга для быстрых сделок
-    
-    Особенности:
-    - Множественные мелкие ордера с быстрой прибылью
-    - Адаптация к спреду и ликвидности
-    - Быстрое исполнение и закрытие позиций
-    - Работа в условиях низкой волатильности
+    Стратегия грид-скальпинга (LONG-only) с усреднением и перезапуском.
+    Реализует логику, предложенную пользователем: вход, усреднение при падении,
+    фиксация прибыли при росте и автоматический перезапуск цикла.
     """
 
     def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, event_bus: EventBus,
                  bot: "Bot", config: Optional[Dict] = None):
         super().__init__(user_id, symbol, signal_data, api, event_bus, bot, config)
-        
-        # Параметры скальпинга (загружаются из конфигурации)
-        self.scalp_levels: int = 3
-        self.scalp_spacing_percent: Decimal = Decimal('0.3')  # 0.3% между уровнями
-        self.quick_profit_percent: Decimal = Decimal('0.5')   # 0.5% быстрая прибыль
-        
-        # Адаптивные параметры
-        self.current_spread: Optional[Decimal] = None
-        self.min_spread_multiplier: Decimal = Decimal('2.0')
-        self.adaptive_to_spread: bool = True
-        
-        # Состояние скальпинга
-        self.scalp_center_price: Optional[Decimal] = None
-        self.active_scalp_orders: Dict[str, Dict] = {}  # order_id -> order_data
-        self.profit_orders: Dict[str, Dict] = {}        # order_id -> order_data
-        
-        # Статистика скальпинга
-        self.scalp_stats = {
-            "scalp_cycles": 0,
-            "quick_profits": 0,
-            "total_scalp_volume": Decimal('0'),
-            "average_profit_per_cycle": Decimal('0')
-        }
-        
-        # Таймауты
-        self.order_timeout = timedelta(seconds=30)
-        self.last_order_time = datetime.min
+
+        # Параметры из конфигурации
+        self.scalp_levels: int = 5  # Макс. кол-во ордеров на усреднение
+        self.scalp_spacing_percent: Decimal = Decimal('1.0')  # Процент падения для усреднения
+        self.quick_profit_percent: Decimal = Decimal('1.0')  # Процент роста для фиксации прибыли
+        self.stop_loss_percent: Decimal = Decimal('5.0')  # Глобальный стоп-лосс от первого входа
+
+        # Состояние позиции
+        self.position_entry_price: Optional[Decimal] = None
+        self.position_avg_price: Optional[Decimal] = None
+        self.position_size: Decimal = Decimal('0')
+        self.averaging_orders_placed: int = 0
+        self.active_limit_orders: Dict[str, Dict] = {}  # {order_id: {type: 'take_profit'/'average'}}
 
     def _get_strategy_type(self) -> StrategyType:
         return StrategyType.GRID_SCALPING
 
+    async def _load_scalp_parameters(self):
+        """Загрузка параметров из конфигурации."""
+        await self._ensure_config_fresh()
+        if not self.config: return
+
+        self.scalp_levels = self.config.get("max_averaging_orders", 5)
+        self.scalp_spacing_percent = self._convert_to_decimal(self.config.get("scalp_spacing_percent", 1.0))
+        self.quick_profit_percent = self._convert_to_decimal(self.config.get("profit_percent", 1.0))
+        self.stop_loss_percent = self._convert_to_decimal(self.config.get("stop_loss_percent", 5.0))
+        log_info(self.user_id,
+                 f"Параметры Grid Scalping загружены: уровни={self.scalp_levels}, шаг={self.scalp_spacing_percent}%, профит={self.quick_profit_percent}%",
+                 module_name=__name__)
+
     async def _execute_strategy_logic(self):
-        """Основная логика стратегии - инициализация скальпинга"""
+        """Инициализация и вход в позицию."""
         try:
-            log_info(self.user_id, f"Инициализация грид-скальпинга для {self.symbol}", module_name=__name__)
-
-            # Загрузка параметров из конфигурации
+            log_info(self.user_id, f"Запуск Grid Scalping для {self.symbol}", module_name=__name__)
             await self._load_scalp_parameters()
-
-            # Установка плеча
             await self._set_leverage()
 
-            # Получение текущей цены и спреда из данных сигнала
-            current_price = self._convert_to_decimal(self.signal_data.get('current_price', '0'))
+            if self.position_size > 0: return
 
-            if not current_price > 0:
-                log_info(self.user_id, "Цена не найдена в сигнале, запрашиваю через API...", module_name=__name__)
-                ticker_data = await self.api.get_ticker(self.symbol)
-                if ticker_data and 'lastPrice' in ticker_data:
-                    current_price = ticker_data['lastPrice']
-                else:
-                    log_error(self.user_id, f"Не удалось получить текущую цену для {self.symbol} через API.",
-                              module_name=__name__)
-                    await self.stop("Не удалось получить цену")
-                    return
+            order_size_usdt = await self.calculate_order_size()
+            if order_size_usdt <= 0:
+                await self.stop("Invalid order size")
+                return
 
-            # Анализ спреда и ликвидности
-            await self._analyze_market_conditions(current_price)
-            
-            # Расчет параметров скальпинга
-            await self._calculate_scalp_parameters(current_price)
-            
-            # Создание начальных ордеров скальпинга
-            await self._create_initial_scalp_orders()
-            
-            log_info(
-                self.user_id,
-                f"Скальпинг инициализирован: центр={self.scalp_center_price}, "
-                f"уровни={self.scalp_levels}, spacing={self.scalp_spacing_percent}%",
-                module_name=__name__
-            )
-            
+            qty = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt)
+            if qty > 0:
+                order_id = await self._place_order(side="Buy", order_type="Market", qty=qty)
+                if not order_id:
+                    await self.stop("Failed to place initial order")
+            else:
+                await self.stop("Calculated qty is zero")
         except Exception as e:
-            log_error(self.user_id, f"Ошибка инициализации скальпинга: {e}", module_name=__name__)
+            log_error(self.user_id, f"Ошибка инициализации Grid Scalping: {e}", module_name=__name__)
             await self.stop("Ошибка инициализации")
-            
-    async def _handle_price_update(self, event: PriceUpdateEvent):
-        """Обработка обновления цены"""
-        try:
-            current_price = event.price
-            
-            # Проверка таймаутов ордеров
-            await self._check_order_timeouts()
-            
-            # Проверка необходимости корректировки ордеров
-            if await self._should_adjust_orders(current_price):
-                await self._adjust_scalp_orders(current_price)
-                
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка обработки обновления цены: {e}", module_name=__name__)
-            
+
     async def _handle_order_filled(self, event: OrderFilledEvent):
-        """Обработка исполнения ордера"""
+        """Обработка исполнения ордера."""
         try:
-            order_id = event.order_id
-            side = event.side
-            price = event.price
-            qty = event.qty
-            
-            log_info(
-                self.user_id,
-                f"Скальп-ордер исполнен: {side} {qty} по {price} (ID: {order_id})",
-                module_name=__name__
-            )
-            
-            # Определение типа ордера
-            if order_id in self.active_scalp_orders:
-                # Исполнен ордер скальпинга - размещаем ордер прибыли
-                await self._handle_scalp_order_filled(order_id, side, price, qty)
-                del self.active_scalp_orders[order_id]
-                
-            elif order_id in self.profit_orders:
-                # Исполнен ордер прибыли - завершаем цикл скальпинга
-                await self._handle_profit_order_filled(order_id, side, price, qty)
-                del self.profit_orders[order_id]
-                
-            # Обновление статистики
-            self.scalp_stats["total_scalp_volume"] += price * qty
-            
+            # Ордер на продажу (фиксация прибыли)
+            if event.side == "Sell":
+                pnl = (
+                                  event.price - self.position_avg_price) * self.position_size if self.position_avg_price else Decimal(
+                    '0')
+                await self._send_trade_close_notification(pnl)
+                log_info(self.user_id, f"Прибыль по {self.symbol} зафиксирована. PnL: {pnl:.2f}. Перезапуск цикла.",
+                         module_name=__name__)
+                await self.event_bus.publish(
+                    StrategyRestartRequestEvent(user_id=self.user_id, strategy_type=self.strategy_type.value,
+                                                symbol=self.symbol))
+                await self.stop("Profit taken, restarting cycle")
+                return
+
+            # Ордер на покупку (вход или усреднение)
+            if event.side == "Buy":
+                if self.position_size == 0:  # Первый вход
+                    self.position_entry_price = event.price
+                    self.position_avg_price = event.price
+                    self.position_size = event.qty
+                    await self._send_trade_open_notification(event.side, event.price, event.qty)
+                else:  # Усреднение
+                    new_total_size = self.position_size + event.qty
+                    new_avg_price = ((self.position_avg_price * self.position_size) + (
+                                event.price * event.qty)) / new_total_size
+                    self.position_avg_price = new_avg_price
+                    self.position_size = new_total_size
+                    self.averaging_orders_placed += 1
+                    log_info(self.user_id,
+                             f"Позиция по {self.symbol} усреднена. Новая средняя цена: {new_avg_price:.4f}, размер: {new_total_size}",
+                             module_name=__name__)
+
+                await self._update_limit_orders()
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки исполнения ордера: {e}", module_name=__name__)
-            
-    async def _load_scalp_parameters(self):
-        """Загрузка параметров скальпинга из конфигурации"""
-        try:
-            await self._ensure_config_fresh()
-            
-            if not self.config:
-                return
-                
-            # Основные параметры
-            self.scalp_levels = self.config.get("scalp_levels", 3)
-            self.scalp_spacing_percent = self._convert_to_decimal(
-                self.config.get("scalp_spacing_percent", 0.3)
-            )
-            self.quick_profit_percent = self._convert_to_decimal(
-                self.config.get("quick_profit_percent", 0.5)
-            )
-            
-            # Адаптивные параметры
-            self.adaptive_to_spread = self.config.get("adaptive_to_spread", True)
-            self.min_spread_multiplier = self._convert_to_decimal(
-                self.config.get("min_spread_multiplier", 2.0)
-            )
-            
-            # Таймауты
-            order_timeout_seconds = self.config.get("order_timeout_seconds", 30)
-            self.order_timeout = timedelta(seconds=order_timeout_seconds)
-            
-            log_info(
-                self.user_id,
-                f"Параметры скальпинга: уровни={self.scalp_levels}, "
-                f"spacing={self.scalp_spacing_percent}%, profit={self.quick_profit_percent}%",
-                module_name=__name__
-            )
-            
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка загрузки параметров скальпинга: {e}", module_name=__name__)
-            
-    async def _set_leverage(self):
-        """Установка плеча"""
-        try:
-            if not self.config:
-                return
-                
-            leverage = self.config.get("leverage", 1)
-            
-            if self.api:
-                result = await self.api.set_leverage(self.symbol, leverage)
-                if result:
-                    log_info(self.user_id, f"Плечо установлено: {leverage}x", module_name=__name__)
-                else:
-                    log_error(self.user_id, "Ошибка установки плеча", module_name=__name__)
-                    
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка установки плеча: {e}", module_name=__name__)
-            
 
-        
-    async def _analyze_market_conditions(self, current_price: Decimal):
-        """Анализ рыночных условий для скальпинга"""
-        try:
-            if not self.api:
-                return
-                
-            # Получение данных стакана для анализа спреда
-            order_book = await self.api.get_order_book(self.symbol, limit=5)
-            
-            if order_book and "bids" in order_book and "asks" in order_book:
-                best_bid = Decimal(str(order_book["bids"][0][0]))
-                best_ask = Decimal(str(order_book["asks"][0][0]))
-                
-                # Расчет спреда
-                self.current_spread = best_ask - best_bid
-                spread_percent = (self.current_spread / current_price) * 100
-                
-                log_info(
-                    self.user_id,
-                    f"Анализ рынка: спред={self.current_spread} ({spread_percent:.4f}%)",
-                    module_name=__name__
-                )
-                
-                # Адаптация параметров к спреду
-                if self.adaptive_to_spread and self.current_spread > 0:
-                    min_spacing = (self.current_spread / current_price) * 100 * self.min_spread_multiplier
-                    self.scalp_spacing_percent = max(self.scalp_spacing_percent, min_spacing)
-                    
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка анализа рыночных условий: {e}", module_name=__name__)
-            
-    async def _calculate_scalp_parameters(self, center_price: Decimal):
-        """Расчет параметров скальпинга"""
-        try:
-            self.scalp_center_price = center_price
-            
-            log_info(
-                self.user_id,
-                f"Параметры скальпинга рассчитаны: центр={center_price}, "
-                f"spacing={self.scalp_spacing_percent}%",
-                module_name=__name__
-            )
-            
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка расчета параметров скальпинга: {e}", module_name=__name__)
-            
-    async def _create_initial_scalp_orders(self):
-        """Создание начального ордера для LONG-only стратегии."""
-        try:
-            if not self.scalp_center_price:
-                log_error(self.user_id, "Невозможно создать ордер: цена не определена.", module_name=__name__)
-                return
+    async def _update_limit_orders(self):
+        """Отменяет старые и выставляет новые лимитные ордера."""
+        await self._cancel_all_limit_orders()
 
-            # Проверяем, нет ли уже активных ордеров, чтобы избежать дублирования
-            if self.active_scalp_orders:
-                log_info(self.user_id, "Начальный ордер уже существует, новый не создается.", module_name=__name__)
-                return
+        if not self.position_avg_price or self.position_size == 0: return
 
-            order_size = await self.calculate_order_size()
-            if order_size <= 0:
-                log_error(self.user_id, "Недостаточно средств или неверный размер ордера.", module_name=__name__)
-                return
+        # 1. Выставляем ордер Take Profit
+        profit_price = self.position_avg_price * (1 + self.quick_profit_percent / 100)
+        tp_id = await self._place_order(side="Sell", order_type="Limit", qty=self.position_size, price=profit_price,
+                                        reduce_only=True)
+        if tp_id: self.active_limit_orders[tp_id] = {'type': 'take_profit'}
 
-            # Создаем только ОДИН начальный ордер на покупку по текущей рыночной цене
-            # или чуть ниже, чтобы войти в позицию.
-            # Для простоты и надежности используем рыночный ордер.
-            qty = await self.api.calculate_quantity_from_usdt(self.symbol, order_size, self.scalp_center_price)
-            if qty > 0:
-                await self._place_order(side="Buy", order_type="Market", qty=qty)
-                log_info(
-                    self.user_id,
-                    f"Размещен начальный рыночный LONG-ордер для Grid Scalping, объем: {qty}",
-                    module_name=__name__
-                )
-            else:
-                log_warning(self.user_id, f"Рассчитанное количество для ордера равно нулю для суммы {order_size} USDT.", module_name=__name__)
+        # 2. Выставляем ордер Stop Loss
+        stop_loss_price = self.position_entry_price * (1 - self.stop_loss_percent / 100)
+        sl_id = await self._place_order(side="Sell", order_type="Stop", qty=self.position_size, price=stop_loss_price,
+                                        reduce_only=True)
+        if sl_id: self.active_limit_orders[sl_id] = {'type': 'stop_loss'}
 
+        # 3. Выставляем ордера на усреднение
+        order_size_usdt = await self.calculate_order_size()
+        for i in range(self.averaging_orders_placed, self.scalp_levels):
+            averaging_price = self.position_avg_price * (1 - self.scalp_spacing_percent * (i + 1) / 100)
+            qty_to_buy = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt, averaging_price)
+            if qty_to_buy > 0:
+                avg_id = await self._place_order(side="Buy", order_type="Limit", qty=qty_to_buy, price=averaging_price)
+                if avg_id: self.active_limit_orders[avg_id] = {'type': 'average'}
 
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка создания начального ордера: {e}", module_name=__name__)
+    async def _cancel_all_limit_orders(self):
+        """Отменяет все активные лимитные ордера этой стратегии."""
+        if not self.active_limit_orders: return
+        log_info(self.user_id, f"Отмена {len(self.active_limit_orders)} активных лимитных ордеров...",
+                 module_name=__name__)
+        for order_id in list(self.active_limit_orders.keys()):
+            await self._cancel_order(order_id)
+        self.active_limit_orders.clear()
 
-    async def calculate_order_size(self) -> Decimal:
+    async def stop(self, reason: str = "Manual stop"):
+        """Переопределяем stop для полной очистки."""
+        await self._cancel_all_limit_orders()
+        await super().stop(reason)
+
+    async def _handle_price_update(self, event: PriceUpdateEvent):
         """
-        Возвращает размер одного ордера из настроек.
+        Обработка обновления цены.
+        Для данной стратегии, основанной на лимитных ордерах,
+        активная обработка тиков цены не требуется.
+        Логика срабатывает при исполнении ордеров.
         """
-        try:
-            if not self.config:
-                return Decimal('0')
-
-            # 'order_amount' теперь означает сумму на КАЖДЫЙ ордер в сетке.
-            order_size = self._convert_to_decimal(self.config.get("order_amount", 10.0))
-
-            # Проверяем, что размер не меньше абсолютного минимума для биржи
-            min_order_size_usdt = Decimal(SystemConstants.MIN_ORDER_SIZE_USDT)
-
-            if order_size < min_order_size_usdt:
-                log_warning(self.user_id,
-                            f"Размер ордера в настройках ({order_size} USDT) меньше системного минимума ({min_order_size_usdt} USDT). Используется минимальное значение.",
-                            module_name=__name__)
-                return min_order_size_usdt
-
-            return order_size
-
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка расчета размера ордера: {e}", module_name=__name__)
-            return Decimal('0')
-            
-    async def _place_scalp_order(self, side: str, price: Decimal, size: Decimal) -> Optional[str]:
-        """Размещение ордера скальпинга"""
-        try:
-            if self.api:
-                qty = await self.api.calculate_quantity_from_usdt(self.symbol, size, price)
-                if qty <= 0:
-                    return None
-                    
-                order_id = await self._place_order(
-                    side=side,
-                    order_type="Limit",
-                    qty=qty,
-                    price=price
-                )
-                
-                if order_id:
-                    # Сохранение ордера скальпинга
-                    self.active_scalp_orders[order_id] = {
-                        "order_id": order_id,
-                        "side": side,
-                        "price": price,
-                        "qty": qty,
-                        "size_usdt": size,
-                        "created_at": datetime.now()
-                    }
-                    
-                    log_info(
-                        self.user_id,
-                        f"Скальп-ордер размещен: {side} {qty} по {price}",
-                        module_name=__name__
-                    )
-                    
-                return order_id
-                
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка размещения скальп-ордера: {e}", module_name=__name__)
-            
-        return None
-
-    async def _handle_scalp_order_filled(self, order_id: str, side: str, price: Decimal, qty: Decimal):
-        """Обработка исполнения ордера скальпинга"""
-        try:
-            await self._send_trade_open_notification(side, price, qty)
-
-            if side == "Buy":
-                profit_side = "Sell"
-                profit_price = price * (1 + self.quick_profit_percent / 100)
-            else:  # Sell
-                profit_side = "Buy"
-                profit_price = price * (1 - self.quick_profit_percent / 100)
-
-            profit_order_id = await self._place_order(
-                side=profit_side, order_type="Limit", qty=qty, price=profit_price
-            )
-
-            if profit_order_id:
-                self.profit_orders[profit_order_id] = {
-                    "order_id": profit_order_id, "side": profit_side, "price": profit_price,
-                    "qty": qty, "original_order_id": order_id, "original_price": price,
-                    "created_at": datetime.now()
-                }
-                log_info(self.user_id, f"Ордер прибыли размещен: {profit_side} {qty} по {profit_price}",
-                         module_name=__name__)
-
-            order_data = self.active_scalp_orders.get(order_id, {})
-            if order_data:
-                size_usdt = order_data.get("size_usdt", Decimal('5'))
-                await self._place_scalp_order(side, price, size_usdt)
-
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка обработки исполнения скальп-ордера: {e}", module_name=__name__)
-
-    async def _handle_profit_order_filled(self, order_id: str, side: str, price: Decimal, qty: Decimal):
-        """Обработка исполнения ордера прибыли"""
-        try:
-            self.scalp_stats["quick_profits"] += 1
-            self.scalp_stats["scalp_cycles"] += 1
-
-            cycle_profit = Decimal('0')
-            profit_order = self.profit_orders.get(order_id, {})
-            if profit_order:
-                original_price = profit_order.get("original_price", price)
-                pnl_side = "Buy" if side.lower() == "sell" else "Sell"
-
-                if pnl_side == "Buy":
-                    cycle_profit = (price - original_price) * qty
-                else:
-                    cycle_profit = (original_price - price) * qty
-
-                total_cycles = self.scalp_stats["scalp_cycles"]
-                current_avg = self.scalp_stats["average_profit_per_cycle"]
-                if total_cycles > 0:
-                    self.scalp_stats["average_profit_per_cycle"] = (
-                                (current_avg * (total_cycles - 1) + cycle_profit) / total_cycles)
-
-            log_info(self.user_id, f"Цикл скальпинга завершен: ордер прибыли {side} исполнен. PnL: {cycle_profit:.2f}",
-                     module_name=__name__)
-
-            await self._send_trade_close_notification(cycle_profit)
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка обработки исполнения ордера прибыли: {e}", module_name=__name__)
-            
-    async def _check_order_timeouts(self):
-        """Проверка таймаутов ордеров"""
-        try:
-            current_time = datetime.now()
-            
-            # Проверка таймаутов скальп-ордеров
-            expired_orders = []
-            for order_id, order_data in self.active_scalp_orders.items():
-                if current_time - order_data["created_at"] > self.order_timeout:
-                    expired_orders.append(order_id)
-                    
-            # Отмена просроченных ордеров
-            for order_id in expired_orders:
-                if await self._cancel_order(order_id):
-                    del self.active_scalp_orders[order_id]
-                    log_info(self.user_id, f"Просроченный скальп-ордер отменен: {order_id}", module_name=__name__)
-                    
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка проверки таймаутов: {e}", module_name=__name__)
-            
-    async def _should_adjust_orders(self, current_price: Decimal) -> bool:
-        """Проверка необходимости корректировки ордеров"""
-        try:
-            if not self.scalp_center_price:
-                return False
-                
-            # Корректировка если цена сильно отклонилась от центра
-            price_deviation = abs(current_price - self.scalp_center_price) / self.scalp_center_price * 100
-            
-            # Порог для корректировки (например, 2%)
-            adjustment_threshold = 2.0
-            
-            return price_deviation > adjustment_threshold
-            
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка проверки необходимости корректировки: {e}", module_name=__name__)
-            return False
-            
-    async def _adjust_scalp_orders(self, new_center_price: Decimal):
-        """Корректировка ордеров скальпинга"""
-        try:
-            log_info(self.user_id, f"Корректировка скальп-ордеров: новый центр {new_center_price}", module_name=__name__)
-            
-            # Отмена текущих ордеров
-            await self._cancel_all_scalp_orders()
-            
-            # Пересчет параметров
-            await self._calculate_scalp_parameters(new_center_price)
-            
-            # Создание новых ордеров
-            await self._create_initial_scalp_orders()
-            
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка корректировки ордеров: {e}", module_name=__name__)
-            
-    async def _cancel_all_scalp_orders(self):
-        """Отмена всех скальп-ордеров"""
-        try:
-            order_ids = list(self.active_scalp_orders.keys())
-            
-            for order_id in order_ids:
-                if await self._cancel_order(order_id):
-                    del self.active_scalp_orders[order_id]
-                    
-            log_info(self.user_id, f"Отменено {len(order_ids)} скальп-ордеров", module_name=__name__)
-            
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка отмены скальп-ордеров: {e}", module_name=__name__)
-            
-    async def get_strategy_stats(self) -> Dict[str, Any]:
-        """Получение статистики стратегии"""
-        base_stats = await self.get_status()
-        
-        scalp_specific_stats = {
-            "scalp_stats": {
-                "scalp_cycles": self.scalp_stats["scalp_cycles"],
-                "quick_profits": self.scalp_stats["quick_profits"],
-                "total_scalp_volume": float(self.scalp_stats["total_scalp_volume"]),
-                "average_profit_per_cycle": float(self.scalp_stats["average_profit_per_cycle"]),
-                "success_rate": (
-                    self.scalp_stats["quick_profits"] / max(1, self.scalp_stats["scalp_cycles"]) * 100
-                    if self.scalp_stats["scalp_cycles"] > 0 else 0
-                )
-            },
-            "scalp_parameters": {
-                "scalp_levels": self.scalp_levels,
-                "scalp_spacing_percent": float(self.scalp_spacing_percent),
-                "quick_profit_percent": float(self.quick_profit_percent),
-                "scalp_center_price": float(self.scalp_center_price) if self.scalp_center_price else None,
-                "current_spread": float(self.current_spread) if self.current_spread else None
-            },
-            "active_orders": {
-                "scalp_orders_count": len(self.active_scalp_orders),
-                "profit_orders_count": len(self.profit_orders),
-                "scalp_orders": [
-                    {
-                        "side": order["side"],
-                        "price": float(order["price"]),
-                        "qty": float(order["qty"])
-                    }
-                    for order in self.active_scalp_orders.values()
-                ],
-                "profit_orders": [
-                    {
-                        "side": order["side"],
-                        "price": float(order["price"]),
-                        "qty": float(order["qty"])
-                    }
-                    for order in self.profit_orders.values()
-                ]
-            }
-        }
-        
-        return {**base_stats, **scalp_specific_stats}
-
+        pass

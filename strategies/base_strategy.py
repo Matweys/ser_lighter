@@ -392,7 +392,8 @@ class BaseStrategy(ABC):
         await self._load_strategy_config()
 
     async def _place_order(self, side: str, order_type: str, qty: Decimal, price: Optional[Decimal] = None,
-                           stop_loss: Optional[Decimal] = None, take_profit: Optional[Decimal] = None) -> Optional[str]:
+                           stop_loss: Optional[Decimal] = None, take_profit: Optional[Decimal] = None,
+                           reduce_only: bool = False) -> Optional[str]:  # <-- ДОБАВЛЕН reduce_only
         """Универсальное размещение ордера через API"""
         try:
             if not self.api:
@@ -407,7 +408,8 @@ class BaseStrategy(ABC):
                 qty=qty,
                 price=price,
                 stop_loss=stop_loss,
-                take_profit=take_profit
+                take_profit=take_profit,
+                reduce_only=reduce_only
             )
 
             if order_id:
@@ -703,7 +705,6 @@ class BaseStrategy(ABC):
         try:
             side_text = "LONG 🟢" if side.lower() == 'buy' else "SHORT 🔴"
             strategy_name = self.strategy_type.value.replace('_', ' ').title()
-
             text = (
                 f"📈 {hbold('ОТКРЫТА НОВАЯ СДЕЛКА')} 📈\n\n"
                 f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
@@ -719,20 +720,16 @@ class BaseStrategy(ABC):
     async def _send_trade_close_notification(self, pnl: Decimal):
         """Отправляет уведомление о закрытии сделки."""
         try:
-            # Обновляем статистику и получаем свежий Win Rate
             win_rate = await db_manager.update_strategy_stats(
                 user_id=self.user_id,
                 strategy_type=self.strategy_type.value,
                 pnl=pnl
             )
-
             if pnl >= 0:
                 result_text, pnl_text, icon = "ПРИБЫЛЬ ✅", f"+{pnl:.2f} USDT", "💰"
             else:
                 result_text, pnl_text, icon = "УБЫТОК 🔻", f"{pnl:.2f} USDT", "📉"
-
             strategy_name = self.strategy_type.value.replace('_', ' ').title()
-
             text = (
                 f"{icon} {hbold('СДЕЛКА ЗАКРЫТА')} {icon}\n\n"
                 f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"

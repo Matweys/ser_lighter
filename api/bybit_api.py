@@ -442,6 +442,13 @@ class BybitAPI:
     ) -> Optional[str]:
         """Размещение ордера с поддержкой stop_loss и take_profit. Возвращает orderId или None."""
         try:
+            # --- Округление количества до шага лота ---
+            instrument_info = await self.get_instruments_info(symbol)
+            if instrument_info:
+                qty_step = instrument_info.get("qtyStep", Decimal('0.001'))
+                if qty_step > 0:
+                    qty = (qty // qty_step) * qty_step
+
             params = {
                 "category": "linear",
                 "symbol": symbol,

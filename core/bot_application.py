@@ -120,7 +120,7 @@ class BotApplication:
                 await self._stop_global_components()
 
                 # Остановка EventBus
-                await event_bus.stop()
+                await self.event_bus.stop()
                 
                 # Сохранение финальной статистики
                 await self._save_final_stats()

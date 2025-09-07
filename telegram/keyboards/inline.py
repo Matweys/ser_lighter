@@ -481,14 +481,7 @@ def get_strategy_dynamic_config_keyboard(strategy_type: str, config: Dict[str, A
 
     # Определяем параметры, которые пользователь может редактировать
     editable_params = {}
-    if strategy_type == StrategyType.BIDIRECTIONAL_GRID.value:
-        editable_params = {
-            "order_amount": f"Сумма ордера: {config.get('order_amount', 0)} USDT",
-            "grid_levels": f"Уровни (в каждую сторону): {config.get('grid_levels', 0)}",
-            "profit_percent": f"Процент прибыли: {config.get('profit_percent', 0)}%",
-            "stop_loss_percent": f"Стоп-лосс: {config.get('stop_loss_percent', 0)}%",
-        }
-    elif strategy_type == StrategyType.GRID_SCALPING.value:
+    if strategy_type == StrategyType.GRID_SCALPING.value:
         editable_params = {
             "order_amount": f"Сумма ордера: {config.get('order_amount', 0)} USDT",
             "max_averaging_orders": f"Макс. ордеров усреднения: {config.get('max_averaging_orders', 0)}",

@@ -257,6 +257,14 @@ class UserSession:
         Запуск стратегии
         """
         try:
+            if strategy_type == "impulse_trailing":
+                for active_strategy in self.active_strategies.values():
+                    if active_strategy.strategy_type == StrategyType.IMPULSE_TRAILING:
+                        log_warning(self.user_id,
+                                    f"Стратегия impulse_trailing уже активна для {active_strategy.symbol}. Новый запуск для {symbol} отменен.",
+                                    module_name=__name__)
+                        return False
+
             strategy_id = f"{strategy_type}_{symbol}"
 
             if strategy_id in self.active_strategies:

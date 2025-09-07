@@ -141,12 +141,12 @@ async def lifespan_context():
         await initialize_default_configs()
         try:
             await set_commands()
-        except TelegramRetryAfter as e:
+        except TelegramRetryAfter as err:
             log_warning(0,
-                        f"Не удалось установить команды из-за флуд-лимита Telegram. Повторная попытка будет при следующем запуске. Ошибка: {e}",
+                        f"Не удалось установить команды из-за флуд-лимита Telegram. Повторная попытка будет при следующем запуске. Ошибка: {err}",
                         module_name=__name__)
-        except Exception as e:
-            log_error(0, f"Непредвиденная ошибка при установке команд: {e}", module_name=__name__)
+        except Exception as err:
+            log_error(0, f"Непредвиденная ошибка при установке команд: {err}", module_name=__name__)
 
         # Создание и запуск основного приложения
         bot_app = BotApplication()

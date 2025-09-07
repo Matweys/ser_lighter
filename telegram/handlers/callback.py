@@ -292,8 +292,10 @@ async def callback_configure_strategy(callback: CallbackQuery, state: FSMContext
 
     try:
         if strategy_type not in callback_handler.strategy_descriptions:
-            await callback.answer("❌ Неизвестная стратегия", show_alert=True)
+            log_error(user_id, f"Попытка настроить несуществующую стратегию: '{strategy_type}'", module_name='callback')
+            await callback.answer("❌ Неизвестный тип стратегии.", show_alert=True)
             return
+
 
         # Загружаем актуальный конфиг стратегии
         config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
@@ -320,6 +322,7 @@ async def callback_configure_strategy(callback: CallbackQuery, state: FSMContext
     except Exception as e:
         log_error(user_id, f"Ошибка настройки стратегии {strategy_type}: {e}", module_name='callback')
         await callback.answer("❌ Ошибка при загрузке настроек.", show_alert=True)
+
 
 
 # ---  ОБНОВЛЕННЫЙ ОБРАБОТЧИК ЗАПРОСА НОВОГО ЗНАЧЕНИЯ ---
