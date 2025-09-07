@@ -16,7 +16,7 @@ import time
 from core.logger import log_error, log_info
 from core.events import (
     EventType, NewCandleEvent, PriceUpdateEvent, OrderUpdateEvent,
-    OrderFilledEvent, PositionUpdateEvent, PositionClosedEvent, EventBus,PositionOpenedEvent
+    OrderFilledEvent, PositionUpdateEvent, PositionClosedEvent, EventBus
 )
 from cache.redis_manager import redis_manager, ConfigType
 from database.db_trades import db_manager
@@ -54,7 +54,9 @@ class GlobalWebSocketManager:
         log_info(0, f"WebSocket Manager использует Public URL: {self.public_url}", module_name=__name__)
         log_info(0, f"WebSocket Manager использует Private URL: {self.private_url_template}", module_name=__name__)
 
+        # Приватное WebSocket соединение
         self.public_connection: Optional[websockets.WebSocketClientProtocol] = None
+        self._private_task: Optional[asyncio.Task] = None
 
         # Отслеживание подписок
         self.symbol_subscribers: Dict[str, Set[int]] = {}  # symbol -> set of user_ids
@@ -62,18 +64,30 @@ class GlobalWebSocketManager:
         
         # Задачи
         self._public_task: Optional[asyncio.Task] = None
-        
+
     async def start(self):
-        """Запуск глобального WebSocket менеджера"""
+        """Запуск DataFeedHandler"""
         if self.running:
             return
-            
-        log_info(0, "Запуск GlobalWebSocketManager...", module_name=__name__)
-        
-        self.running = True
-        self._public_task = asyncio.create_task(self._public_websocket_loop())
-        
-        log_info(0, "GlobalWebSocketManager запущен", module_name=__name__)
+
+        log_info(self.user_id, "Запуск DataFeedHandler...", module_name=__name__)
+
+        try:
+            await self._load_api_credentials()
+            await self._subscribe_to_watchlist()
+
+            # Подписываемся на УЖЕ СУЩЕСТВУЮЩЕЕ событие обновления позиции
+            self.event_bus.subscribe(EventType.POSITION_UPDATE, self._handle_position_activity)
+
+            if self.api_key and self.api_secret:
+                self._private_task = asyncio.create_task(self._private_websocket_loop())
+
+            self.running = True
+            log_info(self.user_id, "DataFeedHandler запущен", module_name=__name__)
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка запуска DataFeedHandler: {e}", module_name=__name__)
+            raise
         
     async def stop(self):
         """Остановка глобального WebSocket менеджера"""
@@ -339,10 +353,6 @@ class DataFeedHandler:
             await self._load_api_credentials()
             await self._subscribe_to_watchlist()
 
-            # Подписка на события открытия/закрытия позиций для динамического управления потоком данных
-            self.event_bus.subscribe(EventType.POSITION_OPENED, self._handle_position_opened)
-            self.event_bus.subscribe(EventType.POSITION_CLOSED, self._handle_position_closed)
-
             if self.api_key and self.api_secret:
                 self._private_task = asyncio.create_task(self._private_websocket_loop())
 
@@ -353,30 +363,38 @@ class DataFeedHandler:
             log_error(self.user_id, f"Ошибка запуска DataFeedHandler: {e}", module_name=__name__)
             raise
 
-    # >>> ДОБАВИТЬ ДВА НОВЫХ МЕТОДА В КЛАСС DataFeedHandler <<<
-    async def _handle_position_opened(self, event: PositionOpenedEvent):
-        """Обработчик события открытия позиции: подписывается на данные по символу."""
+    async def _handle_position_activity(self, event: PositionUpdateEvent):
+        """
+        Обрабатывает активность по позиции для управления подписками на рыночные данные.
+        """
         if event.user_id != self.user_id:
             return
-        log_info(self.user_id, f"Позиция по {event.symbol} открыта, подписываюсь на обновления цены.",
-                 module_name=__name__)
-        await self.global_ws_manager.subscribe_symbol(self.user_id, event.symbol)
 
-    async def _handle_position_closed(self, event: PositionClosedEvent):
-        """Обработчик события закрытия позиции: отписывается от данных по символу."""
-        if event.user_id != self.user_id:
-            return
-        # Отписываемся, только если символ не в основном watchlist пользователя
-        global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
-        watchlist = global_config.get("watchlist_symbols", []) if global_config else []
+        symbol = event.symbol
+        position_size = event.size
 
-        if event.symbol not in watchlist:
-            log_info(self.user_id, f"Позиция по {event.symbol} (вне watchlist) закрыта, отписываюсь от обновлений.",
-                     module_name=__name__)
-            await self.global_ws_manager.unsubscribe_symbol(self.user_id, event.symbol)
-        else:
-            log_info(self.user_id, f"Позиция по {event.symbol} (из watchlist) закрыта, подписка остается активной.",
-                     module_name=__name__)
+        try:
+            if position_size > 0:
+                # Позиция активна (открыта или увеличена), подписываемся на данные
+                log_info(self.user_id,
+                         f"Позиция по {symbol} активна (размер: {position_size}), подписываюсь на обновления цены.",
+                         module_name=__name__)
+                await self.global_ws_manager.subscribe_symbol(self.user_id, symbol)
+            else:
+                # Позиция закрыта (размер 0), отписываемся, если символ не в watchlist
+                global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
+                watchlist = global_config.get("watchlist_symbols", []) if global_config else []
+
+                if symbol not in watchlist:
+                    log_info(self.user_id, f"Позиция по {symbol} (вне watchlist) закрыта, отписываюсь от обновлений.",
+                             module_name=__name__)
+                    await self.global_ws_manager.unsubscribe_symbol(self.user_id, symbol)
+                else:
+                    log_info(self.user_id, f"Позиция по {symbol} (из watchlist) закрыта, подписка остается активной.",
+                             module_name=__name__)
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка в _handle_position_activity для {symbol}: {e}", module_name=__name__)
             
     async def stop(self):
         """Остановка DataFeedHandler"""
