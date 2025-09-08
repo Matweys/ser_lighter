@@ -180,7 +180,8 @@ class DatabaseManager:
     def _setup_encryption(self) -> None:
         """Настройка шифрования"""
         try:
-            encryption_key = system_config.security.encryption_key
+            # --- Обращаемся к ключу напрямую из system_config ---
+            encryption_key = system_config.encryption_key
             if not encryption_key:
                 raise ValueError("ENCRYPTION_KEY не настроен")
             

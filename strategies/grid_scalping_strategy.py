@@ -80,24 +80,41 @@ class GridScalpingStrategy(BaseStrategy):
             await self.stop("Ошибка инициализации")
 
     async def _handle_order_filled(self, event: OrderFilledEvent):
-        """Обработка исполнения ордера."""
+        """Обработка исполнения ордера с расчетом чистого PnL."""
         try:
-            # Ордер на продажу (фиксация прибыли)
+            # --- Ордер на ПРОДАЖУ (фиксация прибыли или стоп-лосс) ---
             if event.side == "Sell":
-                pnl = (
-                                  event.price - self.position_avg_price) * self.position_size if self.position_avg_price else Decimal(
-                    '0')
-                await self._send_trade_close_notification(pnl)
-                log_info(self.user_id, f"Прибыль по {self.symbol} зафиксирована. PnL: {pnl:.2f}. Перезапуск цикла.",
-                         module_name=__name__)
+                pnl_gross = Decimal('0')
+                commission = Decimal('0')
+
+                if self.position_avg_price and self.position_size > 0:
+                    pnl_gross = (event.price - self.position_avg_price) * self.position_size
+
+                    # Расчет комиссии (предполагаем Taker)
+                    fee_rate = EXCHANGE_FEES.get(ExchangeType.BYBIT, {}).get('taker', Decimal('0.055')) / 100
+                    trade_volume = event.price * self.position_size
+                    commission = trade_volume * fee_rate
+
+                pnl_net = pnl_gross - commission
+
+                await self._send_trade_close_notification(pnl_net, commission)
+                log_info(self.user_id,
+                         f"Прибыль по {self.symbol} зафиксирована. PnL (net): {pnl_net:.2f}. Перезапуск цикла.",
+                         "grid_scalping")
+
+                # Запрашиваем перезапуск стратегии
                 await self.event_bus.publish(
                     StrategyRestartRequestEvent(user_id=self.user_id, strategy_type=self.strategy_type.value,
-                                                symbol=self.symbol))
-                await self.stop("Profit taken, restarting cycle")
+                                                symbol=self.symbol)
+                )
+                await self.stop("Profit/Loss taken, restarting cycle")
                 return
 
-            # Ордер на покупку (вход или усреднение)
+            # --- Ордер на ПОКУПКУ (вход или усреднение) ---
             if event.side == "Buy":
+                # Удаляем исполненный ордер из нашего внутреннего трекера
+                self.active_limit_orders.pop(event.order_id, None)
+
                 if self.position_size == 0:  # Первый вход
                     self.position_entry_price = event.price
                     self.position_avg_price = event.price
@@ -111,12 +128,13 @@ class GridScalpingStrategy(BaseStrategy):
                     self.position_size = new_total_size
                     self.averaging_orders_placed += 1
                     log_info(self.user_id,
-                             f"Позиция по {self.symbol} усреднена. Новая средняя цена: {new_avg_price:.4f}, размер: {new_total_size}",
-                             module_name=__name__)
+                             f"Позиция по {self.symbol} усреднена. Новая ср. цена: {new_avg_price:.4f}, размер: {new_total_size}",
+                             "grid_scalping")
 
+                # Обновляем все лимитные ордера (TP, SL, новые ордера на усреднение)
                 await self._update_limit_orders()
         except Exception as e:
-            log_error(self.user_id, f"Ошибка обработки исполнения ордера: {e}", module_name=__name__)
+            log_error(self.user_id, f"Ошибка обработки исполнения ордера в GridScalping: {e}", "grid_scalping")
 
     async def _update_limit_orders(self):
         """Отменяет старые и выставляет новые лимитные ордера."""

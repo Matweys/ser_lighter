@@ -102,6 +102,26 @@ class BaseStrategy(ABC):
         except (ValueError, TypeError):
             return Decimal('0')
 
+    async def _set_leverage(self):
+        """Устанавливает кредитное плечо для торгуемого символа."""
+        try:
+            if not self.config:
+                log_warning(self.user_id, "Конфигурация не загружена, установка плеча пропущена.", module_name=__name__)
+                return
+
+            leverage = self.config.get("leverage", 1)
+
+            if self.api:
+                result = await self.api.set_leverage(self.symbol, leverage)
+                if result:
+                    log_info(self.user_id, f"Плечо для {self.symbol} установлено: {leverage}x", module_name=__name__)
+                else:
+                    log_error(self.user_id, f"Не удалось установить плечо для {self.symbol}", module_name=__name__)
+
+        except Exception as e:
+            log_error(self.user_id, f"Критическая ошибка при установке плеча для {self.symbol}: {e}",
+                      module_name=__name__)
+
     @abstractmethod
     def _get_strategy_type(self) -> StrategyType:
         """Возвращает тип стратегии"""
@@ -323,38 +343,18 @@ class BaseStrategy(ABC):
             await self._handle_price_update(event)
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки обновления цены: {e}", module_name=__name__)
-            
+
     async def _handle_order_filled_wrapper(self, event: OrderFilledEvent):
         """Обертка для обработки исполнения ордера"""
-        # Фильтрация событий только для нашего пользователя и символа
         if event.user_id != self.user_id or event.symbol != self.symbol:
             return
-            
         if not self.is_running:
             return
-            
         try:
-            # Обновление статистики
-            self.stats["orders_count"] += 1
-            
-            # Определение прибыльности ордера
-            if hasattr(event, 'pnl') and event.pnl:
-                pnl = self._convert_to_decimal(event.pnl)
-                self.stats["total_pnl"] += pnl
-                
-                if pnl > 0:
-                    self.stats["profit_orders"] += 1
-                else:
-                    self.stats["loss_orders"] += 1
-            
-            # Удаление ордера из активных
-            if event.order_id in self.active_orders:
-                del self.active_orders[event.order_id]
-                
+            # --- вызова абстрактного метода ---
             await self._handle_order_filled(event)
-            
         except Exception as e:
-            log_error(self.user_id, f"Ошибка обработки исполнения ордера: {e}", module_name=__name__)
+            log_error(self.user_id, f"Ошибка в обертке обработчика исполненного ордера: {e}", module_name=__name__)
             
     async def _handle_position_update(self, event: PositionUpdateEvent):
         """Обработка обновления позиции"""
@@ -717,31 +717,45 @@ class BaseStrategy(ABC):
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления об открытии сделки: {e}", "base_strategy")
 
-    async def _send_trade_close_notification(self, pnl: Decimal):
-        """Отправляет уведомление о закрытии сделки."""
+    # strategies/base_strategy.py -> _send_trade_close_notification
+    async def _send_trade_close_notification(self, pnl: Decimal, commission: Decimal = Decimal('0')):
+        """Отправляет уведомление о закрытии сделки, включая комиссию."""
         try:
+            # Обновляем общую статистику стратегии здесь
+            self.stats["orders_count"] += 1
+            self.stats["total_pnl"] += pnl
+            if pnl > 0:
+                self.stats["profit_orders"] += 1
+            else:
+                self.stats["loss_orders"] += 1
+
+            # Обновляем статистику в БД
             win_rate = await db_manager.update_strategy_stats(
                 user_id=self.user_id,
                 strategy_type=self.strategy_type.value,
                 pnl=pnl
             )
+
+            # Формируем текст сообщения
             if pnl >= 0:
                 result_text, pnl_text, icon = "ПРИБЫЛЬ ✅", f"+{pnl:.2f} USDT", "💰"
             else:
                 result_text, pnl_text, icon = "УБЫТОК 🔻", f"{pnl:.2f} USDT", "📉"
+
             strategy_name = self.strategy_type.value.replace('_', ' ').title()
+
             text = (
                 f"{icon} {hbold('СДЕЛКА ЗАКРЫТА')} {icon}\n\n"
                 f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
                 f"▫️ {hbold('Инструмент:')} {hcode(self.symbol)}\n"
                 f"▫️ {hbold('Результат:')} {result_text}\n"
-                f"▫️ {hbold('PnL:')} {hcode(pnl_text)}\n"
+                f"▫️ {hbold('Чистый PnL:')} {hcode(pnl_text)}\n"
+                f"▫️ {hbold('Комиссия:')} {hcode(f'~{commission:.2f} USDT')}\n"
                 f"▫️ {hbold('Win Rate стратегии:')} {hcode(f'{win_rate:.2f}%')}"
             )
             await self.bot.send_message(self.user_id, text, parse_mode="HTML")
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления о закрытии сделки: {e}", "base_strategy")
-
 
     def __str__(self) -> str:
         """Строковое представление стратегии."""

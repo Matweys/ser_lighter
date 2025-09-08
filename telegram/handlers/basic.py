@@ -24,7 +24,6 @@ from ..keyboards.inline import (
     get_quick_actions_keyboard,
     get_confirmation_keyboard,
     get_settings_keyboard,
-    get_manual_trade_symbol_keyboard,
     get_back_keyboard
 )
 from core.logger import log_info, log_error, log_warning
@@ -566,37 +565,6 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
     await message.answer(status_text, parse_mode="HTML")
 
 
-@router.message(Command("manual"))
-async def cmd_manual(message: Message, state: FSMContext):
-    """Обработчик команды /manual для ручного запуска стратегии."""
-    user_id = message.from_user.id
-    await basic_handler.log_command_usage(user_id, "manual")
-
-    try:
-        # Используем глобальный список символов вместо пользовательского watchlist
-        symbols = DEFAULT_SYMBOLS
-
-        if not symbols:
-            await message.answer(
-                "⚠️ <b>Список доступных торговых пар пуст.</b>\n\n"
-                "Обратитесь к администратору для настройки.",
-                parse_mode="HTML",
-                reply_markup=get_back_keyboard("main_menu")
-            )
-            return
-
-        # Устанавливаем первое состояние для ручного запуска
-        await state.set_state(UserStates.MANUAL_STRATEGY_SELECT_SYMBOL)
-        await message.answer(
-            "🛠️ <b>Ручной запуск стратегии</b>\n\n"
-            "<b>Шаг 1:</b> Выберите торговую пару.",
-            parse_mode="HTML",
-            reply_markup=get_manual_trade_symbol_keyboard(symbols)
-        )
-
-    except Exception as e:
-        log_error(user_id, f"Ошибка в команде /manual: {e}", module_name='basic_handlers')
-        await message.answer("❌ Ошибка при попытке ручного запуска.")
 
 
 # --- Команды получения информации ---

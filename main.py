@@ -34,7 +34,6 @@ async def set_commands():
         BotCommand(command="/autotrade_start", description="🚀 Начать авто-торговлю"),
         BotCommand(command="/autotrade_stop", description="🛑 Остановить авто-торговлю"),
         BotCommand(command="/autotrade_status", description="📊 Статус авто-торговли"),
-        BotCommand(command="/manual", description="🛠️ Ручные стратегии"),
         BotCommand(command="/positions", description="📈 Открытые позиции"),
         BotCommand(command="/stop_all", description="🚫 Остановить ВСЕ и закрыть позиции"),
         BotCommand(command="/stats", description="📊 Моя статистика"),

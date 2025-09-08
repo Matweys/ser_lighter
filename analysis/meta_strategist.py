@@ -74,8 +74,7 @@ class MetaStrategist:
     async def _handle_global_candle(self, event: GlobalCandleEvent):
         """Обработчик глобального события о новой свече от ImpulseScanner."""
         symbol = event.candle_data.get("symbol")
-        if not symbol:
-            return
+        if not symbol: return
 
         now = datetime.now()
         last_analysis = self.last_analysis_time.get(symbol)
@@ -83,40 +82,33 @@ class MetaStrategist:
             return
 
         try:
-            # Проверяем, включена ли стратегия impulse_trailing у данного пользователя
-            # Для этого нам нужно загрузить конфиг именно этой стратегии
             impulse_config = await redis_manager.get_config(self.user_id, ConfigType.STRATEGY_IMPULSE_TRAILING)
             if not impulse_config or not impulse_config.get("is_enabled", False):
-                return  # Если стратегия выключена, просто игнорируем событие
+                return
 
-            log_debug(self.user_id, f"Анализ рынка для {symbol} по глобальной свече", module_name=__name__)
-
-            analysis_timeframes = self.user_config.get("analysis_timeframes", ["15m", "1h", "4h"])
-            analysis = await self.analyzer.get_market_analysis(symbol, timeframes=analysis_timeframes)
+            # --- Анализируем только один, нужный нам таймфрейм или подмена динамически---
+            analysis_timeframe = impulse_config.get("analysis_timeframe", "5m")
+            analysis = await self.analyzer.get_market_analysis(symbol, timeframe=analysis_timeframe)
 
             self.last_analysis_time[symbol] = now
 
-            strategy_decision = await self._make_strategy_decision(analysis)
-
-            if strategy_decision:
+            # --- ИЗМЕНЕНИЕ: Решение принимается напрямую на основе анализа ---
+            if analysis and (analysis.is_panic_bar or (analysis.ema_trend == "UP" and analysis.is_consolidating_now)):
                 analysis_dict = analysis.to_dict()
 
-                # Создаем ПЕРСОНАЛЬНЫЙ сигнал для конкретного пользователя
                 signal_event = SignalEvent(
                     user_id=self.user_id,
                     symbol=symbol,
-                    strategy_type=strategy_decision["strategy_type"],
-                    signal_strength=analysis.strength,
+                    strategy_type="impulse_trailing",  # Тип стратегии теперь один
+                    signal_strength=100,  # Сигнал бинарный: либо есть, либо нет
                     analysis_data=analysis_dict
                 )
 
                 await self.event_bus.publish(signal_event)
-                log_info(self.user_id,
-                         f"Сигнал отправлен: {strategy_decision['strategy_type']} для {symbol} (сила: {analysis.strength})",
-                         module_name=__name__)
+                log_info(self.user_id, f"Сигнал 'impulse_trailing' отправлен для {symbol}", "meta_strategist")
         except Exception as e:
-            log_error(self.user_id, f"Ошибка обработки глобальной свечи {symbol}: {e}", module_name=__name__)
-            
+            log_error(self.user_id, f"Ошибка обработки глобальной свечи {symbol}: {e}", "meta_strategist")
+
     async def _handle_settings_changed(self, event: UserSettingsChangedEvent):
         """Обработчик изменения настроек пользователя"""
         if event.user_id != self.user_id:
@@ -137,30 +129,4 @@ class MetaStrategist:
             raise
 
 
-    async def _make_strategy_decision(self, analysis: 'MarketAnalysis') -> Optional[Dict[str, str]]:
-        """
-        Принятие решения о запуске стратегии на основе анализа.
-        Генерирует сигнал только для impulse_trailing при наличии сильного тренда.
-        """
-        try:
-            regime = analysis.regime.value if hasattr(analysis.regime, 'value') else analysis.regime
-            signal_strength = analysis.strength
 
-            # Получаем минимальную силу сигнала из конфигурации пользователя
-            min_signal_strength = self.user_config.get("min_signal_strength", 70)
-
-            if signal_strength < min_signal_strength:
-                return None
-
-            # Генерируем сигнал только для импульсной стратегии при сильном тренде
-            if regime in ['STRONG_TREND', 'TREND']:
-                return {
-                    "strategy_type": "impulse_trailing",
-                    "reason": f"Обнаружен трендовый рынок, сила сигнала: {signal_strength}"
-                }
-
-            return None
-
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка принятия решения о стратегии: {e}", module_name=__name__)
-            return None

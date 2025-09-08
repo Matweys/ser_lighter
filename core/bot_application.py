@@ -162,7 +162,7 @@ class BotApplication:
                     
                     # Публикация события
                     event = UserSessionStartedEvent(user_id=user_id, timestamp=datetime.now())
-                    await event_bus.publish(event)
+                    await self.event_bus.publish(event)
                     
                     log_info(user_id, "Пользовательская сессия создана", module_name=__name__)
                     return True
@@ -215,7 +215,7 @@ class BotApplication:
                 
                 # Публикация события
                 event = UserSessionStoppedEvent(user_id=user_id, reason=reason, timestamp=datetime.now())
-                await event_bus.publish(event)
+                await self.event_bus.publish(event)
                 
                 log_info(user_id, f"Пользовательская сессия остановлена: {reason}", module_name=__name__)
                 return True
