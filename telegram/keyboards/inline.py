@@ -71,7 +71,7 @@ def get_strategy_config_keyboard(strategy_type: str, config: Dict[str, Any]) -> 
         editable_params = {
             "order_amount": f"Сумма ордера: {config.get('order_amount', 0)} USDT",
             "max_averaging_orders": f"Макс. усреднений: {config.get('max_averaging_orders', 0)}",
-            "profit_percent": f"Профит: {config.get('profit_percent', 0)}%",
+            "profit_percent": f"Процент прибыли: {config.get('profit_percent', 0)}%",
             "stop_loss_percent": f"Стоп-лосс: {config.get('stop_loss_percent', 0)}%",
         }
     elif strategy_type == StrategyType.IMPULSE_TRAILING.value:
@@ -143,14 +143,12 @@ def get_quick_actions_keyboard(session_running: bool = False) -> InlineKeyboardM
     """Клавиатура быстрых действий."""
     if session_running:
         buttons = [
-            [{"text": "⏸️ Остановить торговлю", "callback_data": "stop_session"}],
             [{"text": "📊 Статус позиций", "callback_data": "show_positions"}],
             [{"text": "💰 Баланс", "callback_data": "show_balance"}],
             [{"text": "🏠 Главное меню", "callback_data": "main_menu"}]
         ]
     else:
         buttons = [
-            [{"text": "▶️ Запустить торговлю", "callback_data": "start_session"}],
             [{"text": "⚙️ Настройки", "callback_data": "settings"}],
             [{"text": "📊 Статистика", "callback_data": "statistics"}],
             [{"text": "🏠 Главное меню", "callback_data": "main_menu"}]

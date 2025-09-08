@@ -638,6 +638,36 @@ async def callback_cancel(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Ошибка отмены", show_alert=True)
 
 
+# --- Обработчики кнопок из главного меню подтверждение экстренной остановки---
+
+@router.callback_query(F.data == "confirm_emergency_stop")
+async def callback_confirm_emergency_stop(callback: CallbackQuery, state: FSMContext):
+    """
+    Обрабатывает подтверждение экстренной остановки.
+    """
+    user_id = callback.from_user.id
+    await callback.answer("🚨 Выполняю экстренную остановку...", show_alert=True)
+    try:
+        if callback_handler.event_bus:
+            await callback_handler.event_bus.publish(
+                UserSessionStopRequestedEvent(
+                    user_id=user_id,
+                    reason="EMERGENCY_STOP"
+                )
+            )
+            await callback.message.edit_text(
+                "🚨 <b>ЭКСТРЕННАЯ ОСТАНОВКА АКТИВИРОВАНА</b>\n\n"
+                "Все торговые операции будут немедленно прекращены, а позиции закрыты.",
+                parse_mode="HTML"
+            )
+            log_warning(user_id, "Пользователь подтвердил экстренную остановку", module_name='callback')
+        else:
+            await callback.message.edit_text("❌ Системная ошибка: шина событий недоступна.", parse_mode="HTML")
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка при подтверждении экстренной остановки: {e}", module_name='callback')
+
+
 # --- Обработчики кнопок из главного меню ---
 
 @router.callback_query(F.data == "show_balance")
@@ -1140,6 +1170,24 @@ async def callback_help(callback: CallbackQuery, state: FSMContext):
         log_error(callback.from_user.id, f"Ошибка при вызове /help из callback: {e}", module_name='callback')
         await callback.answer("Не удалось загрузить справку.", show_alert=True)
 
+
+
+@router.callback_query(F.data.in_({"user_guide", "faq", "support"}))
+async def callback_help_sections_stub(callback: CallbackQuery, state: FSMContext):
+    """Обработчик-заглушка для разделов помощи."""
+    section_names = {
+        "user_guide": "📖 Руководство пользователя",
+        "faq": "❓ FAQ",
+        "support": "📞 Поддержка"
+    }
+    section_name = section_names.get(callback.data, "Раздел")
+
+    text = (
+        f"🚧 <b>{section_name}</b>\n\n"
+        "Этот раздел находится в разработке и скоро будет доступен."
+    )
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_back_keyboard("help"))
+    await callback.answer()
 
 # Обработчик неизвестных callback
 @router.callback_query()

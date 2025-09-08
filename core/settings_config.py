@@ -50,6 +50,9 @@ class RedisConfig:
     db: int = 0
     max_connections: int = 50
     socket_timeout: int = 5
+    socket_connect_timeout: int = 10  
+    retry_on_timeout: bool = True  
+    health_check_interval: int = 30
 
 @dataclass
 class ExchangeConfig:
