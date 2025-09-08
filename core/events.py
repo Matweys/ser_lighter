@@ -250,12 +250,18 @@ class EventBus:
         if event_type not in self._subscribers: self._subscribers[event_type] = []
         self._subscribers[event_type].append(handler)
 
+    def unsubscribe(self, event_type: EventType, handler: Callable[[BaseEvent], Awaitable[None]]):
+        """Отписка обработчика от определенного типа события."""
+        if event_type in self._subscribers:
+            try:
+                self._subscribers[event_type].remove(handler)
+            except ValueError:
+                # Обработчик мог быть уже удален, это не ошибка
+                pass
+
     def subscribe_user(self, user_id: int, handler: Callable[[BaseEvent], Awaitable[None]]):
         if user_id not in self._user_subscribers: self._user_subscribers[user_id] = []
         self._user_subscribers[user_id].append(handler)
-
-    def unsubscribe_user(self, user_id: int):
-        if user_id in self._user_subscribers: del self._user_subscribers[user_id]
 
     async def _process_events(self):
         from core.logger import get_logger

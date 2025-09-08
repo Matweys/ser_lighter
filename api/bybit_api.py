@@ -175,18 +175,28 @@ class BybitAPI:
                 if return_full_response:
                     return response_result
 
-                if response_result and response_result.get("retCode") == 0:
+                ret_code = response_result.get("retCode", -1) if response_result else -1
+
+                # Обработка успешного ответа
+                if ret_code == 0:
                     return response_result.get("result", {})
+
+                # Специальная обработка для ошибки "ордер не существует" при отмене
+                if endpoint == "/v5/order/cancel" and ret_code == 110001:
+                    log_warning(self.user_id,
+                                f"Попытка отменить ордер, который уже не существует (код: 110001). Считаем операцию успешной.",
+                                module_name="bybit_api")
+                    return {"status": "already_cancelled"}  # Возвращаем непустой словарь для успеха
+
+                # Обработка других ошибок
                 else:
-                    ret_code = response_result.get("retCode", -1) if response_result else -1
-                    error_msg = response_result.get("retMsg",
-                                                    "получен пустой ответ от сервера") if response_result else "получен пустой ответ от сервера"
+                    error_msg = response_result.get("retMsg", "получен пустой ответ от сервера") if response_result else "получен пустой ответ от сервера"
                     log_error(self.user_id, f"API ошибка: {error_msg} (код: {ret_code})", module_name="bybit_api")
                     if ret_code in [10003, 10004]:
-                        log_error(self.user_id,
-                                  f"КРИТИЧЕСКАЯ ОШИБКА АУТЕНТИФИКАЦИИ (код: {ret_code}): {error_msg}. Проверьте правильность API ключей и их права доступа!",
+                        log_error(self.user_id,f"КРИТИЧЕСКАЯ ОШИБКА АУТЕНТИФИКАЦИИ (код: {ret_code}): {error_msg}. Проверьте правильность API ключей и их права доступа!",
                                   module_name="bybit_api")
                         return None  # Для ошибок ключей выходим сразу
+
                     if attempt < self.max_retries:
                         await asyncio.sleep(self.retry_delay * (attempt + 1))
                         continue

@@ -96,13 +96,20 @@ class GridScalpingStrategy(BaseStrategy):
                 pnl_gross = Decimal('0')
                 commission = Decimal('0')
 
-                if self.position_avg_price and self.position_size > 0:
+                if self.position_avg_price and self.position_avg_price > 0 and self.position_size > 0:
                     pnl_gross = (event.price - self.position_avg_price) * self.position_size
 
                     # Расчет комиссии (предполагаем Taker)
                     fee_rate = EXCHANGE_FEES.get(ExchangeType.BYBIT, {}).get('taker', Decimal('0.055')) / 100
                     trade_volume = event.price * self.position_size
                     commission = trade_volume * fee_rate
+                else:
+                    log_warning(
+                        self.user_id,
+                        f"Не удалось рассчитать PnL для {self.symbol} из-за отсутствия данных о входе в позицию. "
+                        f"(avg_price: {self.position_avg_price}, size: {self.position_size}). Вероятно, позиция была открыта вне контроля бота.",
+                        "grid_scalping"
+                    )
 
                 pnl_net = pnl_gross - commission
 
@@ -121,26 +128,34 @@ class GridScalpingStrategy(BaseStrategy):
 
             # --- Ордер на ПОКУПКУ (вход или усреднение) ---
             if event.side == "Buy":
-                # Удаляем исполненный ордер из нашего внутреннего трекера
                 self.active_limit_orders.pop(event.order_id, None)
 
                 if self.position_size == 0:  # Первый вход
                     self.position_entry_price = event.price
                     self.position_avg_price = event.price
                     self.position_size = event.qty
-                    await self._send_trade_open_notification(event.side, event.price, event.qty)
+
+                    # Передаем запрошенную сумму для сравнения
+                    intended_amount = await self.calculate_order_size()
+                    await self._send_trade_open_notification(event.side, event.price, event.qty, intended_amount)
                 else:  # Усреднение
                     new_total_size = self.position_size + event.qty
                     new_avg_price = ((self.position_avg_price * self.position_size) + (
-                                event.price * event.qty)) / new_total_size
+                            event.price * event.qty)) / new_total_size
+
+                    old_avg_price = self.position_avg_price  # сохраняем для лога
                     self.position_avg_price = new_avg_price
                     self.position_size = new_total_size
                     self.averaging_orders_placed += 1
+
+                    # Вызываем новое уведомление об усреднении
+                    await self._send_averaging_notification(event.price, event.qty, new_avg_price, new_total_size)
+
                     log_info(self.user_id,
-                             f"Позиция по {self.symbol} усреднена. Новая ср. цена: {new_avg_price:.4f}, размер: {new_total_size}",
+                             f"Позиция по {self.symbol} усреднена. Ср. цена: {old_avg_price:.4f} -> {new_avg_price:.4f}, размер: {new_total_size}",
                              "grid_scalping")
 
-                # Обновляем все лимитные ордера (TP, SL, новые ордера на усреднение)
+                # Обновляем все лимитные ордера
                 await self._update_limit_orders()
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки исполнения ордера в GridScalping: {e}", "grid_scalping")

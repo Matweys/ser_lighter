@@ -701,22 +701,55 @@ class BaseStrategy(ABC):
 
         return True
 
-    async def _send_trade_open_notification(self, side: str, price: Decimal, quantity: Decimal):
+    async def _send_trade_open_notification(self, side: str, price: Decimal, quantity: Decimal,
+                                            intended_amount: Optional[Decimal] = None):
         """Отправляет уведомление об открытии новой сделки."""
         try:
             side_text = "LONG 🟢" if side.lower() == 'buy' else "SHORT 🔴"
             strategy_name = self.strategy_type.value.replace('_', ' ').title()
+            actual_amount = price * quantity
+
             text = (
                 f"📈 {hbold('ОТКРЫТА НОВАЯ СДЕЛКА')} 📈\n\n"
                 f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
                 f"▫️ {hbold('Инструмент:')} {hcode(self.symbol)}\n"
                 f"▫️ {hbold('Направление:')} {side_text}\n"
                 f"▫️ {hbold('Цена входа:')} {hcode(f'{price:.4f} USDT')}\n"
-                f"▫️ {hbold('Объем:')} {hcode(str(quantity))}"
+                f"▫️ {hbold('Объем:')} {hcode(str(quantity))}\n"
+                f"▫️ {hbold('Стоимость позиции:')} {hcode(f'{actual_amount:.2f} USDT')}"
             )
+
+            # Добавляем предупреждение, если фактическая сумма отличается от запрошенной
+            if intended_amount and abs(intended_amount - actual_amount) / intended_amount > Decimal('0.01'): # Расхождение более 1%
+                text += (
+                    f"\n\n⚠️ {hbold('Внимание:')}\n"
+                    f"Запрошенная сумма ордера ({hcode(f'{intended_amount:.2f} USDT')}) была скорректирована "
+                    f"биржей до {hcode(f'{actual_amount:.2f} USDT')} из-за требований к минимальному размеру лота."
+                )
+
             await self.bot.send_message(self.user_id, text, parse_mode="HTML")
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления об открытии сделки: {e}", "base_strategy")
+
+    async def _send_averaging_notification(self, price: Decimal, quantity: Decimal, new_avg_price: Decimal,
+                                           new_total_size: Decimal):
+        """Отправляет уведомление об усреднении позиции."""
+        try:
+            strategy_name = self.strategy_type.value.replace('_', ' ').title()
+            text = (
+                f"🔄 {hbold('ПОЗИЦИЯ УСРЕДНЕНА')} 🔄\n\n"
+                f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
+                f"▫️ {hbold('Инструмент:')} {hcode(self.symbol)}\n"
+                f"▫️ {hbold('Цена усреднения:')} {hcode(f'{price:.4f} USDT')}\n"
+                f"▫️ {hbold('Добавленный объем:')} {hcode(str(quantity))}\n\n"
+                f"ℹ️ {hbold('Новые параметры позиции:')}\n"
+                f"▫️ {hbold('Новая ср. цена:')} {hcode(f'{new_avg_price:.4f} USDT')}\n"
+                f"▫️ {hbold('Новый общий объем:')} {hcode(str(new_total_size))}"
+            )
+            await self.bot.send_message(self.user_id, text, parse_mode="HTML")
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка отправки уведомления об усреднении: {e}", "base_strategy")
+
 
     # strategies/base_strategy.py -> _send_trade_close_notification
     async def _send_trade_close_notification(self, pnl: Decimal, commission: Decimal = Decimal('0')):

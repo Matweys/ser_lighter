@@ -624,10 +624,18 @@ class UserSession:
         """Обработчик запроса на перезапуск стратегии."""
         log_info(self.user_id, f"Получен запрос на перезапуск стратегии {event.strategy_type} для {event.symbol}",
                  module_name=__name__)
-        # Для перезапуска мы просто вызываем start_strategy снова.
-        # Логика внутри start_strategy уже обработает существующие позиции, если это необходимо.
+
+        strategy_id = f"{event.strategy_type}_{event.symbol}"
+
+        # Принудительно останавливаем старую стратегию, если она еще активна
+        if strategy_id in self.active_strategies:
+            log_warning(self.user_id, f"Принудительная остановка {strategy_id} перед перезапуском.",
+                        module_name=__name__)
+            await self.stop_strategy(strategy_id, reason="forced_restart")
+            await asyncio.sleep(1)  # Небольшая пауза для завершения всех процессов
+
         await self.start_strategy(
             strategy_type=event.strategy_type,
             symbol=event.symbol,
-            analysis_data={'trigger': 'restart_request'}  # Передаем минимальные данные
+            analysis_data={'trigger': 'restart_request'}
         )
