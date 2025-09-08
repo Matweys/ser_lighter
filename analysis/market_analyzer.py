@@ -108,7 +108,7 @@ class MarketAnalyzer:
                 return pd.DataFrame(cached_data)
 
             # Получение свежих данных через API
-            candles = await self.api.get_kline(
+            candles = await self.api.get_klines(
                 symbol=symbol,
                 interval=timeframe,
                 limit=self.candle_limit

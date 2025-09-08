@@ -23,7 +23,8 @@ from ..keyboards.inline import (
     get_quick_actions_keyboard,
     get_confirmation_keyboard,
     get_settings_keyboard,
-    get_back_keyboard
+    get_back_keyboard,
+    KeyboardBuilder
 )
 from core.logger import log_info, log_error, log_warning
 from core.settings_config import system_config, DEFAULT_SYMBOLS
