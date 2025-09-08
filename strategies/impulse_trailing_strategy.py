@@ -8,6 +8,9 @@ from .base_strategy import BaseStrategy
 from core.enums import StrategyType
 from core.logger import log_info, log_error
 from core.events import EventBus, PriceUpdateEvent, OrderFilledEvent
+from core.settings_config import EXCHANGE_FEES
+from core.enums import ExchangeType
+
 
 getcontext().prec = 28
 
@@ -45,10 +48,19 @@ class ImpulseTrailingStrategy(BaseStrategy):
 
             # --- Логика для ЛОНГА: пробой после консолидации в восходящем тренде ---
             if analysis.get('ema_trend') == "UP" and analysis.get('is_consolidating_now'):
+                # Проверяем фрикцию - избегаем входа при высокой фрикции (вязкий рынок)
+                friction_level = analysis.get('friction_level', 'NEUTRAL')
+                if friction_level == "HIGH":
+                    log_info(self.user_id,
+                             f"LONG signal skipped for {self.symbol}: High market friction ({analysis.get('friction_value', 'N/A')})",
+                             "impulse_trailing")
+                    return
+
                 breakout_level = analysis['consolidation_high'] * (
-                            1 + Decimal(str(self.config['long_breakout_buffer'])))
+                        1 + Decimal(str(self.config['long_breakout_buffer'])))
                 if current_price > breakout_level:
-                    log_info(self.user_id, f"LONG Signal for {self.symbol}: Breakout after consolidation.",
+                    log_info(self.user_id,
+                             f"LONG Signal for {self.symbol}: Breakout after consolidation. Friction: {friction_level}",
                              "impulse_trailing")
                     self.position_side = "Buy"
                     self.stop_loss_price = current_price - (atr * Decimal(str(self.config['long_sl_atr'])))
@@ -58,7 +70,17 @@ class ImpulseTrailingStrategy(BaseStrategy):
 
             # --- Логика для ШОРТА: паническая свеча с высоким объемом ---
             if analysis.get('is_panic_bar'):
-                log_info(self.user_id, f"SHORT Signal for {self.symbol}: Panic bar detected.", "impulse_trailing")
+                # Для шорта предпочитаем низкую фрикцию (скользкий рынок)
+                friction_level = analysis.get('friction_level', 'NEUTRAL')
+                if friction_level == "HIGH":
+                    log_info(self.user_id,
+                             f"SHORT signal skipped for {self.symbol}: High market friction not optimal for panic trades ({analysis.get('friction_value', 'N/A')})",
+                             "impulse_trailing")
+                    return
+
+                log_info(self.user_id,
+                         f"SHORT Signal for {self.symbol}: Panic bar detected. Friction: {friction_level}",
+                         "impulse_trailing")
                 self.position_side = "Sell"
                 self.stop_loss_price = current_price + (atr * Decimal(str(self.config['short_sl_atr'])))
                 self.take_profit_price = current_price - (atr * Decimal(str(self.config['short_tp_atr'])))

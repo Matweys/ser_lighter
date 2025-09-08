@@ -19,7 +19,7 @@ from core.events import (
 from cache.redis_manager import redis_manager
 from api.bybit_api import BybitAPI
 from aiogram.utils.markdown import hbold, hcode
-
+from core.db_trades import db_manager
 
 
 # Настройка точности для Decimal
@@ -655,7 +655,7 @@ class BaseStrategy(ABC):
             error_msg += f" ({context})"
         error_msg += f": {str(error)}"
 
-        logger.error(self.user_id, error_msg, module_name=__name__)
+        log_error(self.user_id, error_msg, module_name=__name__)
 
         # В критических случаях можно остановить стратегию
         if isinstance(error, (ConnectionError, TimeoutError)):

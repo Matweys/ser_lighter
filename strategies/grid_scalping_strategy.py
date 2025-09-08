@@ -10,6 +10,9 @@ from .base_strategy import BaseStrategy
 from core.enums import StrategyType, OrderType
 from core.logger import log_info, log_error, log_warning
 from core.events import OrderFilledEvent, EventBus, StrategyRestartRequestEvent, PriceUpdateEvent
+from core.settings_config import EXCHANGE_FEES
+from core.enums import ExchangeType
+
 
 getcontext().prec = 28
 
