@@ -428,7 +428,7 @@ class RiskManager:
         """Проверка всех лимитов риска"""
         await self._check_daily_loss_limit()  # Заменено
         await self._check_portfolio_risk_limit()
-        
+
     async def _save_daily_stats(self):
         """Сохранение дневной статистики в Redis"""
         try:
@@ -438,11 +438,11 @@ class RiskManager:
                 "realized_pnl": float(self.daily_stats["realized_pnl"]),
                 "max_drawdown": float(self.daily_stats["max_drawdown"])
             }
-            
-            await redis_manager.set_json(
+
+            await redis_manager.cache_data(
                 f"user:{self.user_id}:daily_stats",
                 stats_data,
-                expire=86400  # 24 часа
+                ttl=86400  # 24 часа
             )
             
         except Exception as e:

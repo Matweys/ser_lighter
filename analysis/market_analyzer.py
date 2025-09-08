@@ -96,13 +96,12 @@ class MarketAnalyzer:
             log_error(self.user_id, f"Ошибка расчета фрикции: {e}", "market_analyzer")
             return "NEUTRAL", Decimal('1000')
 
-
     async def _get_candles_cached(self, symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
         """Получение свечей с кэшированием."""
         try:
             # Попытка получить из кэша
             cache_key = f"candles:{symbol}:{timeframe}"
-            cached_data = await redis_manager.get(cache_key)
+            cached_data = await redis_manager.get_cached_data(cache_key)
 
             if cached_data:
                 # Преобразование из кэша в DataFrame
@@ -118,7 +117,7 @@ class MarketAnalyzer:
             if candles and len(candles) > 0:
                 df = pd.DataFrame(candles)
                 # Кэширование на 1 минуту
-                await redis_manager.set(cache_key, df.to_dict('records'), expire=60)
+                await redis_manager.cache_data(cache_key, df.to_dict('records'), ttl=60)
                 return df
 
             return None

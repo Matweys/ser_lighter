@@ -57,6 +57,12 @@ class GridScalpingStrategy(BaseStrategy):
                  f"Параметры Grid Scalping загружены: уровни={self.scalp_levels}, шаг={self.scalp_spacing_percent}%, профит={self.quick_profit_percent}%",
                  module_name=__name__)
 
+    async def calculate_order_size(self) -> Decimal:
+        """Рассчитывает размер ордера на основе конфигурации."""
+        return self._convert_to_decimal(self.get_config_value("order_amount", 10.0))
+
+
+
     async def _execute_strategy_logic(self):
         """Инициализация и вход в позицию."""
         try:

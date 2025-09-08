@@ -510,6 +510,16 @@ async def cmd_autotrade_start(message: Message, state: FSMContext):
         await message.answer(
             "🚀 <b>Запускаю автоматическую торговлю...</b>\nСистема инициализирует сессию и подключается к рынку.",
             parse_mode="HTML")
+
+        # Добавлено: Ожидание и проверка статуса
+        await asyncio.sleep(2)  # Даем системе время на обработку
+        session_data = await redis_manager.get_user_session(user_id)
+        if session_data and session_data.get('autotrade_enabled', False):
+            await message.answer("✅ <b>Торговля успешно запущена!</b>", parse_mode="HTML")
+        else:
+            await message.answer(
+                "❌ <b>Не удалось запустить торговлю.</b> Проверьте логи для получения дополнительной информации.",
+                parse_mode="HTML")
     else:
         log_error(user_id, "Шина событий (event_bus) недоступна в basic_handler.", "basic_handlers")
         await message.answer("❌ Системная ошибка: шина событий недоступна. Не могу запустить торговлю.")
@@ -532,6 +542,14 @@ async def cmd_autotrade_stop(message: Message, state: FSMContext):
         await message.answer(
             "🛑 <b>Останавливаю автоматическую торговлю...</b>\nСистема завершит текущие операции и сохранит статистику.",
             parse_mode="HTML")
+
+        # Добавлено: Ожидание и проверка статуса
+        await asyncio.sleep(2)  # Даем системе время на обработку
+        session_data = await redis_manager.get_user_session(user_id)
+        if not session_data or not session_data.get('autotrade_enabled', False):
+            await message.answer("✅ <b>Торговля успешно остановлена.</b>", parse_mode="HTML")
+        else:
+            await message.answer("❌ <b>Не удалось остановить торговлю.</b> Проверьте логи.", parse_mode="HTML")
     else:
         log_error(user_id, "Шина событий (event_bus) недоступна в basic_handler.", "basic_handlers")
         await message.answer("❌ Системная ошибка: шина событий недоступна. Не могу остановить торговлю.")
