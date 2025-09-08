@@ -10,7 +10,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from aiogram import Bot
 from core.logger import log_info, log_error, log_warning
-from core.enums import StrategyType, PositionSide, ConfigType
+from core.enums import StrategyType, PositionSide, ConfigType, ExchangeType
 from core.events import (
     EventType, BaseEvent, SignalEvent, PriceUpdateEvent,
     OrderFilledEvent, PositionUpdateEvent, PositionClosedEvent,
@@ -19,7 +19,8 @@ from core.events import (
 from cache.redis_manager import redis_manager
 from api.bybit_api import BybitAPI
 from aiogram.utils.markdown import hbold, hcode
-from core.db_trades import db_manager
+from core.settings_config import EXCHANGE_FEES
+from database.db_trades import db_manager
 
 
 # Настройка точности для Decimal
