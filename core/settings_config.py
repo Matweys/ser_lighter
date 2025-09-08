@@ -16,6 +16,12 @@ from core.enums import ExchangeType, AccountType
 
 # --- КОНСТАНТЫ, КОТОРЫЕ ИСПОЛЬЗУЮТСЯ ИЛИ БУДУТ ИСПОЛЬЗОВАТЬСЯ ---
 
+# Константы системы
+DEFAULT_SYMBOLS = [
+    'BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'SOLUSDT', 'DOTUSDT',
+    'XRPUSDT', 'LINKUSDT', 'AVAXUSDT', 'ATOMUSDT',
+    'NEARUSDT', 'ICPUSDT'
+]
 # Комиссии бирж для внутреннего расчета PnL
 EXCHANGE_FEES = {
     ExchangeType.BYBIT: {

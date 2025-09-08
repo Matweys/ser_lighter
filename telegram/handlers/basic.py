@@ -19,7 +19,6 @@ from api.bybit_api import BybitAPI
 from core.enums import ConfigType
 from ..keyboards.inline import (
     get_main_menu_keyboard,
-    get_welcome_keyboard,
     get_help_keyboard,
     get_quick_actions_keyboard,
     get_confirmation_keyboard,

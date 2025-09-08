@@ -127,3 +127,32 @@ def get_back_keyboard(back_to: str = "main_menu") -> InlineKeyboardMarkup:
 def get_cancel_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура отмены текущего действия (возврат в главное меню)."""
     return KeyboardBuilder.build_keyboard([[{"text": "❌ Отменить", "callback_data": "main_menu"}]])
+
+# Не давно добавленные
+def get_help_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура помощи."""
+    buttons = [
+        [{"text": "📖 Руководство пользователя", "callback_data": "user_guide"}],
+        [{"text": "❓ FAQ", "callback_data": "faq"}],
+        [{"text": "📞 Поддержка", "callback_data": "support"}],
+        [{"text": "🏠 Главное меню", "callback_data": "main_menu"}]
+    ]
+    return KeyboardBuilder.build_keyboard(buttons)
+
+def get_quick_actions_keyboard(session_running: bool = False) -> InlineKeyboardMarkup:
+    """Клавиатура быстрых действий."""
+    if session_running:
+        buttons = [
+            [{"text": "⏸️ Остановить торговлю", "callback_data": "stop_session"}],
+            [{"text": "📊 Статус позиций", "callback_data": "show_positions"}],
+            [{"text": "💰 Баланс", "callback_data": "show_balance"}],
+            [{"text": "🏠 Главное меню", "callback_data": "main_menu"}]
+        ]
+    else:
+        buttons = [
+            [{"text": "▶️ Запустить торговлю", "callback_data": "start_session"}],
+            [{"text": "⚙️ Настройки", "callback_data": "settings"}],
+            [{"text": "📊 Статистика", "callback_data": "statistics"}],
+            [{"text": "🏠 Главное меню", "callback_data": "main_menu"}]
+        ]
+    return KeyboardBuilder.build_keyboard(buttons)

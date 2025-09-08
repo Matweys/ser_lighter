@@ -14,16 +14,13 @@ from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionSto
 from core.enums import StrategyType, PositionSide, NotificationType, ConfigType
 from ..keyboards.inline import (
     get_main_menu_keyboard,
-    get_strategy_selection_keyboard,
     get_strategy_config_keyboard,
-    get_strategy_dynamic_config_keyboard,
     get_confirmation_keyboard,
     get_symbol_selection_keyboard,
     get_settings_keyboard,
     get_risk_settings_keyboard,
     get_strategy_settings_keyboard,
-    get_back_keyboard,
-    get_balance_keyboard
+    get_back_keyboard
 )
 from .states import UserStates, state_validator
 from cache.redis_manager import redis_manager
@@ -404,7 +401,8 @@ async def process_strategy_param_value(message: Message, state: FSMContext):
                     message_id=menu_message_id,
                     text=f"🛠️ <b>Ручной запуск:</b> значение {param_key} обновлено.",
                     parse_mode="HTML",
-                    reply_markup=get_strategy_dynamic_config_keyboard(strategy_type, current_config)
+                    reply_markup=get_strategy_config_keyboard(strategy_type, current_config)
+
                 )
 
         else:
@@ -679,7 +677,7 @@ async def callback_show_balance(callback: CallbackQuery, state: FSMContext):
             await callback.message.edit_text(
                 balance_text,
                 parse_mode="HTML",
-                reply_markup=get_balance_keyboard()
+                reply_markup=get_main_menu_keyboard()
             )
         else:
             error_message = balance_data.get("retMsg", "Проверьте права ваших API ключей")
