@@ -265,13 +265,28 @@ class UserSession:
         Запуск стратегии
         """
         try:
+            strategy_id = f"{strategy_type}_{symbol}"
+
+            # Проверяем, не запущена ли уже стратегия для ЭТОГО ЖЕ СИМВОЛА
+            if strategy_id in self.active_strategies:
+                log_warning(self.user_id, f"Стратегия {strategy_id} уже запущена", module_name=__name__)
+                return True
+
+            # Для impulse_trailing дополнительно проверяем, что не превышен лимит ОДНОВРЕМЕННЫХ impulse-стратегий
             if strategy_type == "impulse_trailing":
-                for active_strategy in self.active_strategies.values():
-                    if active_strategy.strategy_type == StrategyType.IMPULSE_TRAILING:
-                        log_warning(self.user_id,
-                                    f"Стратегия impulse_trailing уже активна для {active_strategy.symbol}. Новый запуск для {symbol} отменен.",
-                                    module_name=__name__)
-                        return False
+                # Считаем, сколько impulse-стратегий уже активно
+                impulse_count = sum(
+                    1 for s in self.active_strategies.values() if s.strategy_type == StrategyType.IMPULSE_TRAILING)
+
+                # Загружаем лимит из конфига
+                global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
+                max_impulse_trades = global_config.get("max_simultaneous_trades", 1)  # По умолчанию 1, если не задано
+
+                if impulse_count >= max_impulse_trades:
+                    log_warning(self.user_id,
+                                f"Достигнут лимит одновременных impulse-стратегий ({impulse_count}/{max_impulse_trades}). Новый запуск для {symbol} отменен.",
+                                module_name=__name__)
+                    return False
 
             strategy_id = f"{strategy_type}_{symbol}"
 
@@ -299,9 +314,9 @@ class UserSession:
                 symbol=symbol,
                 signal_data=analysis_data or {},
                 api=self.api,
+                event_bus=self.event_bus,
                 bot=bot_manager.bot,
-                config=None,
-                event_bus=self.event_bus
+                config=None
             )
 
             if not strategy:
