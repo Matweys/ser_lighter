@@ -10,9 +10,18 @@ from decimal import Decimal, getcontext
 from datetime import datetime
 from core.logger import log_info, log_error, log_warning
 from core.events import (
-    EventType, StrategyStartEvent, StrategyStopEvent,
-    SignalEvent, OrderFilledEvent, RiskLimitExceededEvent, UserSettingsChangedEvent,
-    EventBus, BaseEvent, StrategyRestartRequestEvent
+    EventType,
+    BaseEvent,
+    SignalEvent,
+    OrderFilledEvent,
+    PositionUpdateEvent,
+    PriceUpdateEvent,
+    RiskLimitExceededEvent,
+    StrategyRestartRequestEvent,
+    StrategyStartEvent,
+    StrategyStopEvent,
+    UserSettingsChangedEvent,
+    EventBus
 )
 from cache.redis_manager import redis_manager, ConfigType
 from core.enums import StrategyType
@@ -539,23 +548,13 @@ class UserSession:
                 return
 
             # 2. Маршрутизация событий для активных стратегий
-            # События, которые могут быть интересны стратегиям (цена, исполнение ордера и т.д.)
             if hasattr(event, 'symbol'):
                 symbol = event.symbol
                 # Ищем стратегию, которая работает с этим символом
                 for strategy in self.active_strategies.values():
                     if strategy.symbol == symbol:
-                        # Передаем событие в соответствующий обработчик-обертку стратегии
-                        if isinstance(event, OrderFilledEvent):
-                            await strategy._handle_order_filled_wrapper(event)
-                        elif isinstance(event, PriceUpdateEvent):
-                            await strategy._handle_price_update_wrapper(event)
-                        elif isinstance(event, PositionUpdateEvent):
-                            await strategy._handle_position_update(event)
-                        elif isinstance(event, UserSettingsChangedEvent):
-                            # Стратегия тоже должна знать об изменении настроек
-                            await strategy._handle_settings_changed(event)
-                        # Можно добавить другие типы событий по аналогии
+                        # Просто передаем событие в публичный обработчик стратегии
+                        await strategy.handle_event(event)
 
             # 3. Маршрутизация для компонентов сессии (если потребуется в будущем)
             # Например, _handle_order_event для общей статистики

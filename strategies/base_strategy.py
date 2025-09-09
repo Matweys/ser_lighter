@@ -142,7 +142,23 @@ class BaseStrategy(ABC):
     async def _handle_order_filled(self, event: OrderFilledEvent):
         """Обработка исполнения ордера (реализуется в наследниках)"""
         pass
-        
+
+    async def handle_event(self, event: BaseEvent):
+        """
+        Публичная единая точка входа для обработки событий, маршрутизируемых из UserSession.
+        """
+        # Передаем событие в соответствующий обработчик-обертку стратегии
+        if isinstance(event, OrderFilledEvent):
+            await self._handle_order_filled_wrapper(event)
+        elif isinstance(event, PriceUpdateEvent):
+            await self._handle_price_update_wrapper(event)
+        elif isinstance(event, PositionUpdateEvent):
+            await self._handle_position_update(event)
+        elif isinstance(event, UserSettingsChangedEvent):
+            # Стратегия тоже должна знать об изменении настроек
+            await self._handle_settings_changed(event)
+
+
     async def start(self) -> bool:
         if self.is_running:
             return True
