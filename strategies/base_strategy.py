@@ -399,6 +399,7 @@ class BaseStrategy(ABC):
             log_error(self.user_id, f"Критическая ошибка в _place_order: {e}", module_name=__name__)
             return None
 
+
     async def _cancel_order(self, order_id: str) -> bool:
         """Отмена ордера"""
         try:

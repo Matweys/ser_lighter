@@ -272,17 +272,6 @@ class UserSession:
                 log_warning(self.user_id, f"Стратегия {strategy_id} уже запущена", module_name=__name__)
                 return True
 
-            # Для impulse_trailing дополнительно проверяем, что не превышен лимит ОДНОВРЕМЕННЫХ impulse-стратегий
-            if strategy_type == "impulse_trailing":
-                # Проверяем, есть ли УЖЕ ХОТЯ БЫ ОДНА активная impulse-стратегия.
-                is_impulse_active = any(
-                    s.strategy_type == StrategyType.IMPULSE_TRAILING for s in self.active_strategies.values())
-                if is_impulse_active:
-                    log_warning(self.user_id,
-                                f"Impulse Trailing уже активна для другого символа. Новый запуск для {symbol} отменен.",
-                                module_name=__name__)
-                    return False
-
             strategy_id = f"{strategy_type}_{symbol}"
 
             if strategy_id in self.active_strategies:

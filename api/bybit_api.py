@@ -300,9 +300,7 @@ class BybitAPI:
             log_error(self.user_id, f"Ошибка при получении текущей цены для {symbol}: {e}", module_name=__name__)
             return None
 
-
-
-    async def get_order_status(self, symbol: str, order_id: str) -> Optional[Dict[str, Any]]:
+    async def get_order_status(self, order_id: str) -> Optional[Dict[str, Any]]:
         """
         Получает статус конкретного ордера по его ID.
         Использует эндпоинт истории ордеров для получения самых свежих данных.
