@@ -283,7 +283,50 @@ class BybitAPI:
             log_error(self.user_id, f"Ошибка получения стакана {symbol}: {e}", module_name="bybit_api")
             
         return None
-    
+
+    async def get_order_status(self, symbol: str, order_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Получает статус конкретного ордера по его ID.
+        Использует эндпоинт истории ордеров для получения самых свежих данных.
+
+        Args:
+            symbol: Торговый символ (необходим для некоторых запросов, хотя здесь фильтруем по orderId).
+            order_id: Уникальный идентификатор ордера.
+
+        Returns:
+            Словарь с данными ордера или None в случае ошибки.
+        """
+        try:
+            # Эндпоинт для получения истории ордеров, который позволяет фильтровать по orderId
+            endpoint = "/v5/order/history"
+            params = {
+                "category": "linear",
+                "orderId": order_id,
+                "limit": 1 # Нам нужен только один ордер
+            }
+
+            response_data = await self._send_request(method="GET", endpoint=endpoint, params=params)
+
+            if response_data and response_data.get('list'):
+                order_details = response_data['list'][0]
+                # Преобразуем ключи для единообразия с другими частями системы
+                return {
+                    "orderId": order_details.get("orderId"),
+                    "orderStatus": order_details.get("orderStatus"),
+                    "side": order_details.get("side"),
+                    "avgPrice": order_details.get("avgPrice", '0'),
+                    "cumExecQty": order_details.get("cumExecQty", '0'),
+                    "cumExecFee": order_details.get("cumExecFee", '0')
+                }
+            else:
+                log_warning(self.user_id, f"Ордер с ID {order_id} не найден в истории.", module_name=__name__)
+                return None
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка получения статуса ордера {order_id}: {e}", module_name=__name__)
+            return None
+
+
     async def get_klines(
         self,
         symbol: str,

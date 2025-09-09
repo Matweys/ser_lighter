@@ -47,9 +47,12 @@ class ImpulseTrailingStrategy(BaseStrategy):
         return StrategyType.IMPULSE_TRAILING
 
     async def _execute_strategy_logic(self):
-        """Анализ сигнала и принятие решения о входе, основанное на полном алгоритме."""
+        """
+        Анализ сигнала и принятие решения о входе с обязательной остановкой,
+        если условия для входа не выполнены.
+        """
         try:
-            # Если позиция уже открыта, логика входа не выполняется
+            # Если позиция уже открыта этой стратегией, ничего не делаем
             if self.position_side:
                 return
 
@@ -58,57 +61,61 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 await self.stop("Insufficient analysis data in signal")
                 return
 
-            current_price = analysis['current_price']
-            atr = analysis['atr']
+            # Извлекаем данные из анализа для удобства
+            current_price = self._convert_to_decimal(analysis['current_price'])
+            atr = self._convert_to_decimal(analysis['atr'])
+            friction_level = analysis.get('friction_level', 'NEUTRAL')
+            ema_trend = analysis.get('ema_trend')
+            is_consolidating = analysis.get('is_consolidating_now')
+            is_panic = analysis.get('is_panic_bar')
 
             # --- Логика для ЛОНГА: пробой после консолидации в восходящем тренде ---
-            if analysis.get('ema_trend') == "UP" and analysis.get('is_consolidating_now'):
-                # Проверяем фрикцию - избегаем входа при высокой фрикции (вязкий рынок)
-                friction_level = analysis.get('friction_level', 'NEUTRAL')
+            if ema_trend == "UP" and is_consolidating:
                 if friction_level == "HIGH":
-                    log_info(self.user_id,
-                             f"LONG signal skipped for {self.symbol}: High market friction ({analysis.get('friction_value', 'N/A')})",
+                    log_info(self.user_id, f"LONG сигнал для {self.symbol} пропущен: высокая фрикция рынка.",
                              "impulse_trailing")
+                    await self.stop("Signal skipped: High friction")
                     return
 
-                breakout_level = analysis['consolidation_high'] * (
-                        1 + Decimal(str(self.config['long_breakout_buffer'])))
+                breakout_level = self._convert_to_decimal(analysis['consolidation_high']) * (
+                            1 + self._convert_to_decimal(self.config['long_breakout_buffer']))
                 if current_price > breakout_level:
                     log_info(self.user_id,
-                             f"LONG Signal for {self.symbol}: Breakout after consolidation. Friction: {friction_level}",
+                             f"LONG СИГНАЛ для {self.symbol}: Пробой уровня консолидации. Вход в позицию.",
                              "impulse_trailing")
                     self.position_side = "Buy"
-                    self.stop_loss_price = current_price - (atr * Decimal(str(self.config['long_sl_atr'])))
-                    self.take_profit_price = current_price + (atr * Decimal(str(self.config['long_tp_atr'])))
+                    self.stop_loss_price = current_price - (atr * self._convert_to_decimal(self.config['long_sl_atr']))
+                    self.take_profit_price = current_price + (
+                                atr * self._convert_to_decimal(self.config['long_tp_atr']))
                     await self._enter_position()
-                    return
+                    return  # Выход из функции после попытки входа
 
             # --- Логика для ШОРТА: паническая свеча с высоким объемом ---
-            if analysis.get('is_panic_bar'):
-                # Для шорта предпочитаем низкую фрикцию (скользкий рынок)
-                friction_level = analysis.get('friction_level', 'NEUTRAL')
+            if is_panic:
                 if friction_level == "HIGH":
                     log_info(self.user_id,
-                             f"SHORT signal skipped for {self.symbol}: High market friction not optimal for panic trades ({analysis.get('friction_value', 'N/A')})",
+                             f"SHORT сигнал для {self.symbol} пропущен: высокая фрикция не оптимальна для панических продаж.",
                              "impulse_trailing")
+                    await self.stop("Signal skipped: High friction")
                     return
 
-                log_info(self.user_id,
-                         f"SHORT Signal for {self.symbol}: Panic bar detected. Friction: {friction_level}",
+                log_info(self.user_id, f"SHORT СИГНАЛ для {self.symbol}: Обнаружена паническая свеча. Вход в позицию.",
                          "impulse_trailing")
                 self.position_side = "Sell"
-                self.stop_loss_price = current_price + (atr * Decimal(str(self.config['short_sl_atr'])))
-                self.take_profit_price = current_price - (atr * Decimal(str(self.config['short_tp_atr'])))
+                self.stop_loss_price = current_price + (atr * self._convert_to_decimal(self.config['short_sl_atr']))
+                self.take_profit_price = current_price - (atr * self._convert_to_decimal(self.config['short_tp_atr']))
                 await self._enter_position()
-                return
+                return  # Выход из функции после попытки входа
 
-            # Если ни одно из условий не выполнено, стратегия не делает ничего и ждет следующего сигнала
-            # Не нужно вызывать self.stop(), так как стратегия должна продолжать анализировать рынок
+            # --- ВАЖНО: Если ни одно из условий выше не выполнено ---
+            log_info(self.user_id,
+                     f"Сигнал для {self.symbol} не соответствует условиям входа (Тренд: {ema_trend}, Консолидация: {is_consolidating}, Паника: {is_panic}). Стратегия остановлена.",
+                     "impulse_trailing")
+            await self.stop("Signal conditions not met")
 
         except Exception as e:
-            log_error(self.user_id, f"Error in strategy logic: {e}", "impulse_trailing")
+            log_error(self.user_id, f"Критическая ошибка в логике стратегии impulse_trailing: {e}", "impulse_trailing")
             await self.stop("Strategy logic error")
-
 
 
     async def _enter_position(self):
