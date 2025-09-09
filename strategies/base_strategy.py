@@ -373,66 +373,31 @@ class BaseStrategy(ABC):
                            stop_loss: Optional[Decimal] = None, take_profit: Optional[Decimal] = None,
                            reduce_only: bool = False) -> Optional[str]:
         """
-        Улучшенное размещение ордера с надежным подтверждением для рыночных ордеров.
+        Универсальное размещение ордера через API. Возвращает orderId или None.
         """
         try:
             if not self.api:
                 log_error(self.user_id, "API клиент не инициализирован в стратегии.", module_name=__name__)
                 return None
 
-            # 1. Размещаем ордер и получаем его ID
             order_id = await self.api.place_order(
                 symbol=self.symbol, side=side, order_type=order_type, qty=qty, price=price,
                 stop_loss=stop_loss, take_profit=take_profit, reduce_only=reduce_only
             )
 
-            if not order_id:
-                log_error(self.user_id, f"API не вернул ID для ордера {self.symbol}.", module_name=__name__)
-                return None
-
-            log_info(self.user_id, f"Ордер {order_id} для {self.symbol} отправлен на биржу.", module_name=__name__)
-            self.active_orders[order_id] = {"order_id": order_id, "status": "New"}
-
-            # 2. Для рыночных ордеров - ждем подтверждения исполнения
-            if order_type == "Market":
-                log_info(self.user_id, f"Ордер {order_id} рыночный. Ожидание подтверждения исполнения...",
+            if order_id:
+                self.active_orders[order_id] = {"order_id": order_id, "status": "New"}
+                log_info(self.user_id, f"Ордер {order_id} ({side} {qty} {self.symbol}) отправлен на биржу.",
                          module_name=__name__)
-                for attempt in range(5):  # 5 попыток
-                    await asyncio.sleep(0.5)  # Интервал 0.5 секунды
-                    order_status_data = await self.api.get_order_status(self.symbol, order_id)
-
-                    if order_status_data and order_status_data.get("orderStatus") in ["Filled", "PartiallyFilled"]:
-                        log_info(self.user_id,
-                                 f"ПОДТВЕРЖДЕНО: Ордер {order_id} исполнен со статусом '{order_status_data.get('orderStatus')}'.",
-                                 module_name=__name__)
-
-                        # 3. Публикуем событие с точными данными из ответа API
-                        filled_event = OrderFilledEvent(
-                            user_id=self.user_id,
-                            order_id=order_id,
-                            symbol=self.symbol,
-                            side=order_status_data.get("side"),
-                            qty=self._convert_to_decimal(order_status_data.get("cumExecQty")),
-                            price=self._convert_to_decimal(order_status_data.get("avgPrice")),
-                            fee=self._convert_to_decimal(order_status_data.get("cumExecFee", '0')),
-                            strategy_type=self.strategy_type.value
-                        )
-                        await self.event_bus.publish(filled_event)
-                        return order_id  # Возвращаем ID после успешного подтверждения
-
-                # Если цикл завершился без подтверждения
-                log_error(self.user_id, f"Ордер {order_id} не получил статус 'Filled' после 5 попыток. Отмена.",
+                return order_id
+            else:
+                log_error(self.user_id, f"Не удалось разместить ордер для {self.symbol} (API не вернул ID).",
                           module_name=__name__)
-                await self._cancel_order(order_id)  # Пытаемся отменить "зависший" ордер
-                return None  # Явно возвращаем None при неудаче
-
-            # Для лимитных ордеров просто возвращаем ID, т.к. они могут исполняться долго
-            return order_id
+                return None
 
         except Exception as e:
             log_error(self.user_id, f"Критическая ошибка в _place_order: {e}", module_name=__name__)
             return None
-
 
     async def _cancel_order(self, order_id: str) -> bool:
         """Отмена ордера"""

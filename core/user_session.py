@@ -274,17 +274,12 @@ class UserSession:
 
             # Для impulse_trailing дополнительно проверяем, что не превышен лимит ОДНОВРЕМЕННЫХ impulse-стратегий
             if strategy_type == "impulse_trailing":
-                # Считаем, сколько impulse-стратегий уже активно
-                impulse_count = sum(
-                    1 for s in self.active_strategies.values() if s.strategy_type == StrategyType.IMPULSE_TRAILING)
-
-                # Загружаем лимит из конфига
-                global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
-                max_impulse_trades = global_config.get("max_simultaneous_trades", 1)  # По умолчанию 1, если не задано
-
-                if impulse_count >= max_impulse_trades:
+                # Проверяем, есть ли УЖЕ ХОТЯ БЫ ОДНА активная impulse-стратегия.
+                is_impulse_active = any(
+                    s.strategy_type == StrategyType.IMPULSE_TRAILING for s in self.active_strategies.values())
+                if is_impulse_active:
                     log_warning(self.user_id,
-                                f"Достигнут лимит одновременных impulse-стратегий ({impulse_count}/{max_impulse_trades}). Новый запуск для {symbol} отменен.",
+                                f"Impulse Trailing уже активна для другого символа. Новый запуск для {symbol} отменен.",
                                 module_name=__name__)
                     return False
 
