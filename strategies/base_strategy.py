@@ -161,9 +161,6 @@ class BaseStrategy(ABC):
             if not await self.validate_config():
                 log_error(self.user_id, "Конфигурация стратегии не прошла валидацию", module_name=__name__)
                 return False
-
-            # Подписка на события
-            await self._subscribe_to_events()
             
             # Сохранение состояния в Redis
             await self._save_strategy_state()
@@ -200,9 +197,6 @@ class BaseStrategy(ABC):
                 # Закрытие всех позиций (опционально)
                 if self.config and self.config.get("close_positions_on_stop", False):
                     await self._close_all_positions()
-                    
-                # Отписка от событий
-                await self._unsubscribe_from_events()
                 
                 # Сохранение финальной статистики
                 await self._save_final_stats()
@@ -297,39 +291,6 @@ class BaseStrategy(ABC):
         if datetime.now() - self.last_config_update > self.config_cache_duration:
             await self._load_strategy_config()
 
-            
-    async def _subscribe_to_events(self):
-        """Подписка на события"""
-        try:
-            # Подписка на обновления цен
-            self.event_bus.subscribe(EventType.PRICE_UPDATE, self._handle_price_update_wrapper)
-            
-            # Подписка на исполнение ордеров
-            self.event_bus.subscribe(EventType.ORDER_FILLED, self._handle_order_filled_wrapper)
-            
-            # Подписка на обновления позиций
-            self.event_bus.subscribe(EventType.POSITION_UPDATE, self._handle_position_update)
-            
-            # Подписка на изменения настроек
-            self.event_bus.subscribe(EventType.USER_SETTINGS_CHANGED, self._handle_settings_changed)
-            
-            log_info(self.user_id, "Подписка на события выполнена", module_name=__name__)
-            
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка подписки на события: {e}", module_name=__name__)
-            
-    async def _unsubscribe_from_events(self):
-        """Отписка от событий"""
-        try:
-            self.event_bus.unsubscribe(EventType.PRICE_UPDATE, self._handle_price_update_wrapper)
-            self.event_bus.unsubscribe(EventType.ORDER_FILLED, self._handle_order_filled_wrapper)
-            self.event_bus.unsubscribe(EventType.POSITION_UPDATE, self._handle_position_update)
-            self.event_bus.unsubscribe(EventType.USER_SETTINGS_CHANGED, self._handle_settings_changed)
-            
-            log_info(self.user_id, "Отписка от событий выполнена", module_name=__name__)
-            
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка отписки от событий: {e}", module_name=__name__)
             
     async def _handle_price_update_wrapper(self, event: PriceUpdateEvent):
         """Обертка для обработки обновления цены"""
@@ -675,11 +636,8 @@ class BaseStrategy(ABC):
     async def validate_config(self) -> bool:
         """
         Валидирует конфигурацию стратегии.
-
-        Returns:
-            bool: True если конфигурация валидна
         """
-        required_fields = ['leverage', 'order_amount', 'profit_percent']
+        required_fields = ['leverage', 'order_amount']
 
         for field in required_fields:
             if field not in self.config:

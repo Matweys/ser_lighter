@@ -517,35 +517,55 @@ class UserSession:
             
     # Обработчики событий
     async def _user_event_handler(self, event: BaseEvent):
-        """Единый обработчик, который распределяет события по нужным методам."""
+        """
+        Единый обработчик, который распределяет события по нужным компонентам и активным стратегиям.
+        """
         if not self.running:
             return
 
         try:
+            # 1. Маршрутизация событий для самой сессии
             if isinstance(event, SignalEvent):
                 await self._handle_signal_event(event)
-            elif isinstance(event, OrderFilledEvent):
-                await self._handle_order_event(event)
+                return  # Сигнал обрабатывается только сессией
             elif isinstance(event, RiskLimitExceededEvent):
                 await self._handle_risk_event(event)
+                return  # Событие риска обрабатывается только сессией
             elif isinstance(event, UserSettingsChangedEvent):
                 await self._handle_settings_changed(event)
+                # Не выходим, чтобы событие дошло и до стратегий
             elif isinstance(event, StrategyRestartRequestEvent):
                 await self._handle_strategy_restart_request(event)
+                return
+
+            # 2. Маршрутизация событий для активных стратегий
+            # События, которые могут быть интересны стратегиям (цена, исполнение ордера и т.д.)
+            if hasattr(event, 'symbol'):
+                symbol = event.symbol
+                # Ищем стратегию, которая работает с этим символом
+                for strategy in self.active_strategies.values():
+                    if strategy.symbol == symbol:
+                        # Передаем событие в соответствующий обработчик-обертку стратегии
+                        if isinstance(event, OrderFilledEvent):
+                            await strategy._handle_order_filled_wrapper(event)
+                        elif isinstance(event, PriceUpdateEvent):
+                            await strategy._handle_price_update_wrapper(event)
+                        elif isinstance(event, PositionUpdateEvent):
+                            await strategy._handle_position_update(event)
+                        elif isinstance(event, UserSettingsChangedEvent):
+                            # Стратегия тоже должна знать об изменении настроек
+                            await strategy._handle_settings_changed(event)
+                        # Можно добавить другие типы событий по аналогии
+
+            # 3. Маршрутизация для компонентов сессии (если потребуется в будущем)
+            # Например, _handle_order_event для общей статистики
+            if isinstance(event, OrderFilledEvent):
+                await self._handle_order_event(event)
+
         except Exception as e:
             log_error(self.user_id,
                       f"Ошибка в главном обработчике событий для события типа {type(event).__name__}: {e}",
                       module_name=__name__)
-
-    async def _handle_signal_event(self, event: SignalEvent):
-        """Обработчик событий сигналов от MetaStrategist"""
-        self.session_stats["total_signals"] += 1
-        log_info(self.user_id, f"Получен сигнал: {event.strategy_type} для {event.symbol}", module_name=__name__)
-        if not await self.risk_manager.can_open_new_trade(event.symbol):
-            log_warning(self.user_id, f"Открытие новой сделки для {event.symbol} отклонено риск-менеджером.",
-                        module_name=__name__)
-            return
-        await self.start_strategy(event.strategy_type, event.symbol, analysis_data=event.analysis_data)
 
     async def _handle_order_event(self, event: OrderFilledEvent):
         """Обработчик событий исполненных ордеров для глобальной статистики сессии"""

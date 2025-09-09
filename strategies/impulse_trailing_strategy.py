@@ -28,6 +28,21 @@ class ImpulseTrailingStrategy(BaseStrategy):
         self.take_profit_price: Optional[Decimal] = None
         self.peak_price: Optional[Decimal] = None  # Пиковая цена для трейлинга
 
+    async def validate_config(self) -> bool:
+        """Валидирует специфичные для Impulse Trailing параметры."""
+        if not await super().validate_config():
+            return False
+
+        required_fields = ['long_sl_atr', 'long_tp_atr', 'short_sl_atr', 'short_tp_atr', 'trailing_sl_atr']
+        for field in required_fields:
+            if field not in self.config:
+                log_error(self.user_id, f"Отсутствует обязательное поле конфигурации для Impulse Trailing: {field}",
+                          module_name=__name__)
+                return False
+
+        return True
+
+
     def _get_strategy_type(self) -> StrategyType:
         return StrategyType.IMPULSE_TRAILING
 

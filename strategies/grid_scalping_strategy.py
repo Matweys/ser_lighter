@@ -41,6 +41,23 @@ class GridScalpingStrategy(BaseStrategy):
         self.averaging_orders_placed: int = 0
         self.active_limit_orders: Dict[str, Dict] = {}  # {order_id: {type: 'take_profit'/'average'}}
 
+    async def validate_config(self) -> bool:
+        """Валидирует специфичные для Grid Scalping параметры."""
+        # Сначала вызываем базовую проверку (на leverage, order_amount)
+        if not await super().validate_config():
+            return False
+
+        # Теперь проверяем свои параметры
+        required_fields = ['profit_percent', 'stop_loss_percent', 'max_averaging_orders', 'scalp_spacing_percent']
+        for field in required_fields:
+            if field not in self.config:
+                log_error(self.user_id, f"Отсутствует обязательное поле конфигурации для Grid Scalping: {field}",
+                          module_name=__name__)
+                return False
+
+        return True
+
+
     def _get_strategy_type(self) -> StrategyType:
         return StrategyType.GRID_SCALPING
 
