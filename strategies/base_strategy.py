@@ -661,16 +661,12 @@ class BaseStrategy(ABC):
                 return False
 
         # Проверяем диапазоны значений
-        if not (1 <= self.leverage <= 100):
-            log_error(self.user_id, f"Неверное значение плеча: {self.leverage}", module_name=__name__)
+        if not (1 <= self.config.get('leverage', 1) <= 100):
+            log_error(self.user_id, f"Неверное значение плеча: {self.config.get('leverage')}", module_name=__name__)
             return False
 
-        if not (5.0 <= self.order_amount <= 10000):  # Минимальный ордер обычно около 5 USDT
-            log_error(self.user_id, f"Неверная сумма ордера: {self.order_amount}", module_name=__name__)
-            return False
-
-        if not (0.1 <= self.profit_percent <= 10):
-            log_error(self.user_id, f"Неверный процент прибыли: {self.profit_percent}", module_name=__name__)
+        if not (5.0 <= self.config.get('order_amount', 10.0) <= 10000):  # Минимальный ордер обычно около 5 USDT
+            log_error(self.user_id, f"Неверная сумма ордера: {self.config.get('order_amount')}", module_name=__name__)
             return False
 
         return True
