@@ -284,6 +284,24 @@ class BybitAPI:
             
         return None
 
+
+    async def get_current_price(self, symbol: str) -> Optional[Decimal]:
+        """
+        Получает последнюю цену для указанного символа.
+        Является удобной оберткой над get_ticker.
+        """
+        try:
+            ticker_data = await self.get_ticker(symbol)
+            if ticker_data and "lastPrice" in ticker_data:
+                return ticker_data["lastPrice"]
+            log_warning(self.user_id, f"Не удалось получить последнюю цену для {symbol} через тикер.", module_name=__name__)
+            return None
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка при получении текущей цены для {symbol}: {e}", module_name=__name__)
+            return None
+
+
+
     async def get_order_status(self, symbol: str, order_id: str) -> Optional[Dict[str, Any]]:
         """
         Получает статус конкретного ордера по его ID.

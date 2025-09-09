@@ -48,18 +48,19 @@ class ImpulseTrailingStrategy(BaseStrategy):
 
     async def _execute_strategy_logic(self):
         """
-        Анализ сигнала и принятие решения о входе с обязательной остановкой,
-        если условия для входа не выполнены.
+        Анализ сигнала и принятие решения о входе с обязательной остановкой
+        и корректным преобразованием типов данных.
         """
         try:
             if self.position_side:
                 return
 
             analysis = self.signal_data.get('analysis_data', {})
-            if not analysis or not analysis.get('atr'):
+            if not analysis or 'atr' not in analysis or 'current_price' not in analysis:
                 await self.stop("Insufficient analysis data in signal")
                 return
 
+            # ЯВНОЕ ПРЕОБРАЗОВАНИЕ ТИПОВ ДАННЫХ
             current_price = self._convert_to_decimal(analysis['current_price'])
             atr = self._convert_to_decimal(analysis['atr'])
             friction_level = analysis.get('friction_level', 'NEUTRAL')
@@ -76,10 +77,11 @@ class ImpulseTrailingStrategy(BaseStrategy):
                     return
 
                 breakout_level = self._convert_to_decimal(analysis['consolidation_high']) * (
-                            1 + self._convert_to_decimal(self.config['long_breakout_buffer']))
+                            1 + self._convert_to_decimal(self.config.get('long_breakout_buffer', '0.001')))
+
                 if current_price > breakout_level:
                     log_info(self.user_id,
-                             f"LONG СИГНАЛ для {self.symbol}: Пробой уровня консолидации. Вход в позицию.",
+                             f"LONG СИГНАЛ для {self.symbol}: Пробой уровня консолидации ({breakout_level:.4f}). Вход в позицию.",
                              "impulse_trailing")
                     self.position_side = "Buy"
                     self.stop_loss_price = current_price - (atr * self._convert_to_decimal(self.config['long_sl_atr']))
@@ -87,9 +89,9 @@ class ImpulseTrailingStrategy(BaseStrategy):
                                 atr * self._convert_to_decimal(self.config['long_tp_atr']))
                     await self._enter_position()
                     return
-                else:  # <-- ДОБАВЛЕН БЛОК ELSE
+                else:
                     log_info(self.user_id,
-                             f"LONG сигнал для {self.symbol} пропущен: цена ({current_price}) не пробила уровень ({breakout_level}).",
+                             f"LONG сигнал для {self.symbol} пропущен: цена ({current_price:.4f}) не пробила уровень ({breakout_level:.4f}).",
                              "impulse_trailing")
                     await self.stop("Signal skipped: No breakout")
                     return
