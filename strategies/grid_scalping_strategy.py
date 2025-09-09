@@ -13,7 +13,6 @@ from core.events import OrderFilledEvent, EventBus, StrategyRestartRequestEvent,
 from core.settings_config import EXCHANGE_FEES
 from core.enums import ExchangeType
 
-
 getcontext().prec = 28
 
 
@@ -57,7 +56,6 @@ class GridScalpingStrategy(BaseStrategy):
 
         return True
 
-
     def _get_strategy_type(self) -> StrategyType:
         return StrategyType.GRID_SCALPING
 
@@ -77,8 +75,6 @@ class GridScalpingStrategy(BaseStrategy):
     async def calculate_order_size(self) -> Decimal:
         """Рассчитывает размер ордера на основе конфигурации."""
         return self._convert_to_decimal(self.get_config_value("order_amount", 10.0))
-
-
 
     async def _execute_strategy_logic(self):
         """Инициализация и вход в позицию."""
@@ -108,8 +104,8 @@ class GridScalpingStrategy(BaseStrategy):
     async def _handle_order_filled(self, event: OrderFilledEvent):
         """Обработка исполнения ордера с расчетом чистого PnL."""
         try:
-            log_info(self.user_id,f"[TRACE] GridScalping._handle_order_filled получил событие:"
-            f" side={event.side}, price={event.price}, qty={event.qty}","grid_scalping")
+            log_info(self.user_id, f"[TRACE] GridScalping._handle_order_filled получил событие:"
+                                   f" side={event.side}, price={event.price}, qty={event.qty}", "grid_scalping")
 
             # --- Ордер на ПРОДАЖУ (фиксация прибыли или стоп-лосс) ---
             if event.side == "Sell":
@@ -134,10 +130,14 @@ class GridScalpingStrategy(BaseStrategy):
                 pnl_net = pnl_gross - commission
 
                 await self._send_trade_close_notification(pnl_net, commission)
-                log_info(self.user_id,f"Прибыль по {self.symbol} зафиксирована. PnL (net): {pnl_net:.2f}. Перезапуск цикла.","grid_scalping")
+                log_info(self.user_id,
+                         f"Прибыль по {self.symbol} зафиксирована. PnL (net): {pnl_net:.2f}. Перезапуск цикла.",
+                         "grid_scalping")
 
                 # Запрашиваем перезапуск стратегии
-                await self.event_bus.publish(StrategyRestartRequestEvent(user_id=self.user_id, strategy_type=self.strategy_type.value, symbol=self.symbol))
+                await self.event_bus.publish(
+                    StrategyRestartRequestEvent(user_id=self.user_id, strategy_type=self.strategy_type.value,
+                                                symbol=self.symbol))
                 await self.stop("Profit/Loss taken, restarting cycle")
                 return
 
@@ -146,8 +146,13 @@ class GridScalpingStrategy(BaseStrategy):
                 log_info(self.user_id, "[TRACE] Условие event.side == 'Buy' выполнено.", "grid_scalping")
                 self.active_limit_orders.pop(event.order_id, None)
 
-                log_info(self.user_id, f"[TRACE] Проверка условия для входа: self.position_size = {self.position_size}", "grid_scalping")
-                if self.position_size == 0:  # Первый вход
+                log_info(self.user_id, f"[TRACE] Проверка условия для входа: self.position_size = {self.position_size}",
+                         "grid_scalping")
+
+                # Определяем, является ли это первым входом или усреднением
+                is_first_entry = (self.position_size == 0 or self.position_entry_price is None)
+
+                if is_first_entry:  # Первый вход
                     self.position_entry_price = event.price
                     self.position_avg_price = event.price
                     self.position_size = event.qty
@@ -157,10 +162,16 @@ class GridScalpingStrategy(BaseStrategy):
 
                     log_info(self.user_id, "[TRACE] Вызов _send_trade_open_notification...", "grid_scalping")
                     await self._send_trade_open_notification(event.side, event.price, event.qty, intended_amount)
+
+                    log_info(self.user_id,
+                             f"Первый вход в позицию по {self.symbol}: цена={event.price:.4f}, размер={event.qty}",
+                             "grid_scalping")
                 else:  # Усреднение
-                    log_info(self.user_id,"[TRACE] Условие self.position_size == 0 НЕ выполнено. Захожу в блок 'Усреднение'.","grid_scalping")
+                    log_info(self.user_id, "[TRACE] Условие first_entry НЕ выполнено. Захожу в блок 'Усреднение'.",
+                             "grid_scalping")
                     new_total_size = self.position_size + event.qty
-                    new_avg_price = ((self.position_avg_price * self.position_size) + (event.price * event.qty)) / new_total_size
+                    new_avg_price = ((self.position_avg_price * self.position_size) + (
+                                event.price * event.qty)) / new_total_size
 
                     old_avg_price = self.position_avg_price  # сохраняем для лога
                     self.position_avg_price = new_avg_price

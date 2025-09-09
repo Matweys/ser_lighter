@@ -1,4 +1,3 @@
-# core/user_session.py
 """
 Пользовательская торговая сессия
 Управляет всеми компонентами торговли для одного пользователя
@@ -52,20 +51,20 @@ STRATEGY_CLASSES = {
 class UserSession:
     """
     Пользовательская торговая сессия
-    
+
     Управляет всеми компонентами торговли для одного пользователя:
     - MetaStrategist (анализ и принятие решений)
     - RiskManager (управление рисками)
     - DataFeedHandler (получение данных)
     - Активные стратегии
-    
+
     Принципы работы:
     - Полная изоляция между пользователями
     - Динамическая загрузка настроек из Redis
     - Событийно-ориентированная архитектура
     - Автоматическое управление жизненным циклом стратегий
     """
-    
+
     def __init__(self, user_id: int, event_bus: EventBus, global_ws_manager: GlobalWebSocketManager):
         self.user_id = user_id
         self.event_bus = event_bus
@@ -78,11 +77,11 @@ class UserSession:
         self.meta_strategist: Optional[MetaStrategist] = None
         self.risk_manager: Optional[RiskManager] = None
         self.data_feed_handler: Optional[DataFeedHandler] = None
-        
+
         # Управление стратегиями
         self.active_strategies: Dict[str, BaseStrategy] = {}
         self.strategy_tasks: Dict[str, asyncio.Task] = {}
-        
+
         # Статистика сессии
         self.session_stats = {
             "start_time": datetime.now(),
@@ -94,10 +93,10 @@ class UserSession:
             "failed_trades": 0,
             "total_pnl": Decimal("0")
         }
-        
+
         # Блокировка для thread-safety
         self.lock = asyncio.Lock()
-        
+
         # Задачи компонентов
         self._component_tasks: List[asyncio.Task] = []
 
@@ -219,11 +218,10 @@ class UserSession:
         except Exception as e:
             log_error(self.user_id, f"Ошибка при запуске постоянных стратегий: {e}", module_name=__name__)
 
-
     async def get_status(self) -> Dict[str, Any]:
         """
         Получение статуса сессии
-        
+
         Returns:
             Dict: Статус сессии
         """
@@ -232,14 +230,14 @@ class UserSession:
             strategies_status = {}
             for strategy_id, strategy in self.active_strategies.items():
                 strategies_status[strategy_id] = await strategy.get_status()
-                
+
             # Статус компонентов
             components_status = {
                 "meta_strategist": self.meta_strategist.running if self.meta_strategist else False,
                 "risk_manager": self.risk_manager.running if self.risk_manager else False,
                 "data_feed_handler": self.data_feed_handler.running if self.data_feed_handler else False
             }
-            
+
             return {
                 "user_id": self.user_id,
                 "running": self.running,
@@ -257,7 +255,7 @@ class UserSession:
                 "components_status": components_status,
                 "active_strategies": strategies_status
             }
-            
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка получения статуса сессии: {e}", module_name=__name__)
             return {"user_id": self.user_id, "running": self.running, "error": str(e)}
@@ -316,7 +314,7 @@ class UserSession:
 
                 # Обновление статистики
                 self.session_stats["strategies_launched"] += 1
-                
+
                 # Публикация события
                 event = StrategyStartEvent(
                     user_id=self.user_id,
@@ -330,19 +328,19 @@ class UserSession:
             else:
                 log_error(self.user_id, f"Не удалось запустить стратегию {strategy_id}", module_name=__name__)
                 return False
-                
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка запуска стратегии {strategy_type}: {e}", module_name=__name__)
             return False
-            
+
     async def stop_strategy(self, strategy_id: str, reason: str = "Manual stop") -> bool:
         """
         Остановка стратегии
-        
+
         Args:
             strategy_id: ID стратегии
             reason: Причина остановки
-            
+
         Returns:
             bool: True если стратегия остановлена успешно
         """
@@ -350,12 +348,12 @@ class UserSession:
             if strategy_id not in self.active_strategies:
                 log_warning(self.user_id, f"Стратегия {strategy_id} не найдена", module_name=__name__)
                 return True
-                
+
             strategy = self.active_strategies[strategy_id]
-            
+
             # Остановка стратегии
             await strategy.stop(reason)
-            
+
             # Остановка задачи
             if strategy_id in self.strategy_tasks:
                 task = self.strategy_tasks[strategy_id]
@@ -366,13 +364,13 @@ class UserSession:
                     except asyncio.CancelledError:
                         pass
                 del self.strategy_tasks[strategy_id]
-                
+
             # Удаление из активных стратегий
             del self.active_strategies[strategy_id]
-            
+
             # Обновление статистики
             self.session_stats["strategies_stopped"] += 1
-            
+
             # Публикация события
             event = StrategyStopEvent(
                 user_id=self.user_id,
@@ -445,7 +443,7 @@ class UserSession:
         except Exception as e:
             log_error(self.user_id, f"Ошибка запуска компонентов: {e}", module_name=__name__)
             raise
-            
+
     async def _stop_components(self):
         """Остановка компонентов сессии"""
         try:
@@ -457,25 +455,24 @@ class UserSession:
                         await task
                     except asyncio.CancelledError:
                         pass
-                        
+
             self._component_tasks.clear()
-            
+
             # Остановка компонентов
             if self.meta_strategist:
                 await self.meta_strategist.stop()
-                
+
             if self.risk_manager:
                 await self.risk_manager.stop()
-                
+
             if self.data_feed_handler:
                 await self.data_feed_handler.stop()
-                
+
             log_info(self.user_id, "Компоненты сессии остановлены", module_name=__name__)
-            
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка остановки компонентов: {e}", module_name=__name__)
 
-            
     async def _subscribe_to_events(self):
         """Подписка на события"""
         try:
@@ -484,7 +481,7 @@ class UserSession:
             log_info(self.user_id, "Успешная подписка на пользовательские события.", module_name=__name__)
         except Exception as e:
             log_error(self.user_id, f"Ошибка подписки на события: {e}", module_name=__name__)
-            
+
     async def _unsubscribe_from_events(self):
         """Отписка от событий"""
         try:
@@ -523,7 +520,7 @@ class UserSession:
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка сохранения финальной статистики: {e}", module_name=__name__)
-            
+
     # Обработчики событий
     async def _user_event_handler(self, event: BaseEvent):
         """
@@ -584,7 +581,6 @@ class UserSession:
         if event.action_required == "stop_trading":
             await self.stop(f"Risk limit exceeded: {event.limit_type}")
 
-
     async def _handle_settings_changed(self, event: UserSettingsChangedEvent):
         """Обработчик изменения настроек пользователя"""
         if event.user_id != self.user_id:
@@ -639,6 +635,33 @@ class UserSession:
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка остановки всех стратегий: {e}", module_name=__name__)
+
+    async def _handle_signal_event(self, event: SignalEvent):
+        """Обработчик сигналов от MetaStrategist для запуска стратегий."""
+        try:
+            log_info(self.user_id,
+                     f"Получен сигнал {event.strategy_type} для {event.symbol} (сила: {event.signal_strength})",
+                     module_name=__name__)
+
+            self.session_stats["total_signals"] += 1
+
+            # Запускаем стратегию на основе сигнала
+            success = await self.start_strategy(
+                strategy_type=event.strategy_type,
+                symbol=event.symbol,
+                analysis_data=event.analysis_data
+            )
+
+            if success:
+                log_info(self.user_id, f"Стратегия {event.strategy_type} для {event.symbol} запущена по сигналу",
+                         module_name=__name__)
+            else:
+                log_warning(self.user_id, f"Не удалось запустить стратегию {event.strategy_type} для {event.symbol}",
+                            module_name=__name__)
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка обработки сигнала {event.strategy_type} для {event.symbol}: {e}",
+                      module_name=__name__)
 
     async def _handle_strategy_restart_request(self, event: StrategyRestartRequestEvent):
         """Обработчик запроса на перезапуск стратегии."""
