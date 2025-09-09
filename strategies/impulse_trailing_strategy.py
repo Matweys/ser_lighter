@@ -117,7 +117,6 @@ class ImpulseTrailingStrategy(BaseStrategy):
             log_error(self.user_id, f"Критическая ошибка в логике стратегии impulse_trailing: {e}", "impulse_trailing")
             await self.stop("Strategy logic error")
 
-
     async def _enter_position(self):
         """Вход в позицию и установка SL/TP через API."""
         await self._set_leverage()
