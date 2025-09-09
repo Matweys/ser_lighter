@@ -130,6 +130,7 @@ class StrategyRestartRequestEvent(BaseEvent):
     strategy_type: str
     symbol: str
     reason: str = "cycle_completed"
+    delay_seconds: int = 0
     event_type: EventType = field(default=EventType.STRATEGY_RESTART_REQUESTED, init=False)
 
 @dataclass

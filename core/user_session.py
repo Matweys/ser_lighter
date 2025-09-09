@@ -679,8 +679,9 @@ class UserSession:
                       module_name=__name__)
 
     async def _handle_strategy_restart_request(self, event: StrategyRestartRequestEvent):
-        """Обработчик запроса на перезапуск стратегии."""
-        log_info(self.user_id, f"Получен запрос на перезапуск стратегии {event.strategy_type} для {event.symbol}",
+        """Обработчик запроса на перезапуск стратегии с поддержкой задержки."""
+        log_info(self.user_id,
+                 f"Получен запрос на перезапуск стратегии {event.strategy_type} для {event.symbol} с задержкой {event.delay_seconds} сек.",
                  module_name=__name__)
 
         strategy_id = f"{event.strategy_type}_{event.symbol}"
@@ -690,10 +691,26 @@ class UserSession:
             log_warning(self.user_id, f"Принудительная остановка {strategy_id} перед перезапуском.",
                         module_name=__name__)
             await self.stop_strategy(strategy_id, reason="forced_restart")
-            await asyncio.sleep(1)  # Небольшая пауза для завершения всех процессов
+            await asyncio.sleep(1)
 
-        await self.start_strategy(
-            strategy_type=event.strategy_type,
-            symbol=event.symbol,
-            analysis_data={'trigger': 'restart_request'}
-        )
+        # Создаем асинхронную задачу для выполнения перезапуска
+        asyncio.create_task(self._delayed_strategy_start(event))
+
+    async def _delayed_strategy_start(self, event: StrategyRestartRequestEvent):
+        """Выполняет запуск стратегии после указанной задержки."""
+        try:
+            if event.delay_seconds > 0:
+                log_info(self.user_id, f"Ожидание {event.delay_seconds} секунд перед перезапуском {event.symbol}...",
+                         module_name=__name__)
+                await asyncio.sleep(event.delay_seconds)
+
+            log_info(self.user_id, f"Выполнение перезапуска стратегии {event.strategy_type} для {event.symbol}.",
+                     module_name=__name__)
+            await self.start_strategy(
+                strategy_type=event.strategy_type,
+                symbol=event.symbol,
+                analysis_data={'trigger': 'restart_request', 'reason': event.reason}
+            )
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка при отложенном запуске стратегии {event.symbol}: {e}",
+                      module_name=__name__)

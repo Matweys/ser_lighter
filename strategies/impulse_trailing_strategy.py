@@ -52,7 +52,6 @@ class ImpulseTrailingStrategy(BaseStrategy):
         если условия для входа не выполнены.
         """
         try:
-            # Если позиция уже открыта этой стратегией, ничего не делаем
             if self.position_side:
                 return
 
@@ -61,7 +60,6 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 await self.stop("Insufficient analysis data in signal")
                 return
 
-            # Извлекаем данные из анализа для удобства
             current_price = self._convert_to_decimal(analysis['current_price'])
             atr = self._convert_to_decimal(analysis['atr'])
             friction_level = analysis.get('friction_level', 'NEUTRAL')
@@ -69,7 +67,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
             is_consolidating = analysis.get('is_consolidating_now')
             is_panic = analysis.get('is_panic_bar')
 
-            # --- Логика для ЛОНГА: пробой после консолидации в восходящем тренде ---
+            # --- Логика для ЛОНГА ---
             if ema_trend == "UP" and is_consolidating:
                 if friction_level == "HIGH":
                     log_info(self.user_id, f"LONG сигнал для {self.symbol} пропущен: высокая фрикция рынка.",
@@ -88,13 +86,18 @@ class ImpulseTrailingStrategy(BaseStrategy):
                     self.take_profit_price = current_price + (
                                 atr * self._convert_to_decimal(self.config['long_tp_atr']))
                     await self._enter_position()
-                    return  # Выход из функции после попытки входа
+                    return
+                else:  # <-- ДОБАВЛЕН БЛОК ELSE
+                    log_info(self.user_id,
+                             f"LONG сигнал для {self.symbol} пропущен: цена ({current_price}) не пробила уровень ({breakout_level}).",
+                             "impulse_trailing")
+                    await self.stop("Signal skipped: No breakout")
+                    return
 
-            # --- Логика для ШОРТА: паническая свеча с высоким объемом ---
+            # --- Логика для ШОРТА ---
             if is_panic:
                 if friction_level == "HIGH":
-                    log_info(self.user_id,
-                             f"SHORT сигнал для {self.symbol} пропущен: высокая фрикция не оптимальна для панических продаж.",
+                    log_info(self.user_id, f"SHORT сигнал для {self.symbol} пропущен: высокая фрикция.",
                              "impulse_trailing")
                     await self.stop("Signal skipped: High friction")
                     return
@@ -105,11 +108,11 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 self.stop_loss_price = current_price + (atr * self._convert_to_decimal(self.config['short_sl_atr']))
                 self.take_profit_price = current_price - (atr * self._convert_to_decimal(self.config['short_tp_atr']))
                 await self._enter_position()
-                return  # Выход из функции после попытки входа
+                return
 
-            # --- ВАЖНО: Если ни одно из условий выше не выполнено ---
+            # --- Если ни одно из основных условий не выполнено ---
             log_info(self.user_id,
-                     f"Сигнал для {self.symbol} не соответствует условиям входа (Тренд: {ema_trend}, Консолидация: {is_consolidating}, Паника: {is_panic}). Стратегия остановлена.",
+                     f"Сигнал для {self.symbol} не соответствует ни одному паттерну. Стратегия остановлена.",
                      "impulse_trailing")
             await self.stop("Signal conditions not met")
 

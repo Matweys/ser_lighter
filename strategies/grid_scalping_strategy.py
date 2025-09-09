@@ -1,5 +1,3 @@
-# strategies/grid_scalping_strategy.py
-
 import asyncio
 from typing import Dict, Any, Optional, List
 from decimal import Decimal, getcontext
@@ -18,9 +16,8 @@ getcontext().prec = 28
 
 class GridScalpingStrategy(BaseStrategy):
     """
-    Стратегия грид-скальпинга (LONG-only) с усреднением и перезапуском.
-    Реализует логику, предложенную пользователем: вход, усреднение при падении,
-    фиксация прибыли при росте и автоматический перезапуск цикла.
+    Стратегия грид-скальпинга (LONG-only) с пошаговым усреднением и перезапуском.
+    Реализует сценарии, описанные пользователем.
     """
 
     def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, event_bus: EventBus,
@@ -28,220 +25,222 @@ class GridScalpingStrategy(BaseStrategy):
         super().__init__(user_id, symbol, signal_data, api, event_bus, bot, config)
 
         # Параметры из конфигурации
-        self.scalp_levels: int = 5  # Макс. кол-во ордеров на усреднение
-        self.scalp_spacing_percent: Decimal = Decimal('1.0')  # Процент падения для усреднения
-        self.quick_profit_percent: Decimal = Decimal('1.0')  # Процент роста для фиксации прибыли
-        self.stop_loss_percent: Decimal = Decimal('5.0')  # Глобальный стоп-лосс от первого входа
+        self.scalp_levels: int = 5
+        self.scalp_spacing_percent: Decimal = Decimal('1.0')
+        self.quick_profit_percent: Decimal = Decimal('1.0')
+        self.stop_loss_percent: Decimal = Decimal('5.0')
+        self.cooldown_after_stop: int = 60  # Время ожидания в секундах после SL
 
         # Состояние позиции
         self.position_entry_price: Optional[Decimal] = None
         self.position_avg_price: Optional[Decimal] = None
         self.position_size: Decimal = Decimal('0')
         self.averaging_orders_placed: int = 0
-        self.active_limit_orders: Dict[str, Dict] = {}  # {order_id: {type: 'take_profit'/'average'}}
+        self.active_tp_order_id: Optional[str] = None
+        self.next_averaging_price: Optional[Decimal] = None
 
     async def validate_config(self) -> bool:
-        """Валидирует специфичные для Grid Scalping параметры."""
-        # Сначала вызываем базовую проверку (на leverage, order_amount)
-        if not await super().validate_config():
-            return False
-
-        # Теперь проверяем свои параметры
+        if not await super().validate_config(): return False
         required_fields = ['profit_percent', 'stop_loss_percent', 'max_averaging_orders', 'scalp_spacing_percent']
         for field in required_fields:
             if field not in self.config:
-                log_error(self.user_id, f"Отсутствует обязательное поле конфигурации для Grid Scalping: {field}",
-                          module_name=__name__)
+                log_error(self.user_id, f"Отсутствует поле в конфиге Grid Scalping: {field}", module_name=__name__)
                 return False
-
         return True
 
     def _get_strategy_type(self) -> StrategyType:
         return StrategyType.GRID_SCALPING
 
     async def _load_scalp_parameters(self):
-        """Загрузка параметров из конфигурации."""
         await self._ensure_config_fresh()
         if not self.config: return
-
         self.scalp_levels = int(self.config.get("max_averaging_orders", 5))
         self.scalp_spacing_percent = self._convert_to_decimal(self.config.get("scalp_spacing_percent", 1.0))
         self.quick_profit_percent = self._convert_to_decimal(self.config.get("profit_percent", 1.0))
         self.stop_loss_percent = self._convert_to_decimal(self.config.get("stop_loss_percent", 5.0))
+        self.cooldown_after_stop = int(self.config.get("cooldown_after_stop_seconds", 60))
         log_info(self.user_id,
-                 f"Параметры Grid Scalping загружены: уровни={self.scalp_levels}, шаг={self.scalp_spacing_percent}%, профит={self.quick_profit_percent}%",
+                 f"Параметры Grid Scalping: уровни={self.scalp_levels}, шаг={self.scalp_spacing_percent}%, профит={self.quick_profit_percent}%",
                  module_name=__name__)
 
     async def calculate_order_size(self) -> Decimal:
-        """Рассчитывает размер ордера на основе конфигурации."""
         return self._convert_to_decimal(self.get_config_value("order_amount", 10.0))
 
+    # 1. ИНИЦИАЛИЗАЦИЯ И ПЕРВЫЙ ВХОД
     async def _execute_strategy_logic(self):
-        """Инициализация и вход в позицию."""
+        """Инициализация и вход в первую позицию."""
         try:
+            if self.position_size > 0: return  # Если позиция уже есть, ничего не делаем
             log_info(self.user_id, f"Запуск Grid Scalping для {self.symbol}", module_name=__name__)
             await self._load_scalp_parameters()
             await self._set_leverage()
 
-            if self.position_size > 0: return
-
             order_size_usdt = await self.calculate_order_size()
             if order_size_usdt <= 0:
-                await self.stop("Invalid order size")
+                await self.stop("Неверный размер ордера")
                 return
 
             qty = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt)
             if qty > 0:
-                order_id = await self._place_order(side="Buy", order_type="Market", qty=qty)
+                # Рассчитываем Stop Loss ЗАРАНЕЕ
+                current_price = await self.api.get_current_price(self.symbol)
+                if not current_price:
+                    await self.stop("Не удалось получить цену для расчета SL")
+                    return
+
+                stop_loss_price = current_price * (1 - self.stop_loss_percent / 100)
+
+                # Размещаем рыночный ордер сразу со стоп-лоссом
+                order_id = await self._place_order(side="Buy", order_type="Market", qty=qty, stop_loss=stop_loss_price)
                 if not order_id:
-                    await self.stop("Failed to place initial order")
+                    await self.stop("Не удалось разместить начальный ордер")
             else:
-                await self.stop("Calculated qty is zero")
+                await self.stop("Рассчитанное кол-во равно нулю")
         except Exception as e:
             log_error(self.user_id, f"Ошибка инициализации Grid Scalping: {e}", module_name=__name__)
             await self.stop("Ошибка инициализации")
 
+    # 2. ОБРАБОТКА ИСПОЛНЕННЫХ ОРДЕРОВ
     async def _handle_order_filled(self, event: OrderFilledEvent):
-        """Обработка исполнения ордера с расчетом чистого PnL."""
+        """Обработка всех исполненных ордеров: вход, усреднение, тейк-профит."""
         try:
-            log_info(self.user_id, f"[TRACE] GridScalping._handle_order_filled получил событие:"
-                                   f" side={event.side}, price={event.price}, qty={event.qty}", "grid_scalping")
-
-            # --- Ордер на ПРОДАЖУ (фиксация прибыли или стоп-лосс) ---
+            # --- Сценарий 1: Исполнен ордер на ПРОДАЖУ (Take Profit) ---
             if event.side == "Sell":
-                pnl_gross = Decimal('0')
-                commission = Decimal('0')
-
-                if self.position_avg_price and self.position_avg_price > 0 and self.position_size > 0:
-                    pnl_gross = (event.price - self.position_avg_price) * self.position_size
-
-                    # Расчет комиссии (предполагаем Taker)
-                    fee_rate = EXCHANGE_FEES.get(ExchangeType.BYBIT, {}).get('taker', Decimal('0.055')) / 100
-                    trade_volume = event.price * self.position_size
-                    commission = trade_volume * fee_rate
-                else:
-                    log_warning(
-                        self.user_id,
-                        f"Не удалось рассчитать PnL для {self.symbol} из-за отсутствия данных о входе в позицию. "
-                        f"(avg_price: {self.position_avg_price}, size: {self.position_size}). Вероятно, позиция была открыта вне контроля бота.",
-                        "grid_scalping"
-                    )
-
-                pnl_net = pnl_gross - commission
-
-                await self._send_trade_close_notification(pnl_net, commission)
+                pnl_net = await self._calculate_pnl(event)
+                await self._send_trade_close_notification(pnl_net, event.fee)
                 log_info(self.user_id,
                          f"Прибыль по {self.symbol} зафиксирована. PnL (net): {pnl_net:.2f}. Перезапуск цикла.",
                          "grid_scalping")
-
-                # Запрашиваем перезапуск стратегии
-                await self.event_bus.publish(
-                    StrategyRestartRequestEvent(user_id=self.user_id, strategy_type=self.strategy_type.value,
-                                                symbol=self.symbol))
-                await self.stop("Profit/Loss taken, restarting cycle")
+                await self.request_restart()  # Запрашиваем перезапуск
                 return
 
-            # --- Ордер на ПОКУПКУ (вход или усреднение) ---
+            # --- Сценарий 2: Исполнен ордер на ПОКУПКУ (Первый вход или Усреднение) ---
             if event.side == "Buy":
-                log_info(self.user_id, "[TRACE] Условие event.side == 'Buy' выполнено.", "grid_scalping")
-                self.active_limit_orders.pop(event.order_id, None)
+                is_first_entry = self.position_size == 0
 
-                log_info(self.user_id, f"[TRACE] Проверка условия для входа: self.position_size = {self.position_size}",
-                         "grid_scalping")
+                # Обновляем состояние позиции
+                new_total_size = self.position_size + event.qty
+                new_avg_price = ((self.position_avg_price * self.position_size) + (
+                            event.price * event.qty)) / new_total_size if not is_first_entry else event.price
 
-                # Определяем, является ли это первым входом или усреднением
-                is_first_entry = (self.position_size == 0 or self.position_entry_price is None)
-
-                if is_first_entry:  # Первый вход
+                if is_first_entry:
                     self.position_entry_price = event.price
-                    self.position_avg_price = event.price
-                    self.position_size = event.qty
-
-                    # Передаем запрошенную сумму для сравнения
-                    intended_amount = await self.calculate_order_size()
-
-                    log_info(self.user_id, "[TRACE] Вызов _send_trade_open_notification...", "grid_scalping")
-                    await self._send_trade_open_notification(event.side, event.price, event.qty, intended_amount)
-
+                    await self._send_trade_open_notification(event.side, event.price, event.qty,
+                                                             await self.calculate_order_size())
                     log_info(self.user_id,
                              f"Первый вход в позицию по {self.symbol}: цена={event.price:.4f}, размер={event.qty}",
                              "grid_scalping")
-                else:  # Усреднение
-                    log_info(self.user_id, "[TRACE] Условие first_entry НЕ выполнено. Захожу в блок 'Усреднение'.",
-                             "grid_scalping")
-                    new_total_size = self.position_size + event.qty
-                    new_avg_price = ((self.position_avg_price * self.position_size) + (
-                                event.price * event.qty)) / new_total_size
-
-                    old_avg_price = self.position_avg_price  # сохраняем для лога
-                    self.position_avg_price = new_avg_price
-                    self.position_size = new_total_size
+                else:
                     self.averaging_orders_placed += 1
-
-                    # Вызываем новое уведомление об усреднении
                     await self._send_averaging_notification(event.price, event.qty, new_avg_price, new_total_size)
-
-                    log_info(self.user_id,
-                             f"Позиция по {self.symbol} усреднена. Ср. цена: {old_avg_price:.4f} -> {new_avg_price:.4f}, размер: {new_total_size}",
+                    log_info(self.user_id, f"Позиция по {self.symbol} усреднена. Новая ср. цена: {new_avg_price:.4f}",
                              "grid_scalping")
 
-                # Обновляем все лимитные ордера
-                await self._update_limit_orders()
+                self.position_avg_price = new_avg_price
+                self.position_size = new_total_size
+
+                # После любого входа/усреднения обновляем TP и следующий уровень усреднения
+                await self._update_take_profit_and_next_average()
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки исполнения ордера в GridScalping: {e}", "grid_scalping")
 
-    async def _update_limit_orders(self):
-        """Отменяет старые и выставляет новые лимитные ордера."""
-        await self._cancel_all_limit_orders()
+    # 3. ОБРАБОТКА ТЕКУЩЕЙ ЦЕНЫ (ДЛЯ УСРЕДНЕНИЯ)
+    async def _handle_price_update(self, event: PriceUpdateEvent):
+        """Следит за ценой для инициации усреднения."""
+        if not self.is_running or not self.position_size > 0:
+            return
+
+        # Проверяем, нужно ли усредняться
+        if self.next_averaging_price and event.price <= self.next_averaging_price:
+            if self.averaging_orders_placed < self.scalp_levels:
+                log_info(self.user_id,
+                         f"Цена {self.symbol} достигла уровня усреднения {self.next_averaging_price}. Размещаю ордер.",
+                         "grid_scalping")
+
+                # Сбрасываем цену следующего усреднения, чтобы избежать повторных ордеров
+                self.next_averaging_price = None
+
+                order_size_usdt = await self.calculate_order_size()
+                qty_to_buy = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt)
+
+                if qty_to_buy > 0:
+                    # Важно: отменяем старый TP перед усреднением
+                    await self._cancel_tp_order()
+
+                    # Размещаем рыночный ордер на усреднение
+                    await self._place_order(side="Buy", order_type="Market", qty=qty_to_buy)
+            else:
+                # Лимит усреднений исчерпан, просто ждем TP или SL
+                self.next_averaging_price = None
+
+                # 4. УПРАВЛЕНИЕ ОРДЕРАМИ
+
+    async def _update_take_profit_and_next_average(self):
+        """Отменяет старый TP и выставляет новый. Рассчитывает следующий уровень усреднения."""
+        await self._cancel_tp_order()
 
         if not self.position_avg_price or self.position_size == 0: return
 
-        # 1. Выставляем ордер Take Profit
+        # 1. Выставляем новый ордер Take Profit
         profit_price = self.position_avg_price * (1 + self.quick_profit_percent / 100)
         tp_id = await self._place_order(side="Sell", order_type="Limit", qty=self.position_size, price=profit_price,
                                         reduce_only=True)
-        if tp_id: self.active_limit_orders[tp_id] = {'type': 'take_profit'}
+        if tp_id:
+            self.active_tp_order_id = tp_id
+            log_info(self.user_id, f"Новый Take Profit для {self.symbol} установлен на {profit_price:.4f}",
+                     "grid_scalping")
 
-        # 2. Устанавливаем Stop Loss для позиции
-        stop_loss_price = self.position_entry_price * (1 - self.stop_loss_percent / 100)
-        # Используем правильный метод API для установки SL на существующую позицию
-        sl_success = await self.api.set_trading_stop(
-            symbol=self.symbol,
-            stop_loss=stop_loss_price
-        )
-        if sl_success:
-            log_info(self.user_id, f"Stop Loss для {self.symbol} установлен на {stop_loss_price:.4f}", "grid_scalping")
+        # 2. Рассчитываем следующий уровень для усреднения
+        if self.averaging_orders_placed < self.scalp_levels:
+            self.next_averaging_price = self.position_avg_price * (1 - self.scalp_spacing_percent / 100)
+            log_info(self.user_id,
+                     f"Следующий уровень усреднения для {self.symbol} установлен на {self.next_averaging_price:.4f}",
+                     "grid_scalping")
         else:
-            log_error(self.user_id, f"Не удалось установить Stop Loss для {self.symbol}", "grid_scalping")
+            self.next_averaging_price = None  # Лимит исчерпан
+            log_info(self.user_id, f"Лимит усреднений для {self.symbol} исчерпан.", "grid_scalping")
 
-        # 3. Выставляем ордера на усреднение
-        order_size_usdt = await self.calculate_order_size()
-        for i in range(self.averaging_orders_placed, self.scalp_levels):
-            averaging_price = self.position_avg_price * (1 - self.scalp_spacing_percent * (i + 1) / 100)
-            qty_to_buy = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt, averaging_price)
-            if qty_to_buy > 0:
-                avg_id = await self._place_order(side="Buy", order_type="Limit", qty=qty_to_buy, price=averaging_price)
-                if avg_id: self.active_limit_orders[avg_id] = {'type': 'average'}
+    async def _cancel_tp_order(self):
+        """Отменяет активный ордер тейк-профита."""
+        if self.active_tp_order_id:
+            await self._cancel_order(self.active_tp_order_id)
+            self.active_tp_order_id = None
 
-    async def _cancel_all_limit_orders(self):
-        """Отменяет все активные лимитные ордера этой стратегии."""
-        if not self.active_limit_orders: return
-        log_info(self.user_id, f"Отмена {len(self.active_limit_orders)} активных лимитных ордеров...",
-                 module_name=__name__)
-        for order_id in list(self.active_limit_orders.keys()):
-            await self._cancel_order(order_id)
-        self.active_limit_orders.clear()
-
+    # 5. ЛОГИКА ЗАВЕРШЕНИЯ И ПЕРЕЗАПУСКА
     async def stop(self, reason: str = "Manual stop"):
-        """Переопределяем stop для полной очистки."""
-        await self._cancel_all_limit_orders()
-        await super().stop(reason)
+        """Переопределяем stop для полной очистки и обработки SL."""
+        # --- Сценарий 3: Обработка Stop Loss ---
+        if "Stop-Loss" in reason or "stop-loss" in reason:
+            log_warning(self.user_id,
+                        f"Стратегия {self.symbol} остановлена по Stop-Loss. Ожидание {self.cooldown_after_stop} сек. перед перезапуском.",
+                        "grid_scalping")
+            await self._cancel_tp_order()
+            await super().stop(reason)  # Вызываем базовый stop для очистки
+            await self.request_restart(delay_seconds=self.cooldown_after_stop)  # Запрашиваем отложенный перезапуск
+        else:
+            await self._cancel_tp_order()
+            await super().stop(reason)
 
-    async def _handle_price_update(self, event: PriceUpdateEvent):
-        """
-        Обработка обновления цены.
-        Для данной стратегии, основанной на лимитных ордерах,
-        активная обработка тиков цены не требуется.
-        Логика срабатывает при исполнении ордеров.
-        """
-        pass
+    async def request_restart(self, delay_seconds: int = 0):
+        """Публикует событие с просьбой о перезапуске стратегии."""
+        log_info(self.user_id, f"Запрос на перезапуск стратегии {self.symbol} с задержкой {delay_seconds} сек.",
+                 "grid_scalping")
+        # Сначала полностью останавливаем текущую инстанцию
+        await self.stop("Requesting restart")
+        # Затем публикуем событие
+        await self.event_bus.publish(
+            StrategyRestartRequestEvent(
+                user_id=self.user_id,
+                strategy_type=self.strategy_type.value,
+                symbol=self.symbol,
+                delay_seconds=delay_seconds
+            )
+        )
+
+    async def _calculate_pnl(self, event: OrderFilledEvent) -> Decimal:
+        """Вспомогательный метод для расчета чистого PnL."""
+        if self.position_avg_price and self.position_avg_price > 0 and self.position_size > 0:
+            pnl_gross = (event.price - self.position_avg_price) * self.position_size
+            return pnl_gross - event.fee
+        return Decimal('0')
+
