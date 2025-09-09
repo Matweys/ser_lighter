@@ -15,6 +15,7 @@ from core.events import (
     EventBus, BaseEvent, StrategyRestartRequestEvent
 )
 from cache.redis_manager import redis_manager, ConfigType
+from core.enums import StrategyType
 from analysis.meta_strategist import MetaStrategist
 from analysis.market_analyzer import MarketAnalyzer
 from analysis.risk_manager import RiskManager

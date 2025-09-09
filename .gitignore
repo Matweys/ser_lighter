@@ -21,3 +21,5 @@ backtest_results/
 
 # Файлы с данными для бэктеста (обычно они большие)
 backtest_data/
+simulation/
+data/

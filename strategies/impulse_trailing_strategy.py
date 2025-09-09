@@ -117,13 +117,26 @@ class ImpulseTrailingStrategy(BaseStrategy):
 
     async def _handle_order_filled(self, event: OrderFilledEvent):
         """Обработка исполненных ордеров с расчетом чистого PnL."""
+        log_info(self.user_id,
+                 f"[TRACE] ImpulseTrailing._handle_order_filled получил событие: side={event.side}, price={event.price}, qty={event.qty}",
+                 "impulse_trailing")
+
         # --- Ордер ВХОДА ---
+        log_info(self.user_id,
+                 f"[TRACE] Проверка условия для входа: self.position_side={self.position_side}, event.side={event.side}",
+                 "impulse_trailing")
         if self.position_side and event.side == self.position_side:
+            log_info(self.user_id, "[TRACE] Условие для входа выполнено. Захожу в блок 'Ордер ВХОДА'.",
+                     "impulse_trailing")
             self.entry_price = event.price
             self.position_size = event.qty
             self.peak_price = event.price
             self.active_positions[self.symbol] = True
-            await self._send_trade_open_notification(event.side, event.price, event.qty)
+
+            # Добавляем получение и передачу intended_amount
+            intended_amount = self._convert_to_decimal(self.get_config_value("order_amount", 50.0))
+            log_info(self.user_id, "[TRACE] Вызов _send_trade_open_notification...", "impulse_trailing")
+            await self._send_trade_open_notification(event.side, event.price, event.qty, intended_amount)
             return
 
         # --- Ордер ВЫХОДА (противоположный направлению позиции) ---

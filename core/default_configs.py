@@ -54,10 +54,11 @@ class DefaultConfigs:
         """Конфигурация стратегии грид-скальпинга."""
         return {
             "is_enabled": True,
-            "order_amount": 10.0,
-            "max_averaging_orders": 5,
-            "profit_percent": 0.5,
-            "stop_loss_percent": 1.0,
+            "order_amount": 100.0,
+            "max_averaging_orders": 7,      # Макс. ордеров на усреднение
+            "scalp_spacing_percent": 2.0,   # Шаг для усреднения в %
+            "profit_percent": 1.0,          # Процент для фиксации прибыли
+            "stop_loss_percent": 2.0,       # Общий стоп-лосс от цены первого входа в %
         }
 
     @staticmethod
