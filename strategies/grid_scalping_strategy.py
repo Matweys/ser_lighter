@@ -66,7 +66,7 @@ class GridScalpingStrategy(BaseStrategy):
         await self._ensure_config_fresh()
         if not self.config: return
 
-        self.scalp_levels = self.config.get("max_averaging_orders", 5)
+        self.scalp_levels = int(self.config.get("max_averaging_orders", 5))
         self.scalp_spacing_percent = self._convert_to_decimal(self.config.get("scalp_spacing_percent", 1.0))
         self.quick_profit_percent = self._convert_to_decimal(self.config.get("profit_percent", 1.0))
         self.stop_loss_percent = self._convert_to_decimal(self.config.get("stop_loss_percent", 5.0))
@@ -191,11 +191,17 @@ class GridScalpingStrategy(BaseStrategy):
                                         reduce_only=True)
         if tp_id: self.active_limit_orders[tp_id] = {'type': 'take_profit'}
 
-        # 2. Выставляем ордер Stop Loss
+        # 2. Устанавливаем Stop Loss для позиции
         stop_loss_price = self.position_entry_price * (1 - self.stop_loss_percent / 100)
-        sl_id = await self._place_order(side="Sell", order_type="Stop", qty=self.position_size, price=stop_loss_price,
-                                        reduce_only=True)
-        if sl_id: self.active_limit_orders[sl_id] = {'type': 'stop_loss'}
+        # Используем правильный метод API для установки SL на существующую позицию
+        sl_success = await self.api.set_trading_stop(
+            symbol=self.symbol,
+            stop_loss=stop_loss_price
+        )
+        if sl_success:
+            log_info(self.user_id, f"Stop Loss для {self.symbol} установлен на {stop_loss_price:.4f}", "grid_scalping")
+        else:
+            log_error(self.user_id, f"Не удалось установить Stop Loss для {self.symbol}", "grid_scalping")
 
         # 3. Выставляем ордера на усреднение
         order_size_usdt = await self.calculate_order_size()

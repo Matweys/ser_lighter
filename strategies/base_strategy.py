@@ -697,7 +697,13 @@ class BaseStrategy(ABC):
                     f"биржей до {hcode(f'{actual_amount:.2f} USDT')} из-за требований к минимальному размеру лота."
                 )
 
+                # Финальная диагностика
+                log_info(self.user_id,
+                         f"[TRACE] Проверка перед отправкой: self.bot существует? {'Да' if self.bot else 'Нет'}",
+                         "base_strategy")
+
             await self.bot.send_message(self.user_id, text, parse_mode="HTML")
+            log_info(self.user_id, "[TRACE] Уведомление об открытии сделки отправлено успешно.", "base_strategy")
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления об открытии сделки: {e}", "base_strategy")
 
@@ -716,7 +722,13 @@ class BaseStrategy(ABC):
                 f"▫️ {hbold('Новая ср. цена:')} {hcode(f'{new_avg_price:.4f} USDT')}\n"
                 f"▫️ {hbold('Новый общий объем:')} {hcode(str(new_total_size))}"
             )
+            # Финальная диагностика
+            log_info(self.user_id,
+                     f"[TRACE] Проверка перед отправкой (усреднение): self.bot существует? {'Да' if self.bot else 'Нет'}",
+                     "base_strategy")
+
             await self.bot.send_message(self.user_id, text, parse_mode="HTML")
+            log_info(self.user_id, "[TRACE] Уведомление об усреднении отправлено успешно.", "base_strategy")
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления об усреднении: {e}", "base_strategy")
 
