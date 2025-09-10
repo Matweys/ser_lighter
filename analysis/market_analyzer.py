@@ -1,18 +1,17 @@
-# analysis/market_analyzer.py
-
 import pandas as pd
 import pandas_ta as ta
 from decimal import Decimal, getcontext
 from typing import Dict, Optional
 from dataclasses import dataclass
 
-from core.logger import log_info, log_error
+from core.logger import log_info, log_error, log_warning
 from core.functions import to_decimal
 from api.bybit_api import BybitAPI
 from cache.redis_manager import redis_manager
 from core.default_configs import DefaultConfigs
 
 getcontext().prec = 28
+
 
 @dataclass
 class MarketAnalysis:
@@ -41,11 +40,13 @@ class MarketAnalysis:
             'friction_value': str(self.friction_value)
         }
 
+
 class MarketAnalyzer:
     """
     Анализатор рынка, адаптированный для асимметричной стратегии.
     Рассчитывает необходимые индикаторы и паттерны на заданном таймфрейме.
     """
+
     def __init__(self, user_id: int, bybit_api: BybitAPI):
         self.user_id = user_id
         self.api = bybit_api
@@ -58,7 +59,7 @@ class MarketAnalyzer:
         """
         try:
             candles = await self._get_candles_cached(symbol, timeframe)
-            if candles is None or len(candles) < 200: # Проверка на достаточность данных
+            if candles is None or len(candles) < 200:  # Проверка на достаточность данных
                 log_error(self.user_id, f"Недостаточно данных для анализа {symbol} на {timeframe}", "market_analyzer")
                 return None
 
@@ -136,50 +137,129 @@ class MarketAnalyzer:
                 candles_float[col] = candles_float[col].astype(float)
 
             # 1. Расчет EMA
-            candles_float['ema'] = ta.ema(candles_float['close'], length=config['long_ema_len'])
+            try:
+                candles_float['ema'] = ta.ema(candles_float['close'], length=config['long_ema_len'])
+                if candles_float['ema'].isna().all():
+                    log_error(self.user_id, f"EMA не рассчитана для {symbol}", "market_analyzer")
+                    candles_float['ema'] = candles_float['close']  # Fallback
+            except Exception as e:
+                log_error(self.user_id, f"Ошибка расчета EMA для {symbol}: {e}", "market_analyzer")
+                candles_float['ema'] = candles_float['close']
 
             # 2. Расчет полос Боллинджера
-            bbands = ta.bbands(candles_float['close'], length=config['long_bb_len'])
-            if bbands is not None and not bbands.empty:
-                candles_float['bb_width'] = (bbands[f'BBU_{config["long_bb_len"]}_2.0'] - bbands[f'BBL_{config["long_bb_len"]}_2.0']) / bbands[f'BBM_{config["long_bb_len"]}_2.0']
-            else:
-                candles_float['bb_width'] = 0.0
+            try:
+                bbands = ta.bbands(candles_float['close'], length=config['long_bb_len'])
+                if bbands is not None and not bbands.empty:
+                    bb_upper = bbands[f'BBU_{config["long_bb_len"]}_2.0']
+                    bb_lower = bbands[f'BBL_{config["long_bb_len"]}_2.0']
+                    bb_middle = bbands[f'BBM_{config["long_bb_len"]}_2.0']
+
+                    # Проверяем на NaN
+                    if bb_upper.isna().all() or bb_lower.isna().all() or bb_middle.isna().all():
+                        log_warning(self.user_id, f"Bollinger Bands содержат NaN для {symbol}", "market_analyzer")
+                        candles_float['bb_width'] = 0.02  # 2% по умолчанию
+                    else:
+                        candles_float['bb_width'] = (bb_upper - bb_lower) / bb_middle
+                        candles_float['bb_width'] = candles_float['bb_width'].fillna(0.02)
+                else:
+                    log_warning(self.user_id, f"Bollinger Bands не рассчитаны для {symbol}", "market_analyzer")
+                    candles_float['bb_width'] = 0.02
+            except Exception as e:
+                log_error(self.user_id, f"Ошибка расчета Bollinger Bands для {symbol}: {e}", "market_analyzer")
+                candles_float['bb_width'] = 0.02
 
             # 3. Определение консолидации
-            candles_float['is_narrow'] = candles_float['bb_width'] < config['long_bb_width_thresh']
-            candles_float['consolidation'] = candles_float['is_narrow'].rolling(config['long_consol_bars']).apply(all, raw=False).fillna(0)
+            try:
+                candles_float['is_narrow'] = candles_float['bb_width'] < config['long_bb_width_thresh']
+                candles_float['consolidation'] = candles_float['is_narrow'].rolling(config['long_consol_bars']).apply(
+                    all, raw=False).fillna(0)
+            except Exception as e:
+                log_error(self.user_id, f"Ошибка расчета консолидации для {symbol}: {e}", "market_analyzer")
+                candles_float['consolidation'] = 0
 
             # 4. Расчет панической свечи
-            candles_float['ret'] = candles_float['close'].pct_change()
-            candles_float['ret_std'] = candles_float['ret'].rolling(config['short_ret_lookback']).std()
-            candles_float['vol_ma'] = candles_float['volume'].rolling(config['short_vol_ma']).mean()
-            candles_float['vol_ratio'] = candles_float['volume'] / candles_float['vol_ma']
+            try:
+                candles_float['ret'] = candles_float['close'].pct_change()
+                candles_float['ret_std'] = candles_float['ret'].rolling(config['short_ret_lookback']).std()
+                candles_float['vol_ma'] = candles_float['volume'].rolling(config['short_vol_ma']).mean()
+                candles_float['vol_ratio'] = candles_float['volume'] / candles_float['vol_ma']
 
-            cond_ret = candles_float['ret'] < (-config['short_panic_sigma_k'] * candles_float['ret_std'])
-            cond_vol = candles_float['vol_ratio'] > config['short_vol_ratio_min']
-            candles_float['is_panic'] = cond_ret & cond_vol
+                # Проверяем на NaN и заменяем
+                candles_float['ret_std'] = candles_float['ret_std'].fillna(0.01)
+                candles_float['vol_ratio'] = candles_float['vol_ratio'].fillna(1.0)
+
+                cond_ret = candles_float['ret'] < (-config['short_panic_sigma_k'] * candles_float['ret_std'])
+                cond_vol = candles_float['vol_ratio'] > config['short_vol_ratio_min']
+                candles_float['is_panic'] = cond_ret & cond_vol
+            except Exception as e:
+                log_error(self.user_id, f"Ошибка расчета панической свечи для {symbol}: {e}", "market_analyzer")
+                candles_float['is_panic'] = False
 
             # 5. Расчет ATR
-            candles_float['atr'] = ta.atr(candles_float['high'], candles_float['low'], candles_float['close'], length=config['risk_atr_len'])
+            try:
+                candles_float['atr'] = ta.atr(candles_float['high'], candles_float['low'], candles_float['close'],
+                                              length=config['risk_atr_len'])
+                if candles_float['atr'].isna().all():
+                    log_warning(self.user_id, f"ATR не рассчитан для {symbol}, используем значение по умолчанию",
+                                "market_analyzer")
+                    # Рассчитываем простой ATR как среднее от high-low
+                    candles_float['atr'] = (candles_float['high'] - candles_float['low']).rolling(14).mean()
+                candles_float['atr'] = candles_float['atr'].fillna(candles_float['close'] * 0.02)  # 2% от цены
+            except Exception as e:
+                log_error(self.user_id, f"Ошибка расчета ATR для {symbol}: {e}", "market_analyzer")
+                candles_float['atr'] = candles_float['close'] * 0.02
 
             # 6. Расчет фрикции рынка
             friction_level, friction_value = self._calculate_friction(candles)
 
-            # 7. Формируем результат
+            # 7. Формируем результат с проверками
             last = candles_float.iloc[-1]
             prev = candles_float.iloc[-2]
 
-            return {
+            # Проверяем критические значения
+            current_price = last['close']
+            atr_value = last['atr']
+
+            if pd.isna(current_price) or current_price <= 0:
+                log_error(self.user_id, f"Некорректная цена для {symbol}: {current_price}", "market_analyzer")
+                return None
+
+            if pd.isna(atr_value) or atr_value <= 0:
+                log_warning(self.user_id, f"Некорректный ATR для {symbol}: {atr_value}, используем 2% от цены",
+                            "market_analyzer")
+                atr_value = current_price * 0.02
+
+            # Безопасное получение максимума для consolidation_high
+            try:
+                consol_bars = config['long_consol_bars']
+                if len(candles_float) > consol_bars:
+                    consolidation_high = candles_float['high'].iloc[-consol_bars:-1].max()
+                else:
+                    consolidation_high = candles_float['high'].max()
+
+                if pd.isna(consolidation_high):
+                    consolidation_high = current_price
+            except Exception as e:
+                log_warning(self.user_id, f"Ошибка расчета consolidation_high для {symbol}: {e}", "market_analyzer")
+                consolidation_high = current_price
+
+            result = {
                 'symbol': symbol,
-                'current_price': to_decimal(last['close']),
-                'ema_trend': "UP" if last['close'] > last['ema'] else "DOWN",
-                'is_consolidating_now': bool(prev['consolidation']),
-                'consolidation_high': to_decimal(candles_float['high'].iloc[-config['long_consol_bars']:-1].max()),
-                'is_panic_bar': bool(last['is_panic']),
-                'atr': to_decimal(last['atr']),
+                'current_price': to_decimal(current_price),
+                'ema_trend': "UP" if current_price > last['ema'] else "DOWN",
+                'is_consolidating_now': bool(prev['consolidation']) if not pd.isna(prev['consolidation']) else False,
+                'consolidation_high': to_decimal(consolidation_high),
+                'is_panic_bar': bool(last['is_panic']) if not pd.isna(last['is_panic']) else False,
+                'atr': to_decimal(atr_value),
                 'friction_level': friction_level,
                 'friction_value': to_decimal(friction_value)
             }
+
+            log_info(self.user_id,
+                     f"Анализ {symbol} завершен успешно: trend={result['ema_trend']}, panic={result['is_panic_bar']}, consol={result['is_consolidating_now']}",
+                     "market_analyzer")
+            return result
+
         except Exception as e:
-            log_error(self.user_id, f"Ошибка при расчете индикаторов для {symbol}: {e}", "market_analyzer")
+            log_error(self.user_id, f"Критическая ошибка при расчете индикаторов для {symbol}: {e}", "market_analyzer")
             return None

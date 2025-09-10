@@ -292,6 +292,14 @@ class UserSession:
                 return False
             # --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
+            # Проверяем и получаем бота
+            bot_instance = None
+            if hasattr(bot_manager, 'bot') and bot_manager.bot:
+                bot_instance = bot_manager.bot
+                log_info(self.user_id, f"Бот успешно получен для стратегии {strategy_type}", module_name=__name__)
+            else:
+                log_error(self.user_id, f"Бот не инициализирован для стратегии {strategy_type}. Уведомления не будут работать.", module_name=__name__)
+
             strategy = create_strategy(
                 strategy_type=strategy_type,
                 user_id=self.user_id,
@@ -299,7 +307,7 @@ class UserSession:
                 signal_data=analysis_data or {},
                 api=self.api,
                 event_bus=self.event_bus,
-                bot=bot_manager.bot,
+                bot=bot_instance,
                 config=None
             )
 

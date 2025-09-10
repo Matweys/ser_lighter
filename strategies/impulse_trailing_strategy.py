@@ -101,6 +101,8 @@ class ImpulseTrailingStrategy(BaseStrategy):
 
             analysis = self.signal_data.get('analysis_data', {})
             if not analysis or 'atr' not in analysis:
+                log_error(self.user_id, f"Отсутствуют данные анализа для {self.symbol}. Проверьте market_analyzer.",
+                          "impulse_trailing")
                 await self.stop("Insufficient analysis data in signal")
                 return
 
