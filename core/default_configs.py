@@ -19,6 +19,19 @@ class DefaultConfigs:
         }
 
     @staticmethod
+    async def create_default_user_config(user_id: int):
+        """Создание конфигураций по умолчанию для пользователя."""
+        # Сохраняем глобальную конфигурацию
+        await redis_manager.save_config(user_id, ConfigType.GLOBAL, all_configs["global_config"])
+
+        # Сохраняем конфигурации стратегий
+        await redis_manager.save_config(user_id, ConfigType.STRATEGY_IMPULSE_TRAILING,
+                                        all_configs["strategy_configs"]["impulse_trailing"])
+        await redis_manager.save_config(user_id, ConfigType.STRATEGY_GRID_SCALPING,
+                                        all_configs["strategy_configs"]["grid_scalping"])
+
+
+    @staticmethod
     def get_impulse_trailing_config() -> Dict[str, Any]:
         """Конфигурация для асимметричной стратегии 'Риск-Реверсал'."""
         return {
