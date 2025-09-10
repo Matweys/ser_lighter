@@ -88,6 +88,12 @@ class MetaStrategist:
             # --- Анализируем только один, нужный нам таймфрейм или подмена динамически---
             analysis_timeframe = impulse_config.get("analysis_timeframe", "5m")
             analysis = await self.analyzer.get_market_analysis(symbol, timeframe=analysis_timeframe)
+            log_info(self.user_id,
+                     f"[TRACE] Получен analysis для {symbol}: {type(analysis)}, is None: {analysis is None}",
+                     "meta_strategist")
+            if analysis:
+                log_info(self.user_id, f"[TRACE] analysis.to_dict() для {symbol}: {analysis.to_dict()}",
+                         "meta_strategist")
 
             self.last_analysis_time[symbol] = now
 
