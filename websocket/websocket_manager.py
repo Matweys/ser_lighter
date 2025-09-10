@@ -471,7 +471,7 @@ class DataFeedHandler:
             expires = int(time.time() * 1000) + 10000
             signature = hmac.new(
                 self.api_secret.encode('utf-8'),
-                f'GET/realtime{expires}'.encode('utf-8'),
+                f'GET/v5/private{expires}'.encode('utf-8'),
                 hashlib.sha256
             ).hexdigest()
             

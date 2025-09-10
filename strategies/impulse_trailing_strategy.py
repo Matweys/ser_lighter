@@ -98,7 +98,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
             if self.position_side:  # Внутренняя проверка состояния
                 return
 
-            analysis = self.signal_data.get('analysis_data', {})
+            analysis = self.signal_data.analysis_data
             if not analysis or 'atr' not in analysis:
                 await self.stop("Insufficient analysis data in signal")
                 return
