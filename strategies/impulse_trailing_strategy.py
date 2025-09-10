@@ -40,7 +40,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
     async def start(self) -> bool:
         """Переопределяем start для добавления логики блокировки."""
         # 1. Проверяем блокировку ПЕРЕД любыми другими действиями
-        if await redis_manager.get_key(self.redis_lock_key):
+        if await redis_manager.get_cached_data(self.redis_lock_key):
             log_warning(self.user_id,
                         f"Запуск Impulse Trailing для {self.symbol} отменен: другая impulse-сделка уже активна.",
                         "impulse_trailing")
@@ -48,7 +48,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
             return False
 
         # 2. Если блокировки нет, устанавливаем ее с TTL на случай сбоя
-        await redis_manager.set_key(self.redis_lock_key, self.symbol, ttl=3600)  # TTL на 1 час
+        await redis_manager.cache_data(self.redis_lock_key, self.symbol, ttl=3600)  # TTL на 1 час
         log_info(self.user_id, f"Установлена блокировка Impulse Trailing для символа {self.symbol}.",
                  "impulse_trailing")
 
@@ -59,7 +59,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
     async def stop(self, reason: str = "Manual stop"):
         """Переопределяем stop для гарантированного снятия блокировки."""
         # 1. Снимаем блокировку, чтобы освободить слот для следующей сделки
-        await redis_manager.delete_key(self.redis_lock_key)
+        aawait redis_manager.delete_cached_data(self.redis_lock_key)
         log_info(self.user_id, f"Снята блокировка Impulse Trailing. Причина: {reason}", "impulse_trailing")
 
         # 2. Вызываем оригинальный метод stop из BaseStrategy для выполнения остальной логики

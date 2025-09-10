@@ -114,7 +114,7 @@ class ImpulseScanner:
             return
 
         # Bybit позволяет до 200 подписок в одном сообщении для kline
-        chunk_size = 50
+        chunk_size = 100
         log_info(0, f"ImpulseScanner: Начинаю подписку на {len(self.symbols_to_scan)} символов...",
                  module_name=__name__)
         for i in range(0, len(self.symbols_to_scan), chunk_size):
