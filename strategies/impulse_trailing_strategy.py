@@ -59,7 +59,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
     async def stop(self, reason: str = "Manual stop"):
         """Переопределяем stop для гарантированного снятия блокировки."""
         # 1. Снимаем блокировку, чтобы освободить слот для следующей сделки
-        aawait redis_manager.delete_cached_data(self.redis_lock_key)
+        await redis_manager.delete_cached_data(self.redis_lock_key)
         log_info(self.user_id, f"Снята блокировка Impulse Trailing. Причина: {reason}", "impulse_trailing")
 
         # 2. Вызываем оригинальный метод stop из BaseStrategy для выполнения остальной логики
