@@ -10,7 +10,7 @@ from decimal import Decimal, getcontext
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from api.bybit_api import BybitAPI
-from core.logger import log_info, log_error, log_debug
+from core.logger import log_info, log_error, log_debug, log_warning
 from core.events import EventType, SignalEvent, UserSettingsChangedEvent, EventBus, GlobalCandleEvent
 from cache.redis_manager import redis_manager, ConfigType
 
@@ -18,23 +18,22 @@ from cache.redis_manager import redis_manager, ConfigType
 getcontext().prec = 28
 
 
-
 class MetaStrategist:
     """
     Персональный стратег для пользователя
     Анализирует рынок и принимает решения о запуске стратегий на основе событий
     """
-    
+
     def __init__(self, user_id: int, analyzer: 'MarketAnalyzer', event_bus: EventBus):
         self.user_id = user_id
         self.analyzer = analyzer
         self.event_bus = event_bus
         self.running = False
-        
+
         # Кэш для предотвращения спама анализа
         self.last_analysis_time: Dict[str, datetime] = {}
         self.analysis_cooldown = timedelta(minutes=5)  # Минимальный интервал между анализами
-        
+
         # Настройки пользователя
         self.user_config: Optional[Dict] = None
 
@@ -55,12 +54,12 @@ class MetaStrategist:
         except Exception as e:
             log_error(self.user_id, f"Ошибка запуска MetaStrategist: {e}", module_name=__name__)
             raise
-            
+
     async def stop(self):
         """Остановка MetaStrategist"""
         if not self.running:
             return
-            
+
         self.running = False
         log_info(self.user_id, "MetaStrategist остановлен", module_name=__name__)
 
@@ -95,6 +94,10 @@ class MetaStrategist:
             # --- ИЗМЕНЕНИЕ: Решение принимается напрямую на основе анализа ---
             if analysis and (analysis.is_panic_bar or (analysis.ema_trend == "UP" and analysis.is_consolidating_now)):
                 analysis_dict = analysis.to_dict()
+                log_info(self.user_id,
+                         f"[TRACE] Создаем сигнал для {symbol}: analysis_dict содержит {len(analysis_dict)} полей",
+                         "meta_strategist")
+                log_info(self.user_id, f"[TRACE] analysis_dict для {symbol}: {analysis_dict}", "meta_strategist")
 
                 signal_event = SignalEvent(
                     user_id=self.user_id,
@@ -106,6 +109,13 @@ class MetaStrategist:
 
                 await self.event_bus.publish(signal_event)
                 log_info(self.user_id, f"Сигнал 'impulse_trailing' отправлен для {symbol}", "meta_strategist")
+            else:
+                if not analysis:
+                    log_warning(self.user_id, f"[TRACE] Нет анализа для {symbol}", "meta_strategist")
+                else:
+                    log_info(self.user_id,
+                             f"[TRACE] Условия сигнала не выполнены для {symbol}: panic={analysis.is_panic_bar}, trend={analysis.ema_trend}, consol={analysis.is_consolidating_now}",
+                             "meta_strategist")
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки глобальной свечи {symbol}: {e}", "meta_strategist")
 
@@ -113,7 +123,7 @@ class MetaStrategist:
         """Обработчик изменения настроек пользователя"""
         if event.user_id != self.user_id:
             return
-            
+
         log_info(self.user_id, "Перезагрузка конфигурации после изменения настроек", module_name=__name__)
         await self._load_user_config()
 
@@ -127,6 +137,3 @@ class MetaStrategist:
         except Exception as e:
             log_error(self.user_id, f"Ошибка загрузки конфигурации: {e}", module_name=__name__)
             raise
-
-
-
