@@ -661,6 +661,11 @@ class BaseStrategy(ABC):
                                             intended_amount: Optional[Decimal] = None):
         """Отправляет уведомление об открытии новой сделки."""
         try:
+            # Проверяем, что бот инициализирован
+            if not self.bot:
+                log_error(self.user_id, "Telegram бот не инициализирован. Уведомление об открытии сделки не отправлено.", "base_strategy")
+                return
+
             side_text = "LONG 🟢" if side.lower() == 'buy' else "SHORT 🔴"
             strategy_name = self.strategy_type.value.replace('_', ' ').title()
             actual_amount = price * quantity
@@ -692,11 +697,18 @@ class BaseStrategy(ABC):
             log_info(self.user_id, "[TRACE] Уведомление об открытии сделки отправлено успешно.", "base_strategy")
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления об открытии сделки: {e}", "base_strategy")
+            # Дополнительное логирование для диагностики
+            log_error(self.user_id, f"Состояние бота: {'инициализирован' if self.bot else 'не инициализирован'}", "base_strategy")
 
     async def _send_averaging_notification(self, price: Decimal, quantity: Decimal, new_avg_price: Decimal,
                                            new_total_size: Decimal):
         """Отправляет уведомление об усреднении позиции."""
         try:
+            # Проверяем, что бот инициализирован
+            if not self.bot:
+                log_error(self.user_id, "Telegram бот не инициализирован. Уведомление об усреднении не отправлено.", "base_strategy")
+                return
+
             strategy_name = self.strategy_type.value.replace('_', ' ').title()
             text = (
                 f"🔄 {hbold('ПОЗИЦИЯ УСРЕДНЕНА')} 🔄\n\n"
@@ -717,12 +729,19 @@ class BaseStrategy(ABC):
             log_info(self.user_id, "[TRACE] Уведомление об усреднении отправлено успешно.", "base_strategy")
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления об усреднении: {e}", "base_strategy")
+            # Дополнительное логирование для диагностики
+            log_error(self.user_id, f"Состояние бота: {'инициализирован' if self.bot else 'не инициализирован'}", "base_strategy")
 
 
     # strategies/base_strategy.py -> _send_trade_close_notification
     async def _send_trade_close_notification(self, pnl: Decimal, commission: Decimal = Decimal('0')):
         """Отправляет уведомление о закрытии сделки, включая комиссию."""
         try:
+            # Проверяем, что бот инициализирован
+            if not self.bot:
+                log_error(self.user_id, "Telegram бот не инициализирован. Уведомление о закрытии сделки не отправлено.", "base_strategy")
+                return
+
             # Обновляем общую статистику стратегии здесь
             self.stats["orders_count"] += 1
             self.stats["total_pnl"] += pnl
@@ -756,8 +775,11 @@ class BaseStrategy(ABC):
                 f"▫️ {hbold('Win Rate стратегии:')} {hcode(f'{win_rate:.2f}%')}"
             )
             await self.bot.send_message(self.user_id, text, parse_mode="HTML")
+            log_info(self.user_id, "[TRACE] Уведомление о закрытии сделки отправлено успешно.", "base_strategy")
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления о закрытии сделки: {e}", "base_strategy")
+            # Дополнительное логирование для диагностики
+            log_error(self.user_id, f"Состояние бота: {'инициализирован' if self.bot else 'не инициализирован'}", "base_strategy")
 
     def __str__(self) -> str:
         """Строковое представление стратегии."""
@@ -766,6 +788,3 @@ class BaseStrategy(ABC):
     def __repr__(self) -> str:
         """Представление стратегии для отладки."""
         return f"<{self.__class__.__name__}: {self.strategy_type.value}, {self.symbol}, user={self.user_id}>"
-
-
-

@@ -111,8 +111,18 @@ class GridScalpingStrategy(BaseStrategy):
                 new_avg_price = ((self.position_avg_price * self.position_size) + (
                             event.price * event.qty)) / new_total_size if not is_first_entry else event.price
 
+                # СНАЧАЛА обновляем внутреннее состояние
                 if is_first_entry:
                     self.position_entry_price = event.price
+                else:
+                    self.averaging_orders_placed += 1
+
+                self.position_avg_price = new_avg_price
+                self.position_size = new_total_size
+                self.is_waiting_for_fill = False
+
+                # ЗАТЕМ отправляем уведомления с уже обновленным состоянием
+                if is_first_entry:
                     log_info(self.user_id,
                              f"ПЕРВЫЙ ВХОД в позицию по {self.symbol}: цена={event.price:.4f}, размер={event.qty}",
                              "grid_scalping")
@@ -120,17 +130,10 @@ class GridScalpingStrategy(BaseStrategy):
                                                              self._convert_to_decimal(
                                                                  self.get_config_value("order_amount", 10.0)))
                 else:
-                    self.averaging_orders_placed += 1
                     log_info(self.user_id,
                              f"УСРЕДНЕНИЕ ПОЗИЦИИ ({self.averaging_orders_placed}/{self.scalp_levels}) по {self.symbol}. Новая ср. цена: {new_avg_price:.4f}",
                              "grid_scalping")
                     await self._send_averaging_notification(event.price, event.qty, new_avg_price, new_total_size)
-
-                self.position_avg_price = new_avg_price
-                self.position_size = new_total_size
-
-                # Сбрасываем флаг ожидания
-                self.is_waiting_for_fill = False
 
                 # После любого входа/усреднения обновляем TP и SL
                 await self._update_tp_and_sl()
@@ -241,4 +244,3 @@ class GridScalpingStrategy(BaseStrategy):
             pnl_gross = (event.price - self.position_avg_price) * self.position_size
             return pnl_gross - event.fee
         return Decimal('0')
-

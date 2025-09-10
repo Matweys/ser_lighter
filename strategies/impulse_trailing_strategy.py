@@ -1,5 +1,6 @@
-from decimal import Decimal, getcontext
 from typing import Dict, Any, Optional
+from decimal import Decimal, getcontext
+from datetime import datetime
 
 from api.bybit_api import BybitAPI
 from .base_strategy import BaseStrategy
@@ -98,7 +99,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
             if self.position_side:  # Внутренняя проверка состояния
                 return
 
-            analysis = self.signal_data.analysis_data
+            analysis = self.signal_data.get('analysis_data', {})
             if not analysis or 'atr' not in analysis:
                 await self.stop("Insufficient analysis data in signal")
                 return
@@ -118,14 +119,14 @@ class ImpulseTrailingStrategy(BaseStrategy):
                     await self.stop("Signal skipped: High friction")
                     return
                 breakout_level = self._convert_to_decimal(analysis['consolidation_high']) * (
-                            1 + self._convert_to_decimal(self.config.get('long_breakout_buffer', '0.001')))
+                        1 + self._convert_to_decimal(self.config.get('long_breakout_buffer', '0.001')))
                 if current_price > breakout_level:
                     log_info(self.user_id, f"LONG СИГНАЛ для {self.symbol}: Пробой уровня консолидации. Вход.",
                              "impulse_trailing")
                     self.position_side = "Buy"
                     self.stop_loss_price = current_price - (atr * self._convert_to_decimal(self.config['long_sl_atr']))
                     self.take_profit_price = current_price + (
-                                atr * self._convert_to_decimal(self.config['long_tp_atr']))
+                            atr * self._convert_to_decimal(self.config['long_tp_atr']))
                     await self._enter_position()
                     return
                 else:
@@ -180,21 +181,36 @@ class ImpulseTrailingStrategy(BaseStrategy):
             self.entry_price = event.price
             self.position_size = event.qty
             self.peak_price = event.price
-            self.active_positions[self.symbol] = True
+
+            # Обновляем состояние позиции в базовом классе
+            position_key = f"{self.symbol}_{self.position_side}"
+            self.active_positions[position_key] = {
+                "symbol": self.symbol,
+                "side": self.position_side,
+                "size": self.position_size,
+                "entry_price": self.entry_price,
+                "updated_at": datetime.now()
+            }
+
             intended_amount = self._convert_to_decimal(self.get_config_value("order_amount", 50.0))
             await self._send_trade_open_notification(event.side, event.price, event.qty, intended_amount)
             return
 
         if self.position_side and event.side != self.position_side:
             pnl_gross = (event.price - self.entry_price) * self.position_size if self.position_side == "Buy" else (
-                                                                                                                              self.entry_price - event.price) * self.position_size
+                                                                                                                          self.entry_price - event.price) * self.position_size
             pnl_net = pnl_gross - event.fee
             await self._send_trade_close_notification(pnl_net, event.fee)
             await self.stop("Position closed by TP/SL")
 
     async def _handle_price_update(self, event: PriceUpdateEvent):
         """Логика трейлинг-стопа при обновлении цены."""
-        if not self.position_side or not self.active_positions.get(self.symbol):
+        if not self.position_side:
+            return
+
+        # Проверяем, есть ли активная позиция для данного символа
+        position_key = f"{self.symbol}_{self.position_side}"
+        if position_key not in self.active_positions:
             return
         current_price = event.price
         if self.peak_price is None or (self.position_side == "Buy" and current_price > self.peak_price) or (
