@@ -265,6 +265,16 @@ class UserSession:
         Запуск стратегии
         """
         try:
+            # --- ДОБАВЛЕН БЛОК ПРОВЕРКИ ДЛЯ IMPULSE-СТРАТЕГИИ ---
+            # Проверяем глобальную блокировку, чтобы не запускать вторую импульсную сделку, пока активна первая.
+            if strategy_type == "impulse_trailing":
+                lock_key = f"user:{self.user_id}:impulse_trailing_lock"
+                if await redis_manager.get_cached_data(lock_key):
+                    log_warning(self.user_id,
+                                f"Запуск impulse_trailing для {symbol} отклонен: другая импульсная сделка уже активна.",
+                                module_name=__name__)
+                    return False  # Явно запрещаем запуск
+            # --- КОНЕЦ НОВОГО БЛОКА ---
             strategy_id = f"{strategy_type}_{symbol}"
 
             # Проверяем, не запущена ли уже стратегия для ЭТОГО ЖЕ СИМВОЛА

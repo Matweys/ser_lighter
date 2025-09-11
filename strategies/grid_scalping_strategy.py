@@ -180,7 +180,8 @@ class GridScalpingStrategy(BaseStrategy):
 
         # Рассчитываем новые уровни TP и SL
         profit_price = self.position_avg_price * (1 + self.quick_profit_percent / 100)
-        stop_loss_price = self.position_entry_price * (1 + self.stop_loss_percent / 100)
+        # ИСПРАВЛЕНО: Для LONG позиции стоп-лосс должен вычитаться из цены входа
+        stop_loss_price = self.position_entry_price * (1 - self.stop_loss_percent / 100)
 
         log_info(self.user_id, f"Установка нового лимитного ордера: TP={profit_price:.4f}, SL={stop_loss_price:.4f}",
                  "grid_scalping")
