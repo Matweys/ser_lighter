@@ -98,9 +98,9 @@ class MetaStrategist:
             self.last_analysis_time[symbol] = now
 
             # --- ИЗМЕНЕНИЕ: Решение принимается напрямую на основе анализа ---
-            # Временно закомментировал строгое условие
-            #if analysis and (analysis.is_panic_bar or (analysis.ema_trend == "UP" and analysis.is_consolidating_now)):
-            if analysis and (analysis.is_panic_bar or analysis.ema_trend == "UP"):
+
+            if analysis and (analysis.is_panic_bar or (analysis.ema_trend == "UP" and analysis.is_consolidating_now)):
+            #if analysis and (analysis.is_panic_bar or analysis.ema_trend == "UP"):
                 analysis_dict = analysis.to_dict()
                 log_info(self.user_id,
                          f"[TRACE] Создаем сигнал для {symbol}: analysis_dict содержит {len(analysis_dict)} полей",

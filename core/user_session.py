@@ -410,7 +410,8 @@ class UserSession:
                 user_id=self.user_id,
                 api_key=api_key,
                 api_secret=secret_key,
-                demo=use_demo
+                demo=use_demo,
+                event_bus=self.event_bus
             )
 
             # Инициализация компонентов

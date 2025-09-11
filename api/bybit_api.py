@@ -26,11 +26,12 @@ class BybitAPI:
     - Поддержка всех типов ордеров
     """
     
-    def __init__(self, api_key: str, api_secret: str, user_id: int, demo: bool = False):
+    def __init__(self, api_key: str, api_secret: str, user_id: int, demo: bool = False, event_bus=None):
         self.api_key = api_key
         self.api_secret = api_secret
         self.user_id = user_id
         self.demo = demo
+        self.event_bus = event_bus
 
         if self.api_key:
             log_info(self.user_id, f"BybitAPI инициализирован с ключом: {self.api_key[:4]}...{self.api_key[-4:]}",
@@ -336,6 +337,61 @@ class BybitAPI:
             log_error(self.user_id, f"Критическая ошибка при получении статуса ордера {order_id}: {e}", module_name=__name__)
             return None
 
+    async def _check_order_execution(self, order_id: str, symbol: str, side: str, qty: Decimal):
+        """Проверяет исполнение ордера и создает событие при исполнении"""
+        try:
+            # Ждем немного, чтобы ордер успел обработаться
+            await asyncio.sleep(1)
+
+            max_checks = 10  # Максимум 10 проверок
+            check_interval = 2  # Проверяем каждые 2 секунды
+
+            for attempt in range(max_checks):
+                order_status = await self.get_order_status(order_id)
+
+                if order_status:
+                    status = order_status.get("orderStatus", "")
+                    log_info(self.user_id, f"[CHECK] Ордер {order_id}: статус = {status}", module_name="bybit_api")
+
+                    if status == "Filled":
+                        # Ордер исполнен - создаем событие
+                        from core.events import OrderFilledEvent, EventBus
+
+                        filled_event = OrderFilledEvent(
+                            user_id=self.user_id,
+                            order_id=order_id,
+                            symbol=symbol,
+                            side=side,
+                            qty=Decimal(str(order_status.get("cumExecQty", qty))),
+                            price=Decimal(str(order_status.get("avgPrice", "0"))),
+                            fee=Decimal(str(order_status.get("cumExecFee", "0")))
+                        )
+
+                        # ДОБАВИТЬ: Публикация события через EventBus
+                        if hasattr(self, 'event_bus') and self.event_bus:
+                            await self.event_bus.publish(filled_event)
+                            log_info(self.user_id, f"📢 Событие OrderFilledEvent опубликовано для ордера {order_id}",
+                                     module_name="bybit_api")
+
+                        log_info(self.user_id, f"✅ Ордер {order_id} исполнен по цене {order_status.get('avgPrice')}",
+                                 module_name="bybit_api")
+                        return
+
+                    elif status in ["Cancelled", "Rejected"]:
+                        log_warning(self.user_id, f"❌ Ордер {order_id} отменен/отклонен: {status}",
+                                    module_name="bybit_api")
+                        return
+
+                # Ждем перед следующей проверкой
+                if attempt < max_checks - 1:
+                    await asyncio.sleep(check_interval)
+
+            log_warning(self.user_id, f"⏰ Превышено время ожидания исполнения ордера {order_id}",
+                        module_name="bybit_api")
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка проверки исполнения ордера {order_id}: {e}", module_name="bybit_api")
+
 
     async def get_klines(
         self,
@@ -539,6 +595,10 @@ class BybitAPI:
                 log_info(self.user_id,
                          f"Ордер успешно размещен: {side} {qty} {symbol} по {price if price else 'рынку'} (ID: {order_id})",
                          module_name="bybit_api")
+
+                # ДОБАВИТЬ: Автоматическая проверка статуса ордера
+                await self._check_order_execution(order_id, symbol, side, qty)
+
                 return order_id
             else:
                 log_error(self.user_id, f"Не удалось разместить ордер. Ответ API: {result}", module_name="bybit_api")
