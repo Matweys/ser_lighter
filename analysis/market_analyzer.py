@@ -80,12 +80,13 @@ class MarketAnalyzer:
                 return "NEUTRAL", Decimal('1000')
 
             recent_candles = candles.tail(window)
-            price_move = abs(recent_candles['close'].iloc[-1] - recent_candles['close'].iloc[0])
-            volume = recent_candles['volume'].sum()
 
-            # Избегаем деления на ноль
-            # Используем turnover (объем в USDT) вместо volume для более точного расчета
-            turnover = recent_candles['turnover'].sum()
+            # ВАЖНО: Явно преобразуем значения из pandas в Decimal перед вычислениями
+            price_move = abs(
+                Decimal(str(recent_candles['close'].iloc[-1])) - Decimal(str(recent_candles['close'].iloc[0])))
+            turnover = Decimal(str(recent_candles['turnover'].sum()))
+
+            # Теперь все переменные имеют тип Decimal, ошибка TypeError исключена
             friction = turnover / (price_move + Decimal('1e-9'))
 
             # Увеличиваем пороги в 1000 раз, чтобы сделать фильтр менее строгим
