@@ -129,7 +129,6 @@ class BaseStrategy(ABC):
             log_error(self.user_id, f"Критическая ошибка при установке плеча для {self.symbol}: {e}",
                       module_name=__name__)
 
-
     async def _await_order_fill(self, order_id: str, side: str, qty: Decimal, max_retries: int = 15,
                                 delay: float = 1.5) -> bool:
         """
@@ -158,7 +157,6 @@ class BaseStrategy(ABC):
                             price=self._convert_to_decimal(order_status.get("avgPrice", "0")),
                             fee=self._convert_to_decimal(order_status.get("cumExecFee", "0"))
                         )
-                        # Вызываем главный обработчик, чтобы запустить всю остальную логику
                         await self._handle_order_filled(mock_event)
                         return True
 

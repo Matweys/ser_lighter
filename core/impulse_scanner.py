@@ -55,7 +55,6 @@ class ImpulseScanner:
         log_info(0, "Получение списка всех фьючерсных пар с Bybit...", module_name=__name__)
         temp_api = None
         try:
-            # Создаем временный API клиент без ключей для доступа к публичным данным
             temp_api = BybitAPI(api_key="", api_secret="", user_id=0, demo=False)
             instruments = await temp_api.get_instruments_info()
 

@@ -606,11 +606,10 @@ class RedisManager:
         try:
             cache_key = self._get_key("cache", key)
             data = await self._safe_execute(self.redis_client.get, cache_key)
-            
+
             if data is None:
                 return None
-                
-            # Попытка десериализации JSON
+
             try:
                 # Сначала пытаемся декодировать как JSON
                 return json.loads(data)
@@ -620,9 +619,9 @@ class RedisManager:
                     # Попытка конвертации в Decimal, если это похоже на число
                     return Decimal(data)
                 except Exception:
-                    # Если не получилось, возвращаем как есть (например, для lock-строки "CTCUSDT")
+                    # Если не получилось, возвращаем как есть (например, для lock-строки "locked")
                     return data
-                    
+
         except Exception as e:
             log_error(0, f"Ошибка получения кэшированных данных {key}: {e}", module_name=__name__)
             return None

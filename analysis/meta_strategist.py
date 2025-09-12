@@ -77,7 +77,7 @@ class MetaStrategist:
 
         # --- ДОБАВЛЕН ФИЛЬТР СРОЧНЫХ КОНТРАКТОВ ---
         if '-' in symbol:
-            return # Немедленно выходим, если это срочный контракт
+            return  # Немедленно выходим, если это срочный контракт
 
         now = datetime.now()
         last_analysis = self.last_analysis_time.get(symbol)
@@ -89,22 +89,12 @@ class MetaStrategist:
             if not impulse_config or not impulse_config.get("is_enabled", False):
                 return
 
-            # --- Анализируем только один, нужный нам таймфрейм или подмена динамически---
             analysis_timeframe = impulse_config.get("analysis_timeframe", "5m")
             analysis = await self.analyzer.get_market_analysis(symbol, timeframe=analysis_timeframe)
-            log_info(self.user_id,
-                     f"[TRACE] Получен analysis для {symbol}: {type(analysis)}, is None: {analysis is None}",
-                     "meta_strategist")
-            if analysis:
-                log_info(self.user_id, f"[TRACE] analysis.to_dict() для {symbol}: {analysis.to_dict()}",
-                         "meta_strategist")
 
             self.last_analysis_time[symbol] = now
 
-            # --- Решение принимается напрямую на основе анализа ---
             if analysis and (analysis.is_panic_bar or (analysis.ema_trend == "UP" and analysis.is_consolidating_now)):
-                # analysis_dict больше не нужен для события
-                # log_info можно убрать или оставить для отладки
                 log_info(self.user_id,
                          f"Условия для сигнала 'impulse_trailing' для {symbol} выполнены. Отправка триггера.",
                          "meta_strategist")
@@ -117,13 +107,6 @@ class MetaStrategist:
                 )
                 await self.event_bus.publish(signal_event)
                 log_info(self.user_id, f"Сигнал 'impulse_trailing' отправлен для {symbol}", "meta_strategist")
-            else:
-                if not analysis:
-                    log_warning(self.user_id, f"[TRACE] Нет анализа для {symbol}", "meta_strategist")
-                else:
-                    log_info(self.user_id,
-                             f"[TRACE] Условия сигнала не выполнены для {symbol}: panic={analysis.is_panic_bar}, trend={analysis.ema_trend}, consol={analysis.is_consolidating_now}",
-                             "meta_strategist")
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки глобальной свечи {symbol}: {e}", "meta_strategist")
 

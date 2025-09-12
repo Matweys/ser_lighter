@@ -100,12 +100,10 @@ class MarketAnalyzer:
     async def _get_candles_cached(self, symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
         """Получение свечей с кэшированием."""
         try:
-            # Попытка получить из кэша
             cache_key = f"candles:{symbol}:{timeframe}"
             cached_data = await redis_manager.get_cached_data(cache_key)
 
             if cached_data:
-                # Преобразование из кэша в DataFrame
                 df = pd.DataFrame(cached_data)
                 # ВАЖНО: Явное преобразование столбцов в числовой тип
                 numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'turnover']
@@ -114,7 +112,6 @@ class MarketAnalyzer:
                         df[col] = pd.to_numeric(df[col], errors='coerce')
                 return df
 
-            # Получение свежих данных через API
             candles = await self.api.get_klines(
                 symbol=symbol,
                 interval=timeframe,
@@ -123,7 +120,6 @@ class MarketAnalyzer:
 
             if candles and len(candles) > 0:
                 df = pd.DataFrame(candles)
-                # Кэширование на 1 минуту
                 await redis_manager.cache_data(cache_key, df.to_dict('records'), ttl=60)
                 return df
 

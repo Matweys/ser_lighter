@@ -45,7 +45,6 @@ class ImpulseTrailingStrategy(BaseStrategy):
             log_warning(self.user_id,
                         f"Запуск Impulse Trailing для {self.symbol} отменен: другая impulse-сделка уже активна.",
                         "impulse_trailing")
-            # Важно: возвращаем False, чтобы UserSession знал, что стратегия не запустилась
             return False
 
         # 2. Если блокировки нет, устанавливаем ее с TTL на случай сбоя
@@ -172,8 +171,6 @@ class ImpulseTrailingStrategy(BaseStrategy):
             await self.stop("Calculated order quantity is zero")
             return
 
-        # ВАЖНО: Bybit V5 позволяет установить SL/TP прямо в ордере на создание.
-        # Это более надежно, чем ждать исполнения и потом отправлять второй запрос.
         log_info(self.user_id,
                  f"Размещаю ордер на вход для {self.symbol} с SL={self.stop_loss_price} и TP={self.take_profit_price}",
                  "impulse_trailing")
@@ -186,8 +183,6 @@ class ImpulseTrailingStrategy(BaseStrategy):
         )
 
         if order_id:
-            # Даже с SL/TP в первом ордере, нам нужно дождаться его исполнения,
-            # чтобы получить точную цену входа для трейлинга.
             filled = await self._await_order_fill(order_id, side=self.position_side, qty=qty)
             if not filled:
                 await self.stop("Failed to fill entry order")
