@@ -43,6 +43,7 @@ class UserProfile:
     is_premium: bool = False
     registration_date: Optional[datetime] = None
     last_activity: Optional[datetime] = None
+    winning_trades: int = 0
     total_trades: int = 0
     total_profit: Decimal = Decimal('0')
     max_drawdown: Decimal = Decimal('0')
@@ -246,6 +247,7 @@ class DatabaseManager:
                     is_premium BOOLEAN DEFAULT FALSE,
                     registration_date TIMESTAMPTZ DEFAULT NOW(),
                     last_activity TIMESTAMPTZ DEFAULT NOW(),
+                    winning_trades INTEGER DEFAULT 0,
                     total_trades INTEGER DEFAULT 0,
                     total_profit DECIMAL(20,8) DEFAULT 0,
                     max_drawdown DECIMAL(10,4) DEFAULT 0,
@@ -497,6 +499,7 @@ class DatabaseManager:
                     is_premium=result['is_premium'],
                     registration_date=result['registration_date'],
                     last_activity=result['last_activity'],
+                    winning_trades=result['winning_trades'],
                     total_trades=result['total_trades'],
                     total_profit=to_decimal(result['total_profit']),
                     max_drawdown=to_decimal(result['max_drawdown']),
@@ -676,6 +679,40 @@ class DatabaseManager:
         except Exception as e:
             log_error(user_id, f"Ошибка получения статистики по стратегиям: {e}", module_name='database')
             return []
+
+    async def update_user_totals(self, user_id: int, pnl: Decimal):
+        """
+        Обновляет общую статистику пользователя (total_profit, total_trades, win_rate).
+        """
+        async with self.get_connection() as conn:
+            # Используем транзакцию для атомарности
+            async with conn.transaction():
+                try:
+                    # Получаем текущие значения с блокировкой строки
+                    user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1 FOR UPDATE", user_id)
+
+                    if user:
+                        current_total_profit = user['total_profit'] or Decimal('0')
+                        new_total_profit = current_total_profit + pnl
+
+                        current_winning_trades = user['winning_trades'] or 0
+                        new_winning_trades = current_winning_trades + 1 if pnl > 0 else current_winning_trades
+
+                        new_total_trades = (user['total_trades'] or 0) + 1
+
+                        new_win_rate = (Decimal(new_winning_trades) / Decimal(
+                            new_total_trades)) * 100 if new_total_trades > 0 else Decimal('0')
+
+                        await conn.execute("""
+                            UPDATE users 
+                            SET total_profit = $1, total_trades = $2, winning_trades = $3, win_rate = $4, updated_at = NOW()
+                            WHERE user_id = $5
+                        """, new_total_profit, new_total_trades, new_winning_trades, new_win_rate, user_id)
+
+                except Exception as e:
+                    log_error(user_id, f"Ошибка обновления общей статистики пользователя: {e}", "db_manager")
+                    # Транзакция будет автоматически отменена
+                    raise
 
 # Глобальный экземпляр менеджера базы данных
 db_manager = DatabaseManager()

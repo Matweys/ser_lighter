@@ -533,7 +533,6 @@ class DataFeedHandler:
     async def _handle_order_update(self, order_data: List[Dict]):
         """Обработка обновления ордера"""
         try:
-            log_info(self.user_id, f"[TRACE] Обрабатываем {len(order_data)} ордеров", module_name=__name__)
             for order in order_data:
                 order_status = order.get("orderStatus", "Unknown")
                 order_id = order.get("orderId", "Unknown")
@@ -541,12 +540,28 @@ class DataFeedHandler:
                 log_info(self.user_id, f"[TRACE] Ордер {order_id} ({symbol}): статус = {order_status}",
                          module_name=__name__)
 
-                # Общее событие обновления ордера
+                # Публикуем общее событие для информации
                 order_event = OrderUpdateEvent(
                     user_id=self.user_id,
                     order_data=order
                 )
                 await self.event_bus.publish(order_event)
+
+                # --- ГИБРИДНАЯ ЛОГИКА: WebSocket отвечает за TP/SL ---
+                # Реагируем только на исполненные ордера на ПРОДАЖУ (закрытие наших LONG позиций)
+                if order.get("orderStatus") == "Filled" and order.get("side") == "Sell":
+                    log_info(self.user_id, f"WebSocket: Обнаружено закрытие позиции по ордеру {order_id}. Создаю событие.",
+                             module_name=__name__)
+                    filled_event = OrderFilledEvent(
+                        user_id=self.user_id,
+                        order_id=order.get("orderId", ""),
+                        symbol=order.get("symbol", ""),
+                        side=order.get("side", ""),
+                        qty=Decimal(str(order.get("cumExecQty", "0"))),
+                        price=Decimal(str(order.get("avgPrice", "0"))),
+                        fee=Decimal(str(order.get("cumExecFee", "0")))
+                    )
+                    await self.event_bus.publish(filled_event)
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки ордера: {e}", module_name=__name__)
 

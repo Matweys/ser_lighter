@@ -32,7 +32,7 @@ from api.bybit_api import BybitAPI
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.utils.markdown import hbold
 from core.functions import to_decimal
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 
 
