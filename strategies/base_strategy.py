@@ -56,6 +56,12 @@ class BaseStrategy(ABC):
         self.event_bus = event_bus
         self.bot = bot
         self.config: Dict[str, Any] = config or {}
+        # Добавлена проверка для раннего обнаружения проблем временно потом удалить
+        if not self.bot:
+            log_warning(self.user_id,
+                        f"Экземпляр Telegram бота не был передан в стратегию {self.strategy_type.value}. Уведомления будут отключены.",
+                        module_name=__name__)
+
         # Состояние стратегии
         self.is_running = False
         self.strategy_id = f"{self.user_id}_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"

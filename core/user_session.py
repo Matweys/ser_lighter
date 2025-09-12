@@ -260,13 +260,16 @@ class UserSession:
             log_error(self.user_id, f"Ошибка получения статуса сессии: {e}", module_name=__name__)
             return {"user_id": self.user_id, "running": self.running, "error": str(e)}
 
-
     async def start_strategy(self, strategy_type: str, symbol: str, analysis_data: Optional[Dict] = None) -> bool:
         """
         Запускает стратегию, предварительно получая для нее самые свежие аналитические данные.
         """
         try:
-            # --- НОВАЯ ЛОГИКА: ПОЛУЧЕНИЕ АНАЛИЗА ПРЯМО ПЕРЕД ЗАПУСКОМ ---
+            # --- ФИНАЛЬНАЯ ЛОГИКА: УМНАЯ ОБРАБОТКА ДАННЫХ ---
+            # Инициализируем данные по умолчанию. Если пришли данные (для grid/restart), используем их.
+            signal_data_for_strategy = analysis_data or {}
+
+            # Для Impulse Trailing мы ВСЕГДА игнорируем пришедшие данные и запрашиваем свежие.
             if strategy_type == "impulse_trailing":
                 lock_key = f"user:{self.user_id}:impulse_trailing_lock"
                 if await redis_manager.get_cached_data(lock_key):
@@ -275,7 +278,6 @@ class UserSession:
                                 module_name=__name__)
                     return False
 
-                # Запрашиваем анализ заново, чтобы получить самые актуальные данные
                 analyzer = MarketAnalyzer(self.user_id, self.api)
                 impulse_config = await redis_manager.get_config(self.user_id, ConfigType.STRATEGY_IMPULSE_TRAILING)
                 timeframe = impulse_config.get("analysis_timeframe", "5m")
@@ -286,12 +288,9 @@ class UserSession:
                                 module_name=__name__)
                     return False
 
-                # Преобразуем объект анализа в словарь для передачи в стратегию
-                analysis_data = fresh_analysis.to_dict()
-            else:
-                # Для других стратегий, как grid_scalping, данные не обязательны
-                analysis_data = {'trigger': 'persistent_start'}
-            # --- КОНЕЦ НОВОЙ ЛОГИКИ ---
+                # Перезаписываем данные на самые свежие
+                signal_data_for_strategy = fresh_analysis.to_dict()
+            # --- КОНЕЦ ФИНАЛЬНОЙ ЛОГИКИ ---
 
             strategy_id = f"{strategy_type}_{symbol}"
 
@@ -310,20 +309,17 @@ class UserSession:
                           module_name=__name__)
                 return False
 
-            bot_instance = None
-            if hasattr(bot_manager, 'bot') and bot_manager.bot:
-                bot_instance = bot_manager.bot
-                log_info(self.user_id, f"Бот успешно получен для стратегии {strategy_type}", module_name=__name__)
-            else:
+            bot_instance = bot_manager.bot if hasattr(bot_manager, 'bot') else None
+            if not bot_instance:
                 log_error(self.user_id,
-                          f"Бот не инициализирован для стратегии {strategy_type}. Уведомления не будут работать.",
+                          f"Критическая ошибка: bot не инициализирован. Уведомления для стратегии {strategy_type} работать не будут.",
                           module_name=__name__)
 
             strategy = create_strategy(
                 strategy_type=strategy_type,
                 user_id=self.user_id,
                 symbol=symbol,
-                signal_data=analysis_data,  # Передаем свежие данные
+                signal_data=signal_data_for_strategy,  # Передаем подготовленные данные
                 api=self.api,
                 event_bus=self.event_bus,
                 bot=bot_instance,

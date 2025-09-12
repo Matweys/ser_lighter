@@ -337,6 +337,40 @@ class BybitAPI:
             log_error(self.user_id, f"Критическая ошибка при получении статуса ордера {order_id}: {e}", module_name=__name__)
             return None
 
+    async def get_positions(self, symbol: str = None) -> Optional[List[Dict[str, Any]]]:
+        """Получение позиций"""
+        try:
+            params = {
+                "category": "linear"
+            }
+
+            if symbol:
+                params["symbol"] = symbol
+
+            result = await self._make_request("GET", "/v5/position/list", params)
+
+            if result and "list" in result:
+                positions = []
+                for position in result["list"]:
+                    # Фильтрация только активных позиций
+                    size = Decimal(str(position.get("size", "0")))
+                    if size > 0:
+                        positions.append({
+                            "symbol": position.get("symbol"),
+                            "side": position.get("side"),
+                            "size": size,
+                            "avgPrice": self._convert_to_decimal(position.get("avgPrice", "0")),
+                            "markPrice": self._convert_to_decimal(position.get("markPrice", "0")),
+                            "unrealisedPnl": self._convert_to_decimal(position.get("unrealisedPnl", "0")),
+                        })
+
+                return positions
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка получения позиций: {e}", module_name=__name__)
+
+        return None
+
     # Если уведомления в телеграмм перестанут дублироваться то удали эту функцию
     # async def _check_order_execution(self, order_id: str, symbol: str, side: str, qty: Decimal):
     #     """Проверяет исполнение ордера и создает событие при исполнении"""
