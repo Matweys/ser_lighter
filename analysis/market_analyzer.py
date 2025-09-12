@@ -89,7 +89,7 @@ class MarketAnalyzer:
             # Теперь все переменные имеют тип Decimal, ошибка TypeError исключена
             friction = turnover / (price_move + Decimal('1e-9'))
 
-            # Увеличиваем пороги в 1000 раз, чтобы сделать фильтр менее строгим
+            # Увеличиваем пороги, чтобы сделать фильтр менее строгим
             if friction > 5_000_000:
                 return "HIGH", friction
             elif friction < 500_000:
