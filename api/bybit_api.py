@@ -364,9 +364,12 @@ class BybitAPI:
                             "markPrice": to_decimal(position.get("markPrice", "0")),
                             "unrealisedPnl": to_decimal(position.get("unrealisedPnl", "0")),
                         })
+
                 return positions
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка получения позиций: {e}", module_name=__name__)
+
         return None
 
 
@@ -740,7 +743,6 @@ class BybitAPI:
 
             # Определяем количество знаков после запятой из qty_step
             if '.' in str(qty_step):
-                # Убираем лишние нули справа, чтобы правильно посчитать знаки
                 decimal_str = str(qty_step).rstrip('0')
                 precision = len(decimal_str.split('.')[1]) if '.' in decimal_str else 0
             else:
