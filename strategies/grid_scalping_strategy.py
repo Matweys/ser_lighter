@@ -93,14 +93,14 @@ class GridScalpingStrategy(BaseStrategy):
     async def _handle_order_filled(self, event: OrderFilledEvent):
         """Центральный обработчик всех исполненных ордеров."""
         try:
-            # --- Сценарий: Закрытие по Take Profit ---
+            # --- Сценарий: Закрытие по Take Profit или Stop Loss ---
+            # Так как стратегия только покупает, любой исполненный ордер на продажу является закрытием.
             if event.side == "Sell":
-                if event.order_id == self.active_tp_order_id:
-                    pnl_net = await self._calculate_pnl(event)
-                    await self._send_trade_close_notification(pnl_net, event.fee)
-                    log_info(self.user_id, f"СДЕЛКА ЗАКРЫТА ПО TAKE PROFIT. PnL (net): {pnl_net:.2f}", "grid_scalping")
-                    await self.request_restart()
-                return
+                pnl_net = await self._calculate_pnl(event)
+                log_info(self.user_id, f"СДЕЛКА ЗАКРЫТА по TP или SL. PnL (net): {pnl_net:.2f}", "grid_scalping")
+                await self._send_trade_close_notification(pnl_net, event.fee)
+                await self.request_restart()
+                return  # Важно завершить выполнение здесь
 
             # --- Сценарий: Открытие или Усреднение ---
             if event.side == "Buy":
@@ -186,31 +186,32 @@ class GridScalpingStrategy(BaseStrategy):
         log_info(self.user_id, f"Установка нового лимитного ордера: TP={profit_price:.4f}, SL={stop_loss_price:.4f}",
                  "grid_scalping")
 
-        # Выставляем один лимитный ордер на продажу (TP) с привязанным к нему стоп-лоссом
-        tp_id = await self._place_order(
-            side="Sell",
-            order_type="Limit",
-            qty=self.position_size,
-            price=profit_price,
+        # Выставляем TP и SL на всю позицию через специальный метод API
+        success = await self.api.set_trading_stop(
+            symbol=self.symbol,
+            take_profit=profit_price,
             stop_loss=stop_loss_price,
-            reduce_only=True
+            position_idx=0  # 0 для режима One-Way
         )
 
-        if tp_id:
-            self.active_tp_order_id = tp_id
-        else:
+        if not success:
             log_error(self.user_id,
-                      f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось установить TP/SL ордер для {self.symbol}. Стратегия может быть беззащитна.",
+                      f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось установить TP/SL для позиции {self.symbol}. Стратегия может быть беззащитна.",
                       "grid_scalping")
             # Можно добавить логику аварийной остановки
             # await self.stop("Failed to set protective orders")
 
     async def _cancel_tp_order(self):
-        """Отменяет активный ордер тейк-профита."""
-        if self.active_tp_order_id:
-            log_info(self.user_id, f"Отмена предыдущего TP ордера: {self.active_tp_order_id}", "grid_scalping")
-            await self._cancel_order(self.active_tp_order_id)
-            self.active_tp_order_id = None
+        """Отменяет активные TP/SL, установленные на позицию."""
+        # Для отмены нужно отправить нули в качестве значений
+        log_info(self.user_id, f"Отмена предыдущих TP/SL для позиции {self.symbol}", "grid_scalping")
+        await self.api.set_trading_stop(
+            symbol=self.symbol,
+            take_profit=Decimal('0'),
+            stop_loss=Decimal('0'),
+            position_idx=0
+        )
+        self.active_tp_order_id = None
 
     # 5. ЛОГИКА ЗАВЕРШЕНИЯ И ПЕРЕЗАПУСКА
     async def stop(self, reason: str = "Manual stop"):

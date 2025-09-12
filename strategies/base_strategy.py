@@ -180,12 +180,23 @@ class BaseStrategy(ABC):
             
             # Сохранение состояния в Redis
             await self._save_strategy_state()
-            
+
+            # Устанавливаем флаг перед выполнением логики
+            self.is_running = True
             # Выполнение начальной логики стратегии
             await self._execute_strategy_logic()
-            self.is_running = True
-            log_info(self.user_id,f"Стратегия {self.strategy_type.value} запущена для {self.symbol}",module_name=__name__)
-            return True
+
+            # Если после выполнения логики стратегия все еще активна, считаем запуск успешным
+            if self.is_running:
+                log_info(self.user_id, f"Стратегия {self.strategy_type.value} успешно запущена для {self.symbol}",
+                         module_name=__name__)
+                return True
+            else:
+                # _execute_strategy_logic вызвал self.stop(), запуск не удался
+                log_warning(self.user_id,
+                            f"Запуск стратегии {self.strategy_type.value} для {self.symbol} был отменен в процессе инициализации.",
+                            module_name=__name__)
+                return False
         except Exception as e:
             log_error(self.user_id, f"Ошибка запуска стратегии: {e}", module_name=__name__)
             return False
