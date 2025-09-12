@@ -354,79 +354,20 @@ class BybitAPI:
                 positions = []
                 for position in result["list"]:
                     # Фильтрация только активных позиций
-                    size = Decimal(str(position.get("size", "0")))
+                    size = to_decimal(position.get("size", "0"))
                     if size > 0:
                         positions.append({
                             "symbol": position.get("symbol"),
                             "side": position.get("side"),
                             "size": size,
-                            "avgPrice": self._convert_to_decimal(position.get("avgPrice", "0")),
-                            "markPrice": self._convert_to_decimal(position.get("markPrice", "0")),
-                            "unrealisedPnl": self._convert_to_decimal(position.get("unrealisedPnl", "0")),
+                            "avgPrice": to_decimal(position.get("avgPrice", "0")),
+                            "markPrice": to_decimal(position.get("markPrice", "0")),
+                            "unrealisedPnl": to_decimal(position.get("unrealisedPnl", "0")),
                         })
-
                 return positions
-
         except Exception as e:
             log_error(self.user_id, f"Ошибка получения позиций: {e}", module_name=__name__)
-
         return None
-
-    # Если уведомления в телеграмм перестанут дублироваться то удали эту функцию
-    # async def _check_order_execution(self, order_id: str, symbol: str, side: str, qty: Decimal):
-    #     """Проверяет исполнение ордера и создает событие при исполнении"""
-    #     try:
-    #         # Ждем немного, чтобы ордер успел обработаться
-    #         await asyncio.sleep(1)
-    #
-    #         max_checks = 10  # Максимум 10 проверок
-    #         check_interval = 2  # Проверяем каждые 2 секунды
-    #
-    #         for attempt in range(max_checks):
-    #             order_status = await self.get_order_status(order_id)
-    #
-    #             if order_status:
-    #                 status = order_status.get("orderStatus", "")
-    #                 log_info(self.user_id, f"[CHECK] Ордер {order_id}: статус = {status}", module_name="bybit_api")
-    #
-    #                 if status == "Filled":
-    #                     # Ордер исполнен - создаем событие
-    #                     from core.events import OrderFilledEvent, EventBus
-    #
-    #                     filled_event = OrderFilledEvent(
-    #                         user_id=self.user_id,
-    #                         order_id=order_id,
-    #                         symbol=symbol,
-    #                         side=side,
-    #                         qty=Decimal(str(order_status.get("cumExecQty", qty))),
-    #                         price=Decimal(str(order_status.get("avgPrice", "0"))),
-    #                         fee=Decimal(str(order_status.get("cumExecFee", "0")))
-    #                     )
-    #
-    #                     # ДОБАВИТЬ: Публикация события через EventBus
-    #                     if hasattr(self, 'event_bus') and self.event_bus:
-    #                         await self.event_bus.publish(filled_event)
-    #                         log_info(self.user_id, f"📢 Событие OrderFilledEvent опубликовано для ордера {order_id}",
-    #                                  module_name="bybit_api")
-    #
-    #                     log_info(self.user_id, f"✅ Ордер {order_id} исполнен по цене {order_status.get('avgPrice')}",
-    #                              module_name="bybit_api")
-    #                     return
-    #
-    #                 elif status in ["Cancelled", "Rejected"]:
-    #                     log_warning(self.user_id, f"❌ Ордер {order_id} отменен/отклонен: {status}",
-    #                                 module_name="bybit_api")
-    #                     return
-    #
-    #             # Ждем перед следующей проверкой
-    #             if attempt < max_checks - 1:
-    #                 await asyncio.sleep(check_interval)
-    #
-    #         log_warning(self.user_id, f"⏰ Превышено время ожидания исполнения ордера {order_id}",
-    #                     module_name="bybit_api")
-    #
-    #     except Exception as e:
-    #         log_error(self.user_id, f"Ошибка проверки исполнения ордера {order_id}: {e}", module_name="bybit_api")
 
 
     async def get_klines(
@@ -783,7 +724,7 @@ class BybitAPI:
     # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
     # =============================================================================
 
-    # 1. ДОБАВЬТЕ ЭТОТ НОВЫЙ ВСПОМОГАТЕЛЬНЫЙ МЕТОД ВНУТРЬ КЛАССА BybitAPI
+    # 1. НОВЫЙ ВСПОМОГАТЕЛЬНЫЙ МЕТОД
     async def _format_quantity(self, symbol: str, qty: Decimal) -> str:
         """
         Форматирует количество в строку с точной δεцимальной точностью,
@@ -795,12 +736,13 @@ class BybitAPI:
                 # Если информации нет, используем стандартное форматирование
                 return format_number(qty)
 
-            qty_step = self._convert_to_decimal(instrument_info.get("qtyStep", "0.001"))
+            qty_step = to_decimal(instrument_info.get("qtyStep", "0.001"))
 
             # Определяем количество знаков после запятой из qty_step
-            # Например, 0.001 -> 3 знака, 0.1 -> 1 знак
             if '.' in str(qty_step):
-                precision = len(str(qty_step).split('.')[1])
+                # Убираем лишние нули справа, чтобы правильно посчитать знаки
+                decimal_str = str(qty_step).rstrip('0')
+                precision = len(decimal_str.split('.')[1]) if '.' in decimal_str else 0
             else:
                 precision = 0
 
@@ -810,7 +752,7 @@ class BybitAPI:
             # В случае ошибки возвращаем стандартное форматирование
             return format_number(qty)
 
-    # 2. ПОЛНОСТЬЮ ЗАМЕНИТЕ СУЩЕСТВУЮЩИЙ МЕТОД calculate_quantity_from_usdt
+
     async def calculate_quantity_from_usdt(
             self,
             symbol: str,
@@ -833,8 +775,8 @@ class BybitAPI:
 
             instrument_info = await self.get_instruments_info(symbol)
             if instrument_info:
-                qty_step = self._convert_to_decimal(instrument_info.get("qtyStep", "0.001"))
-                min_qty = self._convert_to_decimal(instrument_info.get("minOrderQty", "0"))
+                qty_step = to_decimal(instrument_info.get("qtyStep", "0.001"))
+                min_qty = to_decimal(instrument_info.get("minOrderQty", "0"))
 
                 if qty_step > 0:
                     # Округление ВНИЗ до ближайшего шага
