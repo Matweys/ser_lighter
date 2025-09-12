@@ -547,23 +547,6 @@ class DataFeedHandler:
                     order_data=order
                 )
                 await self.event_bus.publish(order_event)
-
-                # Специальное событие для исполненных ордеров
-                if order.get("orderStatus") == "Filled":
-                    log_info(self.user_id, f"[TRACE] Создаем OrderFilledEvent для ордера {order_id}",
-                             module_name=__name__)
-                    filled_event = OrderFilledEvent(
-                        user_id=self.user_id,
-                        order_id=order.get("orderId", ""),
-                        symbol=order.get("symbol", ""),
-                        side=order.get("side", ""),
-                        qty=Decimal(str(order.get("qty", "0"))),
-                        price=Decimal(str(order.get("avgPrice", "0"))),
-                        fee=Decimal(str(order.get("cumExecFee", "0")))
-                    )
-                    await self.event_bus.publish(filled_event)
-                    log_info(self.user_id, f"[TRACE] OrderFilledEvent опубликовано для {symbol}", module_name=__name__)
-
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки ордера: {e}", module_name=__name__)
 

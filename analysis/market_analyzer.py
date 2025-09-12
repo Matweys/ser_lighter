@@ -106,7 +106,13 @@ class MarketAnalyzer:
 
             if cached_data:
                 # Преобразование из кэша в DataFrame
-                return pd.DataFrame(cached_data)
+                df = pd.DataFrame(cached_data)
+                # ВАЖНО: Явное преобразование столбцов в числовой тип
+                numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'turnover']
+                for col in numeric_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                return df
 
             # Получение свежих данных через API
             candles = await self.api.get_klines(

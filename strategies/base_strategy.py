@@ -129,6 +129,53 @@ class BaseStrategy(ABC):
             log_error(self.user_id, f"Критическая ошибка при установке плеча для {self.symbol}: {e}",
                       module_name=__name__)
 
+
+    async def _await_order_fill(self, order_id: str, side: str, qty: Decimal, max_retries: int = 15,
+                                delay: float = 1.5) -> bool:
+        """
+        Ожидает исполнения ордера, опрашивая API. Если ордер исполнен,
+        создает 'mock' OrderFilledEvent и вызывает _handle_order_filled.
+        Возвращает True в случае успеха, False в случае неудачи.
+        """
+        log_info(self.user_id,
+                 f"Ожидание исполнения ордера {order_id} через API-polling (до {int(max_retries * delay)} сек)...",
+                 module_name=__name__)
+        for attempt in range(max_retries):
+            try:
+                await asyncio.sleep(delay)
+                order_status = await self.api.get_order_status(order_id)
+
+                if order_status:
+                    status = order_status.get("orderStatus")
+                    if status == "Filled":
+                        log_info(self.user_id, f"ПОДТВЕРЖДЕН API: Ордер {order_id} исполнен.", module_name=__name__)
+                        mock_event = OrderFilledEvent(
+                            user_id=self.user_id,
+                            order_id=order_id,
+                            symbol=self.symbol,
+                            side=side,
+                            qty=self._convert_to_decimal(order_status.get("cumExecQty", qty)),
+                            price=self._convert_to_decimal(order_status.get("avgPrice", "0")),
+                            fee=self._convert_to_decimal(order_status.get("cumExecFee", "0"))
+                        )
+                        # Вызываем главный обработчик, чтобы запустить всю остальную логику
+                        await self._handle_order_filled(mock_event)
+                        return True
+
+                    elif status in ["Cancelled", "Rejected", "Expired"]:
+                        log_error(self.user_id, f"Ордер {order_id} не будет исполнен. Статус: {status}",
+                                  module_name=__name__)
+                        return False
+
+            except Exception as e:
+                log_error(self.user_id, f"Ошибка при ожидании исполнения ордера {order_id}: {e}", module_name=__name__)
+
+        log_error(self.user_id, f"Таймаут ожидания исполнения ордера {order_id}. Отменяю ордер для безопасности.",
+                  module_name=__name__)
+        await self._cancel_order(order_id)
+        return False
+
+
     @abstractmethod
     def _get_strategy_type(self) -> StrategyType:
         """Возвращает тип стратегии"""

@@ -72,73 +72,22 @@ class GridScalpingStrategy(BaseStrategy):
             if qty > 0:
                 self.is_waiting_for_fill = True
                 log_info(self.user_id, f"Размещаю начальный рыночный ордер для {self.symbol}.", "grid_scalping")
-
                 order_id = await self._place_order(side="Buy", order_type="Market", qty=qty)
 
                 if order_id:
-                    # ЗАПУСКАЕМ РЕЗЕРВНЫЙ МЕХАНИЗМ ПРОВЕРКИ
-                    asyncio.create_task(self._verify_entry_position(initial_qty=qty))
+                    # ПРЯМОЙ ВЫЗОВ API-ПОЛЛЕРА
+                    filled = await self._await_order_fill(order_id, side="Buy", qty=qty)
+                    if not filled:
+                        await self.stop("Начальный ордер не исполнился")
                 else:
-                    log_error(self.user_id, "Не удалось разместить начальный ордер (API не вернул ID).",
-                              "grid_scalping")
                     self.is_waiting_for_fill = False
                     await self.stop("Failed to place initial order")
             else:
                 await self.stop("Рассчитанное количество для ордера равно нулю.")
         except Exception as e:
-            log_error(self.user_id, f"Критическая ошибка при инициализации Grid Scalping: {e}", "grid_scalping")
-            await self.stop("Ошибка инициализации")
+            await self.stop(f"Ошибка инициализации: {e}")
 
-    async def _verify_entry_position(self, initial_qty: Decimal, max_retries: int = 5, delay: int = 2):
-        """
-        Резервный механизм. Проверяет наличие позиции через API, если событие WebSocket не пришло.
-        """
-        for i in range(max_retries):
-            # Если _handle_order_filled уже сработал, выходим
-            if not self.is_waiting_for_fill:
-                return
 
-            await asyncio.sleep(delay)
-
-            # Повторная проверка, на случай если событие пришло во время sleep
-            if not self.is_waiting_for_fill:
-                return
-
-            try:
-                positions = await self.api.get_positions(self.symbol)
-                if positions:
-                    pos = positions[0]
-                    log_warning(self.user_id,
-                                f"WebSocket событие не пришло. Подтверждаю вход в позицию для {self.symbol} через API.",
-                                "grid_scalping")
-
-                    # Имитируем данные из события OrderFilledEvent
-                    event_data = {
-                        'side': pos['side'],
-                        'price': pos['avgPrice'],
-                        'qty': initial_qty,  # Используем исходное кол-во, т.к. в позиции может быть больше
-                        'fee': pos['avgPrice'] * initial_qty * Decimal('0.00055')  # Приблизительная комиссия
-                    }
-
-                    # Создаем "фейковое" событие и вызываем обработчик вручную
-                    mock_event = OrderFilledEvent(
-                        user_id=self.user_id, order_id="manual_verify", symbol=self.symbol,
-                        side=event_data['side'], price=event_data['price'],
-                        qty=event_data['qty'], fee=event_data['fee']
-                    )
-                    await self._handle_order_filled(mock_event)
-                    return  # Успешно, выходим
-
-            except Exception as e:
-                log_error(self.user_id, f"Ошибка при резервной проверке позиции (попытка {i + 1}): {e}",
-                          "grid_scalping")
-
-        # Если после всех попыток позиция не найдена
-        if self.is_waiting_for_fill:
-            log_error(self.user_id,
-                      f"Не удалось подтвердить вход в позицию для {self.symbol} ни через WebSocket, ни через API.",
-                      "grid_scalping")
-            await self.stop("Entry position confirmation failed")
 
     # 2. ОБРАБОТКА СОБЫТИЙ ИСПОЛНЕНИЯ ОРДЕРОВ
     async def _handle_order_filled(self, event: OrderFilledEvent):
@@ -194,32 +143,30 @@ class GridScalpingStrategy(BaseStrategy):
     # 3. ОБРАБОТКА ИЗМЕНЕНИЯ ЦЕНЫ ДЛЯ УСРЕДНЕНИЯ
     async def _handle_price_update(self, event: PriceUpdateEvent):
         """Следит за ценой для инициации усреднения."""
-        # Не работаем, если нет позиции или уже ждем исполнения другого ордера
         if not self.is_running or not self.position_size > 0 or self.is_waiting_for_fill:
             return
 
-        # Рассчитываем следующий уровень усреднения "на лету"
         next_avg_price = self.position_avg_price * (1 - self.scalp_spacing_percent / 100)
 
-        if event.price <= next_avg_price:
-            if self.averaging_orders_placed < self.scalp_levels:
-                log_info(self.user_id,
-                         f"Цена {self.symbol} ({event.price}) достигла уровня усреднения ({next_avg_price:.4f}).",
-                         "grid_scalping")
+        if event.price <= next_avg_price and self.averaging_orders_placed < self.scalp_levels:
+            self.is_waiting_for_fill = True  # Блокируем новые действия
+            log_info(self.user_id, f"Цена {self.symbol} достигла уровня усреднения ({next_avg_price:.4f}).",
+                     "grid_scalping")
 
-                # Устанавливаем флаг, чтобы избежать повторных ордеров
-                self.is_waiting_for_fill = True
+            await self._cancel_tp_order()
 
-                order_size_usdt = self._convert_to_decimal(self.get_config_value("order_amount", 10.0))
-                qty_to_buy = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt)
+            order_size_usdt = self._convert_to_decimal(self.get_config_value("order_amount", 10.0))
+            qty_to_buy = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt)
 
-                if qty_to_buy > 0:
-                    # Перед усреднением отменяем старый TP/SL ордер
-                    await self._cancel_tp_order()
-                    await self._place_order(side="Buy", order_type="Market", qty=qty_to_buy)
+            if qty_to_buy > 0:
+                order_id = await self._place_order(side="Buy", order_type="Market", qty=qty_to_buy)
+                if order_id:
+                    # ЖДЕМ ИСПОЛНЕНИЯ ОРДЕРА УСРЕДНЕНИЯ
+                    await self._await_order_fill(order_id, side="Buy", qty=qty_to_buy)
+                else:
+                    self.is_waiting_for_fill = False  # Разблокируем, если ордер не разместился
             else:
-                # Лимит усреднений исчерпан, больше не проверяем
-                pass
+                self.is_waiting_for_fill = False  # Разблокируем
 
     # 4. УПРАВЛЕНИЕ ОРДЕРАМИ TP/SL
     async def _update_tp_and_sl(self):

@@ -60,12 +60,12 @@ class ImpulseScanner:
             instruments = await temp_api.get_instruments_info()
 
             if instruments:
-                # Фильтруем только активные (Trading) инструменты
+                # Фильтруем только активные (Trading) бессрочные контракты
                 self.symbols_to_scan = [
                     info['symbol'] for info in instruments.values()
-                    if info.get('status') == 'Trading'
+                    if info.get('status') == 'Trading' and '-' not in info['symbol']
                 ]
-                log_info(0, f"Получено {len(self.symbols_to_scan)} активных торговых пар для сканирования.",
+                log_info(0, f"Получено {len(self.symbols_to_scan)} активных бессрочных контрактов для сканирования.",
                          module_name=__name__)
             else:
                 log_warning(0, "Не удалось получить информацию об инструментах от API.", module_name=__name__)

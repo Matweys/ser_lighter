@@ -49,7 +49,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
             return False
 
         # 2. Если блокировки нет, устанавливаем ее с TTL на случай сбоя
-        await redis_manager.cache_data(self.redis_lock_key, self.symbol, ttl=3600)  # TTL на 1 час
+        await redis_manager.cache_data(self.redis_lock_key, "locked", ttl=3600)  # TTL на 1 час
         log_info(self.user_id, f"Установлена блокировка Impulse Trailing для символа {self.symbol}.",
                  "impulse_trailing")
 
@@ -163,17 +163,36 @@ class ImpulseTrailingStrategy(BaseStrategy):
             await self.stop("Strategy logic error")
 
     async def _enter_position(self):
-        """Вход в позицию и установка SL/TP через API."""
+        """Вход в позицию, ожидание исполнения и установка SL/TP."""
         await self._set_leverage()
         order_size_usdt = self._convert_to_decimal(self.get_config_value("order_amount", 50.0))
         qty = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt)
-        if qty > 0:
-            order_id = await self._place_order(side=self.position_side, order_type="Market", qty=qty,
-                                               stop_loss=self.stop_loss_price, take_profit=self.take_profit_price)
-            if not order_id:
-                await self.stop("Failed to place entry order")
-        else:
+
+        if qty <= 0:
             await self.stop("Calculated order quantity is zero")
+            return
+
+        # ВАЖНО: Bybit V5 позволяет установить SL/TP прямо в ордере на создание.
+        # Это более надежно, чем ждать исполнения и потом отправлять второй запрос.
+        log_info(self.user_id,
+                 f"Размещаю ордер на вход для {self.symbol} с SL={self.stop_loss_price} и TP={self.take_profit_price}",
+                 "impulse_trailing")
+        order_id = await self._place_order(
+            side=self.position_side,
+            order_type="Market",
+            qty=qty,
+            stop_loss=self.stop_loss_price,
+            take_profit=self.take_profit_price
+        )
+
+        if order_id:
+            # Даже с SL/TP в первом ордере, нам нужно дождаться его исполнения,
+            # чтобы получить точную цену входа для трейлинга.
+            filled = await self._await_order_fill(order_id, side=self.position_side, qty=qty)
+            if not filled:
+                await self.stop("Failed to fill entry order")
+        else:
+            await self.stop("Failed to place entry order")
 
     async def _handle_order_filled(self, event: OrderFilledEvent):
         """Обработка исполненных ордеров с расчетом чистого PnL."""

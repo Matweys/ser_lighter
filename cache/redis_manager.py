@@ -612,12 +612,15 @@ class RedisManager:
                 
             # Попытка десериализации JSON
             try:
+                # Сначала пытаемся декодировать как JSON
                 return json.loads(data)
-            except json.JSONDecodeError:
-                # Попытка конвертации в Decimal
+            except (json.JSONDecodeError, TypeError):
+                # Если это не JSON, проверяем, является ли строка числом
                 try:
+                    # Попытка конвертации в Decimal, если это похоже на число
                     return Decimal(data)
-                except (ValueError, TypeError):
+                except Exception:
+                    # Если не получилось, возвращаем как есть (например, для lock-строки "CTCUSDT")
                     return data
                     
         except Exception as e:

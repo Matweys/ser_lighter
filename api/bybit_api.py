@@ -75,7 +75,8 @@ class BybitAPI:
     async def _ensure_session(self):
         """Обеспечение активной HTTP сессии"""
         if not self.session or self.session.closed:
-            timeout = aiohttp.ClientTimeout(total=30, connect=10)
+            # Увеличиваем общий таймаут до 60 секунд
+            timeout = aiohttp.ClientTimeout(total=60, connect=20)
             # Убираем глобальный Content-Type, будем добавлять его только для POST запросов
             self.session = aiohttp.ClientSession(
                 timeout=timeout,
