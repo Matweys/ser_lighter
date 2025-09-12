@@ -116,8 +116,6 @@ class ImpulseTrailingStrategy(BaseStrategy):
             # --- Логика для ЛОНГА ---
             if ema_trend == "UP" and is_consolidating:
                 if friction_level == "HIGH":
-                    log_info(self.user_id, f"LONG сигнал для {self.symbol} пропущен: высокая фрикция.",
-                             "impulse_trailing")
                     await self.stop("Signal skipped: High friction")
                     return
                 breakout_level = self._convert_to_decimal(analysis['consolidation_high']) * (
@@ -127,34 +125,27 @@ class ImpulseTrailingStrategy(BaseStrategy):
                              "impulse_trailing")
                     self.position_side = "Buy"
                     self.stop_loss_price = current_price - (atr * self._convert_to_decimal(self.config['long_sl_atr']))
-                    self.take_profit_price = current_price + (
-                            atr * self._convert_to_decimal(self.config['long_tp_atr']))
+                    # self.take_profit_price БОЛЬШЕ НЕ РАССЧИТЫВАЕТСЯ
                     await self._enter_position()
                     return
                 else:
-                    log_info(self.user_id, f"LONG сигнал для {self.symbol} пропущен: цена не пробила уровень.",
-                             "impulse_trailing")
                     await self.stop("Signal skipped: No breakout")
                     return
 
-            # --- Логика для ШОРТА ---
+                # --- Логика для ШОРТА ---
             if is_panic:
                 if friction_level == "HIGH":
-                    log_info(self.user_id, f"SHORT сигнал для {self.symbol} пропущен: высокая фрикция.",
-                             "impulse_trailing")
                     await self.stop("Signal skipped: High friction")
                     return
                 log_info(self.user_id, f"SHORT СИГНАЛ для {self.symbol}: Обнаружена паническая свеча. Вход.",
                          "impulse_trailing")
                 self.position_side = "Sell"
                 self.stop_loss_price = current_price + (atr * self._convert_to_decimal(self.config['short_sl_atr']))
-                self.take_profit_price = current_price - (atr * self._convert_to_decimal(self.config['short_tp_atr']))
+                # self.take_profit_price БОЛЬШЕ НЕ РАССЧИТЫВАЕТСЯ
                 await self._enter_position()
                 return
 
-            # --- Если ни одно из условий не выполнено ---
-            log_info(self.user_id, f"Сигнал для {self.symbol} не соответствует условиям входа. Стратегия остановлена.",
-                     "impulse_trailing")
+                # --- Если ни одно из условий не выполнено ---
             await self.stop("Signal conditions not met")
 
         except Exception as e:
@@ -162,7 +153,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
             await self.stop("Strategy logic error")
 
     async def _enter_position(self):
-        """Вход в позицию, ожидание исполнения и установка SL/TP."""
+        """Вход в позицию, ожидание исполнения и установка ТОЛЬКО Stop Loss."""
         await self._set_leverage()
         order_size_usdt = self._convert_to_decimal(self.get_config_value("order_amount", 50.0))
         qty = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt)
@@ -172,14 +163,14 @@ class ImpulseTrailingStrategy(BaseStrategy):
             return
 
         log_info(self.user_id,
-                 f"Размещаю ордер на вход для {self.symbol} с SL={self.stop_loss_price} и TP={self.take_profit_price}",
+                 f"Размещаю ордер на вход для {self.symbol} с начальным SL={self.stop_loss_price}",
                  "impulse_trailing")
         order_id = await self._place_order(
             side=self.position_side,
             order_type="Market",
             qty=qty,
             stop_loss=self.stop_loss_price,
-            take_profit=self.take_profit_price
+            take_profit=None  # <-- Явно указываем None, чтобы TP не выставлялся
         )
 
         if order_id:

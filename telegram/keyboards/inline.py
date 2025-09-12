@@ -78,7 +78,7 @@ def get_strategy_config_keyboard(strategy_type: str, config: Dict[str, Any]) -> 
         editable_params = {
             "order_amount": f"Сумма ордера: {config.get('order_amount', 0)} USDT",
             "stop_loss_percent": f"Стоп-лосс: {config.get('stop_loss_percent', 0)}%",
-            "take_profit_percent": f"Тейк-профит: {config.get('take_profit_percent', 0)}%",
+            #"take_profit_percent": f"Тейк-профит: {config.get('take_profit_percent', 0)}%",
             "trailing_stop_percent": f"Трейлинг-стоп: {config.get('trailing_stop_percent', 0)}%",
         }
 
