@@ -97,24 +97,15 @@ class MetaStrategist:
 
             self.last_analysis_time[symbol] = now
 
-            # --- ИЗМЕНЕНИЕ: Решение принимается напрямую на основе анализа ---
-
+            # --- Решение принимается напрямую на основе анализа ---
             if analysis and (analysis.is_panic_bar or (analysis.ema_trend == "UP" and analysis.is_consolidating_now)):
-            #if analysis and (analysis.is_panic_bar or analysis.ema_trend == "UP"):
-                analysis_dict = analysis.to_dict()
-                log_info(self.user_id,
-                         f"[TRACE] Создаем сигнал для {symbol}: analysis_dict содержит {len(analysis_dict)} полей",
-                         "meta_strategist")
-                log_info(self.user_id, f"[TRACE] analysis_dict для {symbol}: {analysis_dict}", "meta_strategist")
-
+                # Теперь мы отправляем только сам факт сигнала, без данных.
+                # Данные будут запрошены заново и на самом последнем шаге.
                 signal_event = SignalEvent(
                     user_id=self.user_id,
                     symbol=symbol,
-                    strategy_type="impulse_trailing",  # Тип стратегии теперь один
-                    signal_strength=100,  # Сигнал бинарный: либо есть, либо нет
-                    analysis_data=analysis_dict
+                    strategy_type="impulse_trailing"
                 )
-
                 await self.event_bus.publish(signal_event)
                 log_info(self.user_id, f"Сигнал 'impulse_trailing' отправлен для {symbol}", "meta_strategist")
             else:

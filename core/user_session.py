@@ -211,8 +211,7 @@ class UserSession:
                 # поэтому signal_data может быть пустым.
                 await self.start_strategy(
                     strategy_type="grid_scalping",
-                    symbol=symbol,
-                    analysis_data={'trigger': 'persistent_start'}
+                    symbol=symbol
                 )
 
         except Exception as e:
@@ -260,27 +259,37 @@ class UserSession:
             log_error(self.user_id, f"Ошибка получения статуса сессии: {e}", module_name=__name__)
             return {"user_id": self.user_id, "running": self.running, "error": str(e)}
 
-    async def start_strategy(self, strategy_type: str, symbol: str, analysis_data: Optional[Dict] = None) -> bool:
+    async def start_strategy(self, strategy_type: str, symbol: str) -> bool:
         """
-        Запуск стратегии
+        Запускает стратегию, предварительно получая для нее самые свежие аналитические данные.
         """
         try:
-            # --- ДОБАВЛЕН БЛОК ПРОВЕРКИ ДЛЯ IMPULSE-СТРАТЕГИИ ---
-            # Проверяем глобальную блокировку, чтобы не запускать вторую импульсную сделку, пока активна первая.
+            # --- НОВАЯ ЛОГИКА: ПОЛУЧЕНИЕ АНАЛИЗА ПРЯМО ПЕРЕД ЗАПУСКОМ ---
             if strategy_type == "impulse_trailing":
                 lock_key = f"user:{self.user_id}:impulse_trailing_lock"
                 if await redis_manager.get_cached_data(lock_key):
                     log_warning(self.user_id,
                                 f"Запуск impulse_trailing для {symbol} отклонен: другая импульсная сделка уже активна.",
                                 module_name=__name__)
-                    return False  # Явно запрещаем запуск
-            # --- КОНЕЦ НОВОГО БЛОКА ---
-            strategy_id = f"{strategy_type}_{symbol}"
+                    return False
 
-            # Проверяем, не запущена ли уже стратегия для ЭТОГО ЖЕ СИМВОЛА
-            if strategy_id in self.active_strategies:
-                log_warning(self.user_id, f"Стратегия {strategy_id} уже запущена", module_name=__name__)
-                return True
+                # Запрашиваем анализ заново, чтобы получить самые актуальные данные
+                analyzer = MarketAnalyzer(self.user_id, self.api)
+                impulse_config = await redis_manager.get_config(self.user_id, ConfigType.STRATEGY_IMPULSE_TRAILING)
+                timeframe = impulse_config.get("analysis_timeframe", "5m")
+                fresh_analysis = await analyzer.get_market_analysis(symbol, timeframe)
+
+                if not fresh_analysis:
+                    log_warning(self.user_id, f"Повторный анализ для {symbol} не дал результата. Сигнал пропущен.",
+                                module_name=__name__)
+                    return False
+
+                # Преобразуем объект анализа в словарь для передачи в стратегию
+                analysis_data = fresh_analysis.to_dict()
+            else:
+                # Для других стратегий, как grid_scalping, данные не обязательны
+                analysis_data = {'trigger': 'persistent_start'}
+            # --- КОНЕЦ НОВОЙ ЛОГИКИ ---
 
             strategy_id = f"{strategy_type}_{symbol}"
 
@@ -293,28 +302,26 @@ class UserSession:
                             module_name=__name__)
                 return False
 
-            # --- НАЧАЛО ИЗМЕНЕНИЙ ---
-            # Добавляем явную проверку, что API клиент существует ПЕРЕД созданием стратегии
             if not self.api:
                 log_error(self.user_id,
                           "Критическая ошибка: попытка создать стратегию без инициализированного API клиента.",
                           module_name=__name__)
                 return False
-            # --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
-            # Проверяем и получаем бота
             bot_instance = None
             if hasattr(bot_manager, 'bot') and bot_manager.bot:
                 bot_instance = bot_manager.bot
                 log_info(self.user_id, f"Бот успешно получен для стратегии {strategy_type}", module_name=__name__)
             else:
-                log_error(self.user_id, f"Бот не инициализирован для стратегии {strategy_type}. Уведомления не будут работать.", module_name=__name__)
+                log_error(self.user_id,
+                          f"Бот не инициализирован для стратегии {strategy_type}. Уведомления не будут работать.",
+                          module_name=__name__)
 
             strategy = create_strategy(
                 strategy_type=strategy_type,
                 user_id=self.user_id,
                 symbol=symbol,
-                signal_data=analysis_data or {},
+                signal_data=analysis_data,  # Передаем свежие данные
                 api=self.api,
                 event_bus=self.event_bus,
                 bot=bot_instance,
@@ -678,8 +685,7 @@ class UserSession:
             # Запускаем стратегию на основе сигнала
             success = await self.start_strategy(
                 strategy_type=event.strategy_type,
-                symbol=event.symbol,
-                analysis_data=event.analysis_data
+                symbol=event.symbol
             )
 
             if success:
@@ -723,8 +729,7 @@ class UserSession:
                      module_name=__name__)
             await self.start_strategy(
                 strategy_type=event.strategy_type,
-                symbol=event.symbol,
-                analysis_data={'trigger': 'restart_request', 'reason': event.reason}
+                symbol=event.symbol
             )
         except Exception as e:
             log_error(self.user_id, f"Ошибка при отложенном запуске стратегии {event.symbol}: {e}",

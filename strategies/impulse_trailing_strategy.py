@@ -99,12 +99,12 @@ class ImpulseTrailingStrategy(BaseStrategy):
             if self.position_side:  # Внутренняя проверка состояния
                 return
 
-            analysis = self.signal_data.get('analysis_data')  # Убираем default={}, чтобы явно проверять на None
-            if not analysis or not all(k in analysis for k in ['atr', 'current_price', 'consolidation_high']):
-                log_error(self.user_id,
-                          f"Получены неполные данные анализа для {self.symbol}. Сигнал пропущен. Данные: {analysis}",
+            # self.signal_data теперь гарантированно содержит актуальный анализ
+            analysis = self.signal_data
+            if not analysis or 'atr' not in analysis:
+                log_error(self.user_id, f"Отсутствуют данные анализа для {self.symbol}. Проверьте market_analyzer.",
                           "impulse_trailing")
-                await self.stop("Incomplete analysis data in signal")
+                await self.stop("Insufficient analysis data in signal")
                 return
 
             current_price = self._convert_to_decimal(analysis['current_price'])

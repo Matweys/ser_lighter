@@ -175,7 +175,8 @@ class RiskManager:
             log_error(self.user_id, f"Ошибка проверки возможности открытия сделки {symbol}: {e}", module_name=__name__)
             return False
 
-    async def calculate_position_size(self, symbol: str, analysis_data: Optional[Dict] = None) -> Decimal:
+
+    async def calculate_position_size(self, symbol: str) -> Decimal:
         """
         Возвращает фиксированный размер ордера из настроек пользователя.
         """
