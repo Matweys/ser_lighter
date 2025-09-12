@@ -99,12 +99,17 @@ class MetaStrategist:
 
             # --- Решение принимается напрямую на основе анализа ---
             if analysis and (analysis.is_panic_bar or (analysis.ema_trend == "UP" and analysis.is_consolidating_now)):
-                # Теперь мы отправляем только сам факт сигнала, без данных.
-                # Данные будут запрошены заново и на самом последнем шаге.
+                # analysis_dict больше не нужен для события
+                # log_info можно убрать или оставить для отладки
+                log_info(self.user_id,
+                         f"Условия для сигнала 'impulse_trailing' для {symbol} выполнены. Отправка триггера.",
+                         "meta_strategist")
+
                 signal_event = SignalEvent(
                     user_id=self.user_id,
                     symbol=symbol,
-                    strategy_type="impulse_trailing"
+                    strategy_type="impulse_trailing",
+                    signal_strength=100
                 )
                 await self.event_bus.publish(signal_event)
                 log_info(self.user_id, f"Сигнал 'impulse_trailing' отправлен для {symbol}", "meta_strategist")

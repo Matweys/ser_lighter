@@ -120,6 +120,8 @@ class SignalEvent(BaseEvent):
     """Событие-сигнал от MetaStrategist для запуска стратегии"""
     symbol: str
     strategy_type: str
+    signal_strength: int
+    analysis_data: Optional[Dict[str, Any]] = None
     event_type: EventType = field(default=EventType.SIGNAL, init=False)
 
 @dataclass

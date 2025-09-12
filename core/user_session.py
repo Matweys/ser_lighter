@@ -211,7 +211,8 @@ class UserSession:
                 # поэтому signal_data может быть пустым.
                 await self.start_strategy(
                     strategy_type="grid_scalping",
-                    symbol=symbol
+                    symbol=symbol,
+                    analysis_data={'trigger': 'persistent_start'}
                 )
 
         except Exception as e:
@@ -259,7 +260,8 @@ class UserSession:
             log_error(self.user_id, f"Ошибка получения статуса сессии: {e}", module_name=__name__)
             return {"user_id": self.user_id, "running": self.running, "error": str(e)}
 
-    async def start_strategy(self, strategy_type: str, symbol: str) -> bool:
+
+    async def start_strategy(self, strategy_type: str, symbol: str, analysis_data: Optional[Dict] = None) -> bool:
         """
         Запускает стратегию, предварительно получая для нее самые свежие аналитические данные.
         """
@@ -664,25 +666,13 @@ class UserSession:
     async def _handle_signal_event(self, event: SignalEvent):
         """Обработчик сигналов от MetaStrategist для запуска стратегий."""
         try:
-            # --- ДИАГНОСТИЧЕСКОЕ ЛОГИРОВАНИЕ ---
-            log_debug(self.user_id,
-                      f"[UserSession HANDLE] Event ID: {id(event)}, Symbol: {event.symbol}, Data Exists: {event.analysis_data is not None}",
-                      "UserSession")
-            # --- КОНЕЦ ЛОГИРОВАНИЯ ---
-
-            if not event.analysis_data:
-                log_error(self.user_id,
-                          f"Получен сигнал {event.strategy_type} для {event.symbol}, но он не содержит аналитических данных. Сигнал проигнорирован.",
-                          module_name=__name__)
-                return
-
             log_info(self.user_id,
-                     f"Получен сигнал {event.strategy_type} для {event.symbol} (сила: {event.signal_strength})",
+                     f"Получен сигнал-триггер {event.strategy_type} для {event.symbol} (сила: {event.signal_strength})",
                      module_name=__name__)
 
             self.session_stats["total_signals"] += 1
 
-            # Запускаем стратегию на основе сигнала
+            # Запускаем стратегию. Метод start_strategy САМ получит свежие данные.
             success = await self.start_strategy(
                 strategy_type=event.strategy_type,
                 symbol=event.symbol
@@ -694,7 +684,6 @@ class UserSession:
             else:
                 log_warning(self.user_id, f"Не удалось запустить стратегию {event.strategy_type} для {event.symbol}",
                             module_name=__name__)
-
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки сигнала {event.strategy_type} для {event.symbol}: {e}",
                       module_name=__name__)
@@ -729,7 +718,8 @@ class UserSession:
                      module_name=__name__)
             await self.start_strategy(
                 strategy_type=event.strategy_type,
-                symbol=event.symbol
+                symbol=event.symbol,
+                analysis_data={'trigger': 'restart_request', 'reason': event.reason}
             )
         except Exception as e:
             log_error(self.user_id, f"Ошибка при отложенном запуске стратегии {event.symbol}: {e}",
