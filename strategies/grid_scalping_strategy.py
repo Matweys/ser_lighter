@@ -23,7 +23,7 @@ class GridScalpingStrategy(BaseStrategy):
 
         # --- Параметры, загружаемые из конфигурации ---
         self.scalp_levels: int = 5
-        self.scalp_spacing_percent: Decimal = Decimal('10.0')
+        self.scalp_spacing_percent: Decimal = Decimal('5.0')
         self.quick_profit_percent: Decimal = Decimal('1.0')
         self.stop_loss_percent: Decimal = Decimal('5.0')
         self.cooldown_after_stop: int = 60
@@ -47,7 +47,7 @@ class GridScalpingStrategy(BaseStrategy):
             return
 
         self.scalp_levels = int(self.get_config_value("max_averaging_orders", 5))
-        self.scalp_spacing_percent = self._convert_to_decimal(self.get_config_value("scalp_spacing_percent", 10.0))
+        self.scalp_spacing_percent = self._convert_to_decimal(self.get_config_value("scalp_spacing_percent", 5.0))
         self.quick_profit_percent = self._convert_to_decimal(self.get_config_value("profit_percent", 1.0))
         self.stop_loss_percent = self._convert_to_decimal(self.get_config_value("stop_loss_percent", 5.0))
         self.cooldown_after_stop = int(self.get_config_value("cooldown_after_stop_seconds", 60))
@@ -180,10 +180,12 @@ class GridScalpingStrategy(BaseStrategy):
 
         # Рассчитываем новые уровни TP и SL
         profit_price = self.position_avg_price * (1 + self.quick_profit_percent / 100)
-        # ИСПРАВЛЕНО: Для LONG позиции стоп-лосс должен вычитаться из цены входа
+
+        # SL рассчитывается и устанавливается ТОЛЬКО ОДИН РАЗ на основе самой первой цены входа
+        # Для последующих усреднений SL остается неизменным
         stop_loss_price = self.position_entry_price * (1 - self.stop_loss_percent / 100)
 
-        log_info(self.user_id, f"Установка нового лимитного ордера: TP={profit_price:.4f}, SL={stop_loss_price:.4f}",
+        log_info(self.user_id, f"Обновление защитных ордеров: TP={profit_price:.4f}, SL={stop_loss_price:.4f}",
                  "grid_scalping")
 
         # Выставляем TP и SL на всю позицию через специальный метод API

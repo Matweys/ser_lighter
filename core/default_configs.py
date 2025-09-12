@@ -69,7 +69,7 @@ class DefaultConfigs:
             "is_enabled": True,
             "order_amount": 100.0,
             "max_averaging_orders": 5,      # Макс. ордеров на усреднение
-            "scalp_spacing_percent": 10.0,   # Шаг для усреднения в %
+            "scalp_spacing_percent": 5.0,   # Шаг для усреднения в %
             "profit_percent": 1.0,          # Процент для фиксации прибыли
             "stop_loss_percent": 3.0,       # Общий стоп-лосс от цены первого входа в %
         }

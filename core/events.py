@@ -241,6 +241,13 @@ class EventBus:
     async def publish(self, event: BaseEvent):
         if not self._running: raise RuntimeError("EventBus не запущен")
         try:
+            # --- ДИАГНОСТИЧЕСКОЕ ЛОГИРОВАНИЕ ---
+            if isinstance(event, SignalEvent):
+                from core.logger import log_debug
+                log_debug(event.user_id,
+                          f"[EventBus PUBLISH] Event ID: {id(event)}, Symbol: {event.symbol}, Data Exists: {event.analysis_data is not None}",
+                          "EventBus")
+            # --- КОНЕЦ ЛОГИРОВАНИЯ ---
             await self._queue.put(event)
         except asyncio.QueueFull:
             from core.logger import get_logger

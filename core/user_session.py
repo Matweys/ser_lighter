@@ -657,6 +657,18 @@ class UserSession:
     async def _handle_signal_event(self, event: SignalEvent):
         """Обработчик сигналов от MetaStrategist для запуска стратегий."""
         try:
+            # --- ДИАГНОСТИЧЕСКОЕ ЛОГИРОВАНИЕ ---
+            log_debug(self.user_id,
+                      f"[UserSession HANDLE] Event ID: {id(event)}, Symbol: {event.symbol}, Data Exists: {event.analysis_data is not None}",
+                      "UserSession")
+            # --- КОНЕЦ ЛОГИРОВАНИЯ ---
+
+            if not event.analysis_data:
+                log_error(self.user_id,
+                          f"Получен сигнал {event.strategy_type} для {event.symbol}, но он не содержит аналитических данных. Сигнал проигнорирован.",
+                          module_name=__name__)
+                return
+
             log_info(self.user_id,
                      f"Получен сигнал {event.strategy_type} для {event.symbol} (сила: {event.signal_strength})",
                      module_name=__name__)
