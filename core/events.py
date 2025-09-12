@@ -4,6 +4,9 @@ from decimal import Decimal
 from typing import Dict, Any, Optional, List, Callable, Awaitable
 from datetime import datetime
 from enum import Enum
+from core.logger import log_debug
+
+
 
 # Enum EventType остается без изменений
 class EventType(Enum):

@@ -7,7 +7,7 @@ import asyncio
 from typing import Dict, Optional, Any, List, Set
 from decimal import Decimal, getcontext
 from datetime import datetime
-from core.logger import log_info, log_error, log_warning
+from core.logger import log_info, log_error, log_warning, log_debug
 from core.events import (
     EventType,
     BaseEvent,
