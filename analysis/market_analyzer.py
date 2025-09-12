@@ -84,11 +84,14 @@ class MarketAnalyzer:
             volume = recent_candles['volume'].sum()
 
             # Избегаем деления на ноль
-            friction = volume / (price_move + Decimal('1e-9'))
+            # Используем turnover (объем в USDT) вместо volume для более точного расчета
+            turnover = recent_candles['turnover'].sum()
+            friction = turnover / (price_move + Decimal('1e-9'))
 
-            if friction > 5000:
+            # Увеличиваем пороги в 1000 раз, чтобы сделать фильтр менее строгим
+            if friction > 5_000_000:
                 return "HIGH", friction
-            elif friction < 500:
+            elif friction < 500_000:
                 return "LOW", friction
             else:
                 return "NEUTRAL", friction
