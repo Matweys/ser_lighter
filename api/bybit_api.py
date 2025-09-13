@@ -731,18 +731,39 @@ class BybitAPI:
     # 1. НОВЫЙ ВСПОМОГАТЕЛЬНЫЙ МЕТОД
     async def _format_quantity(self, symbol: str, qty: Decimal) -> str:
         """
-        Преобразует уже рассчитанное и округленное значение qty в строку.
-        Этот метод доверяет, что 'qty' является корректным значением,
-        полученным из calculate_quantity_from_usdt.
+        Форматирует количество в строку с точной десятичной точностью,
+        требуемой биржей для данного символа, используя округление вниз.
         """
+        from decimal import ROUND_DOWN
         try:
-            # .to_eng_string() гарантирует преобразование в строку без
-            # экспоненциальной записи (например, 1E-5), которую API не примет.
-            return qty.to_eng_string()
+            instrument_info = await self.get_instruments_info(symbol)
+            if not instrument_info:
+                return qty.to_eng_string()
+
+            qty_step_str = str(instrument_info.get("qtyStep", "0.001"))
+
+            # 1. ИСПРАВЛЕНИЕ: Корректно определяем значащую точность из qtyStep
+            if '.' in qty_step_str:
+                precision = len(qty_step_str.split('.')[1].rstrip('0'))
+            else:
+                precision = 0
+
+            # Создаем "квантайзер" для форматирования
+            quantizer = Decimal('1e-' + str(precision))
+
+            # 2. ИСПРАВЛЕНИЕ: Используем округление ВНИЗ (ROUND_DOWN).
+            # Это гарантирует, что значение не будет увеличено и останется
+            # кратным qtyStep, а также добавляет нужные нули в конце.
+            formatted_qty_decimal = qty.quantize(quantizer, rounding=ROUND_DOWN)
+
+            # Форматируем в строку, сохраняя нули. f-string здесь безопасен,
+            # так как quantize уже создал правильный Decimal объект.
+            return f"{formatted_qty_decimal:.{precision}f}"
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка форматирования количества для {symbol}: {e}", "bybit_api")
-            # В случае непредсказуемой ошибки возвращаем простое строковое представление.
-            return str(qty)
+            # В случае ошибки возвращаемся к безопасному методу.
+            return qty.to_eng_string()
 
 
     async def calculate_quantity_from_usdt(
