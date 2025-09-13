@@ -148,53 +148,45 @@ class UserSession:
 
     async def _cleanup_stale_locks(self):
         """
-        Проверяет и удаляет "залипшие" блокировки, сверяясь с реальными позициями на бирже.
+        Проверяет и удаляет "залипшие" блокировки, сверяясь с реальными
+        позициями на бирже. Добавлено детальное логирование для отладки.
         """
         try:
             lock_key = f"user:{self.user_id}:impulse_trailing_lock"
+            log_debug(self.user_id, f"Проверка на 'залипший' лок: ключ '{lock_key}'", "UserSession")
+
             lock_data_raw = await redis_manager.get_cached_data(lock_key)
-
             if not lock_data_raw:
-                return  # Блокировки нет, все чисто
+                log_debug(self.user_id, "Блокировка не найдена. Очистка не требуется.", "UserSession")
+                return
 
-            lock_data = {}
+            log_info(self.user_id, f"Обнаружены данные блокировки: {lock_data_raw}", "UserSession")
+
             try:
-                # Redis Manager может вернуть уже готовый dict, если JSON был успешно распарсен
                 lock_data = json.loads(lock_data_raw) if isinstance(lock_data_raw, str) else lock_data_raw
             except (json.JSONDecodeError, TypeError):
-                log_warning(self.user_id, f"Обнаружены поврежденные данные в ключе блокировки: {lock_data_raw}",
-                            "UserSession")
-                # Если данные повреждены, но позиций на бирже нет - безопасно удалить
-                if not await self.api.get_positions():
-                    await redis_manager.delete_cached_data(lock_key)
+                log_warning(self.user_id, f"Поврежденные JSON-данные в ключе блокировки. Удаляю ключ.", "UserSession")
+                await redis_manager.delete_cached_data(lock_key)
                 return
 
             symbol = lock_data.get("symbol")
+            order_id = lock_data.get("order_id", "N/A")
             if not symbol:
-                log_warning(self.user_id, f"В ключе блокировки отсутствует символ. Удаляю ключ: {lock_data}",
-                            "UserSession")
+                log_warning(self.user_id, "В ключе блокировки отсутствует символ. Удаляю ключ.", "UserSession")
                 await redis_manager.delete_cached_data(lock_key)
                 return
 
-            # ГЛАВНАЯ ПРОВЕРКА: запрашиваем позицию по конкретному символу из блокировки
-            log_info(self.user_id, f"Обнаружена блокировка для {symbol}. Проверяю реальную позицию на бирже...",
-                     "UserSession")
+            log_info(self.user_id, f"Проверяю реальную позицию на бирже для символа {symbol} (ордер {order_id})...", "UserSession")
             positions_on_exchange = await self.api.get_positions(symbol=symbol)
 
             if not positions_on_exchange:
-                # Если биржа говорит, что позиции по этому символу нет - блокировка "залипла"
-                log_warning(self.user_id,
-                            f"Блокировка для {symbol} оказалась 'залипшей' (нет активной позиции на бирже). Безопасно удаляю.",
-                            "UserSession")
+                log_warning(self.user_id, f"Позиция по {symbol} на бирже НЕ найдена. Блокировка считается 'залипшей'. Безопасно удаляю.", "UserSession")
                 await redis_manager.delete_cached_data(lock_key)
             else:
-                # Если позиция есть - ничего не трогаем, все в порядке
-                log_info(self.user_id,
-                         f"Блокировка для {symbol} подтверждена активной позицией на бирже. Очистка не требуется.",
-                         "UserSession")
+                log_info(self.user_id, f"Позиция по {symbol} на бирже НАЙДЕНА. Блокировка подтверждена. Очистка не требуется.", "UserSession")
 
         except Exception as e:
-            log_error(self.user_id, f"Ошибка при очистке 'залипших' блокировок: {e}", "UserSession")
+            log_error(self.user_id, f"Критическая ошибка при очистке 'залипших' блокировок: {e}", "UserSession")
 
 
     async def stop(self, reason: str = "Manual stop"):

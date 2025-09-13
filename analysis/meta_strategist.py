@@ -75,9 +75,9 @@ class MetaStrategist:
         symbol = event.candle_data.get("symbol")
         if not symbol: return
 
-        # --- ДОБАВЛЕН ФИЛЬТР СРОЧНЫХ КОНТРАКТОВ ---
-        if '-' in symbol:
-            return  # Немедленно выходим, если это срочный контракт
+        # --- УЛУЧШЕННЫЙ ФИЛЬТР СИМВОЛОВ ---
+        if '-' in symbol or not symbol.endswith("USDT"):
+            return  # Немедленно выходим, если это срочный контракт или не USDT пара
 
         now = datetime.now()
         last_analysis = self.last_analysis_time.get(symbol)

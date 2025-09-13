@@ -540,19 +540,16 @@ class BybitAPI:
         take_profit: Optional[Decimal] = None
     ) -> Optional[str]:
         """
-        Размещение ордера. Теперь этот метод ДОВЕРЯЕТ полученному qty
-        и только форматирует его в правильную строку перед отправкой.
+        Размещение ордера. Метод доверяет, что qty было предварительно
+        рассчитано и округлено согласно правилам биржи.
         """
         try:
-            # Форматируем количество в строку с нужной точностью
-            formatted_qty = await self._format_quantity(symbol, qty)
-
             params = {
                 "category": "linear",
                 "symbol": symbol,
                 "side": side,
                 "orderType": order_type,
-                "qty": formatted_qty, # <-- Используем точно отформатированную строку
+                "qty": str(qty),
                 "timeInForce": time_in_force
             }
 
