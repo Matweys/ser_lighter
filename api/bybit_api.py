@@ -540,16 +540,19 @@ class BybitAPI:
         take_profit: Optional[Decimal] = None
     ) -> Optional[str]:
         """
-        Размещение ордера. Метод доверяет, что qty было предварительно
-        рассчитано и округлено согласно правилам биржи.
+        Размещение ордера. Теперь этот метод ДОВЕРЯЕТ полученному qty
+        и только форматирует его в правильную строку перед отправкой.
         """
         try:
+            # Форматируем количество в строку с нужной точностью
+            formatted_qty = await self._format_quantity(symbol, qty)
+
             params = {
                 "category": "linear",
                 "symbol": symbol,
                 "side": side,
                 "orderType": order_type,
-                "qty": str(qty),
+                "qty": formatted_qty, # <-- Используем точно отформатированную строку
                 "timeInForce": time_in_force
             }
 
@@ -579,6 +582,7 @@ class BybitAPI:
         except Exception as e:
             log_error(self.user_id, f"Исключение при размещении ордера: {e}", "bybit_api")
             return None
+
     
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
         """Отмена ордера"""
@@ -727,37 +731,18 @@ class BybitAPI:
     # 1. НОВЫЙ ВСПОМОГАТЕЛЬНЫЙ МЕТОД
     async def _format_quantity(self, symbol: str, qty: Decimal) -> str:
         """
-        Форматирует количество в строку с точной десятичной точностью,
-        требуемой биржей для данного символа.
+        Преобразует уже рассчитанное и округленное значение qty в строку.
+        Этот метод доверяет, что 'qty' является корректным значением,
+        полученным из calculate_quantity_from_usdt.
         """
         try:
-            instrument_info = await self.get_instruments_info(symbol)
-            if not instrument_info:
-                return format_number(qty)  # Фолбэк на старую функцию
-
-            qty_step_str = instrument_info.get("qtyStep", "0.001")
-
-            # Надежный способ определить количество знаков после запятой
-            if '.' in qty_step_str:
-                # Просто берем длину части после точки
-                precision = len(qty_step_str.split('.')[1].rstrip('0'))
-            else:
-                precision = 0
-
-            # Создаем "квантайзер" для округления до нужной точности
-            # Например, для precision=3 это будет Decimal('0.001')
-            quantizer = Decimal('1e-' + str(precision))
-
-            # Округляем (не отбрасываем!) до нужного количества знаков
-            rounded_qty = qty.quantize(quantizer)
-
-            # Форматируем в строку, сохраняя нули
-            return f"{rounded_qty:.{precision}f}"
-
+            # .to_eng_string() гарантирует преобразование в строку без
+            # экспоненциальной записи (например, 1E-5), которую API не примет.
+            return qty.to_eng_string()
         except Exception as e:
             log_error(self.user_id, f"Ошибка форматирования количества для {symbol}: {e}", "bybit_api")
-            # В случае ошибки возвращаем стандартное форматирование
-            return format_number(qty)
+            # В случае непредсказуемой ошибки возвращаем простое строковое представление.
+            return str(qty)
 
 
     async def calculate_quantity_from_usdt(
