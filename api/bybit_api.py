@@ -475,22 +475,23 @@ class BybitAPI:
                         "status": instrument.get("status")
                     }
 
-            # Обновление кэша
+            # Обновление кэша экземпляра
             self.instruments_cache = new_cache
             self.cache_timestamp = current_time
             log_info(self.user_id, f"Кэш инструментов обновлен. Загружено {len(new_cache)} символов.",
                      module_name="bybit_api")
 
-            # ВОЗВРАТ РЕЗУЛЬТАТА ПРОИСХОДИТ ВНУТРИ БЛОКИРОВКИ
+            # ИСПРАВЛЕНИЕ: Возвращаем результат из локальной переменной new_cache,
+            # чтобы гарантировать его свежесть и доступность.
             if symbol:
-                instrument_data = self.instruments_cache.get(symbol)
+                instrument_data = new_cache.get(symbol)
                 if not instrument_data:
-                    # Добавляем более детальное логирование для диагностики
-                    log_error(self.user_id, f"КРИТИЧЕСКАЯ ОШИБКА: Символ '{symbol}' не найден в свежезагруженном кэше!",
+                    log_error(self.user_id,
+                              f"КРИТИЧЕСКАЯ ОШИБКА: Символ '{symbol}' не найден в свежезагруженном ответе API!",
                               module_name="bybit_api")
                 return instrument_data
 
-            return self.instruments_cache
+            return new_cache
     
     # =============================================================================
     # ПРИВАТНЫЕ МЕТОДЫ API (ТОРГОВЛЯ)
