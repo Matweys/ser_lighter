@@ -144,7 +144,10 @@ class DatabaseManager:
             
             # Создаем таблицы
             await self._create_tables()
-            
+
+            # добавлять недостающие колонки
+            await self._run_migrations()
+
             # Создаем индексы
             await self._create_indexes()
             
@@ -154,7 +157,30 @@ class DatabaseManager:
         except Exception as e:
             log_error(0, f"Ошибка инициализации базы данных: {e}", module_name='database')
             raise DatabaseError(f"Ошибка инициализации базы данных: {e}")
-    
+
+    async def _run_migrations(self):
+        """Проверяет и применяет необходимые изменения к схеме БД."""
+        log_info(0, "Запуск миграций базы данных...", 'database')
+        try:
+            async with self.get_connection() as conn:
+                # Миграция 1: Добавление колонки winning_trades в таблицу users
+                check_col_query = """
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name='users' AND column_name='winning_trades'
+                """
+                column_exists = await conn.fetchval(check_col_query)
+                if not column_exists:
+                    log_warning(0, "Колонка 'winning_trades' отсутствует в таблице 'users'. Добавляю...", 'database')
+                    await conn.execute("ALTER TABLE users ADD COLUMN winning_trades INTEGER DEFAULT 0;")
+                    log_info(0, "Колонка 'winning_trades' успешно добавлена.", 'database')
+
+                # Сюда можно добавлять другие проверки и миграции в будущем
+
+            log_info(0, "Миграции базы данных завершены.", 'database')
+        except Exception as e:
+            log_error(0, f"Ошибка во время выполнения миграций: {e}", 'database')
+            raise
+
     async def _create_pool(self) -> None:
         """Создание пула соединений"""
         try:

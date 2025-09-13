@@ -730,27 +730,35 @@ class BybitAPI:
     # 1. НОВЫЙ ВСПОМОГАТЕЛЬНЫЙ МЕТОД
     async def _format_quantity(self, symbol: str, qty: Decimal) -> str:
         """
-        Форматирует количество в строку с точной δεцимальной точностью,
+        Форматирует количество в строку с точной десятичной точностью,
         требуемой биржей для данного символа.
         """
         try:
             instrument_info = await self.get_instruments_info(symbol)
             if not instrument_info:
-                # Если информации нет, используем стандартное форматирование
                 return format_number(qty)
 
-            qty_step = to_decimal(instrument_info.get("qtyStep", "0.001"))
+            qty_step_str = instrument_info.get("qtyStep", "0.001")
 
-            # Определяем количество знаков после запятой из qty_step
-            if '.' in str(qty_step):
-                decimal_str = str(qty_step).rstrip('0')
-                precision = len(decimal_str.split('.')[1]) if '.' in decimal_str else 0
+            # Надежный способ определить количество знаков после запятой
+            if '.' in qty_step_str:
+                # Просто берем длину части после точки
+                precision = len(qty_step_str.split('.')[1])
             else:
                 precision = 0
 
-            # Форматируем строку с нужным количеством знаков
-            return f"{qty:.{precision}f}"
-        except Exception:
+            # Создаем "квантайзер" для округления до нужной точности
+            # Например, для precision=3 это будет Decimal('0.001')
+            quantizer = Decimal('1e-' + str(precision))
+
+            # Округляем (не отбрасываем!) до нужного количества знаков
+            rounded_qty = qty.quantize(quantizer)
+
+            # Форматируем в строку, сохраняя нули
+            return f"{rounded_qty:.{precision}f}"
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка форматирования количества для {symbol}: {e}", "bybit_api")
             # В случае ошибки возвращаем стандартное форматирование
             return format_number(qty)
 

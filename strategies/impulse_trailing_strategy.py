@@ -37,22 +37,21 @@ class ImpulseTrailingStrategy(BaseStrategy):
         # ДОБАВЛЕНО: Ключ для блокировки в Redis, уникальный для каждого пользователя
         self.redis_lock_key = f"user:{self.user_id}:impulse_trailing_lock"
 
-    # ДОБАВЛЕНО: Переопределяем start для добавления логики блокировки
+
     async def start(self) -> bool:
         """Переопределяем start для добавления логики блокировки."""
-        # 1. Проверяем блокировку ПЕРЕД любыми другими действиями
         if await redis_manager.get_cached_data(self.redis_lock_key):
-            log_warning(self.user_id,
-                        f"Запуск Impulse Trailing для {self.symbol} отменен: другая impulse-сделка уже активна.",
-                        "impulse_trailing")
+            log_warning(self.user_id, f"Запуск Impulse Trailing для {self.symbol} отменен: другая impulse-сделка уже активна.", "impulse_trailing")
             return False
 
-        # 2. Если блокировки нет, устанавливаем ее с TTL на случай сбоя
-        await redis_manager.cache_data(self.redis_lock_key, "locked", ttl=3600)  # TTL на 1 час
-        log_info(self.user_id, f"Установлена блокировка Impulse Trailing для символа {self.symbol}.",
-                 "impulse_trailing")
+        # Устанавливаем ВРЕМЕННУЮ блокировку на время инициализации
+        await redis_manager.cache_data(
+            self.redis_lock_key,
+            json.dumps({"status": "initializing", "symbol": self.symbol}),
+            ttl=600  # 10 минут на случай, если что-то пойдет не так до входа в сделку
+        )
+        log_info(self.user_id, f"Установлена предварительная блокировка Impulse Trailing для символа {self.symbol}.", "impulse_trailing")
 
-        # 3. Вызываем оригинальный метод start из BaseStrategy
         return await super().start()
 
     # ДОБАВЛЕНО: Переопределяем stop для снятия блокировки
@@ -184,29 +183,39 @@ class ImpulseTrailingStrategy(BaseStrategy):
         """Обработка исполненных ордеров с расчетом чистого PnL."""
         log_info(self.user_id, f"[TRACE] ImpulseTrailing._handle_order_filled: side={event.side}, price={event.price}",
                  "impulse_trailing")
+
+        # --- Сценарий: Вход в позицию (ордер на покупку) ---
         if self.position_side and event.side == self.position_side:
-            log_info(self.user_id, "[TRACE] Условие для входа выполнено.", "impulse_trailing")
             self.entry_price = event.price
             self.position_size = event.qty
             self.peak_price = event.price
 
-            # Обновляем состояние позиции в базовом классе
-            position_key = f"{self.symbol}_{self.position_side}"
-            self.active_positions[position_key] = {
-                "symbol": self.symbol,
-                "side": self.position_side,
-                "size": self.position_size,
-                "entry_price": self.entry_price,
-                "updated_at": datetime.now()
-            }
+            # >>> НОВЫЙ БЛОК: ОБНОВЛЕНИЕ БЛОКИРОВКИ ПОЛНОЙ ИНФОРМАЦИЕЙ О СДЕЛКЕ <<<
+            try:
+                lock_data = {
+                    "status": "active",
+                    "strategy_id": self.strategy_id,
+                    "symbol": self.symbol,
+                    "side": self.position_side,
+                    "entry_price": str(self.entry_price),
+                    "position_size": str(self.position_size),
+                    "order_id": event.order_id
+                }
+                # Сохраняем на 24 часа. Если сделка длится дольше, это уже аномалия.
+                await redis_manager.cache_data(self.redis_lock_key, json.dumps(lock_data), ttl=86400)
+                log_info(self.user_id,
+                         f"Блокировка Impulse Trailing для {self.symbol} обновлена с деталями активной сделки.",
+                         "impulse_trailing")
+            except Exception as e:
+                log_error(self.user_id, f"Не удалось обновить данные блокировки в Redis: {e}", "impulse_trailing")
+            # --- КОНЕЦ НОВОГО БЛОКА ---
 
-            intended_amount = self._convert_to_decimal(self.get_config_value("order_amount", 50.0))
-            await self._send_trade_open_notification(event.side, event.price, event.qty, intended_amount)
+            await self._send_trade_open_notification(event.side, event.price, event.qty)
             return
 
+        # --- Сценарий: Закрытие позиции (ордер на продажу) ---
         if self.position_side and event.side != self.position_side:
-            pnl_gross = (event.price - self.entry_price) * self.position_size if self.position_side == "Buy" else (
-                                                                                                                          self.entry_price - event.price) * self.position_size
+            pnl_gross = (event.price - self.entry_price) * self.position_size if self.position_side == "Buy" else (self.entry_price - event.price) * self.position_size
             pnl_net = pnl_gross - event.fee
             await self._send_trade_close_notification(pnl_net, event.fee)
             await self.stop("Position closed by TP/SL")
