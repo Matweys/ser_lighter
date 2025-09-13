@@ -66,20 +66,25 @@ class GridScalpingStrategy(BaseStrategy):
             await self._load_scalp_parameters()
             await self._set_leverage()
 
+            # --- ГЛАВНОЕ ИСПРАВЛЕНИЕ ---
+            # Принудительно и синхронно загружаем/проверяем кэш инструментов ПЕРЕД расчетом.
+            # Это устраняет состояние гонки (race condition).
+            instrument_info = await self.api.get_instruments_info(self.symbol)
+            if not instrument_info:
+                await self.stop(f"Не удалось получить информацию об инструменте для {self.symbol}")
+                return
+
             order_size_usdt = self._convert_to_decimal(self.get_config_value("order_amount", 10.0))
             leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
 
-            # Передаем плечо в обновленную функцию расчета
             qty = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt, leverage)
 
             if qty > 0:
                 self.is_waiting_for_fill = True
                 log_info(self.user_id, f"Размещаю начальный рыночный ордер для {self.symbol}.", "grid_scalping")
-                # Передаем Decimal qty, как и должно быть
                 order_id = await self._place_order(side="Buy", order_type="Market", qty=qty)
 
                 if order_id:
-                    # Эта строка теперь будет работать, так как переменная qty снова используется корректно
                     filled = await self._await_order_fill(order_id, side="Buy", qty=qty)
                     if not filled:
                         await self.stop("Начальный ордер не исполнился")
