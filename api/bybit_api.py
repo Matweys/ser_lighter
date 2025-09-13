@@ -426,58 +426,54 @@ class BybitAPI:
             log_error(self.user_id, f"Ошибка получения свечей {symbol}: {e}", module_name="bybit_api")
             
         return None
-    
+
     async def get_instruments_info(self, symbol: str = None) -> Optional[Dict[str, Any]]:
         """Получение информации об инструментах с кэшированием"""
         try:
             current_time = time.time()
-            
-            # Проверка кэша
-            if (current_time - self.cache_timestamp < self.cache_expiry and 
-                self.instruments_cache):
-                if symbol:
-                    return self.instruments_cache.get(symbol)
+
+            # Если кэш невалиден, полностью обновляем его
+            if not self.instruments_cache or (current_time - self.cache_timestamp > self.cache_expiry):
+                log_info(self.user_id, "Кэш инструментов пуст или устарел. Запрашиваю полный список...",
+                         module_name="bybit_api")
+                params = {"category": "linear"}
+                result = await self._make_request("GET", "/v5/market/instruments-info", params, private=False)
+
+                if result and "list" in result:
+                    new_cache = {}
+                    for instrument in result["list"]:
+                        symbol_name = instrument.get("symbol")
+                        if symbol_name:
+                            new_cache[symbol_name] = {
+                                "symbol": symbol_name,
+                                "baseCoin": instrument.get("baseCoin"),
+                                "quoteCoin": instrument.get("quoteCoin"),
+                                "minOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("minOrderQty", "0")),
+                                "maxOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("maxOrderQty", "0")),
+                                "qtyStep": to_decimal(instrument.get("lotSizeFilter", {}).get("qtyStep", "0")),
+                                "minPrice": to_decimal(instrument.get("priceFilter", {}).get("minPrice", "0")),
+                                "maxPrice": to_decimal(instrument.get("priceFilter", {}).get("maxPrice", "0")),
+                                "tickSize": to_decimal(instrument.get("priceFilter", {}).get("tickSize", "0")),
+                                "status": instrument.get("status")
+                            }
+
+                    self.instruments_cache = new_cache
+                    self.cache_timestamp = current_time
+                    log_info(self.user_id, f"Кэш инструментов обновлен. Загружено {len(new_cache)} символов.",
+                             module_name="bybit_api")
                 else:
-                    return self.instruments_cache
-                
-            params = {
-                "category": "linear"
-            }
-            
+                    log_error(self.user_id, "Не удалось обновить кэш инструментов.", module_name="bybit_api")
+                    return None
+
+            # Теперь, когда кэш гарантированно полный, возвращаем нужную часть
             if symbol:
-                params["symbol"] = symbol
-                
-            result = await self._make_request("GET", "/v5/market/instruments-info", params, private=False)
-            
-            if result and "list" in result:
-                instruments = {}
-                for instrument in result["list"]:
-                    symbol_name = instrument.get("symbol")
-                    instruments[symbol_name] = {
-                        "symbol": symbol_name,
-                        "baseCoin": instrument.get("baseCoin"),
-                        "quoteCoin": instrument.get("quoteCoin"),
-                        "minOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("minOrderQty", "0")),
-                        "maxOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("maxOrderQty", "0")),
-                        "qtyStep": to_decimal(instrument.get("lotSizeFilter", {}).get("qtyStep", "0")),
-                        "minPrice": to_decimal(instrument.get("priceFilter", {}).get("minPrice", "0")),
-                        "maxPrice": to_decimal(instrument.get("priceFilter", {}).get("maxPrice", "0")),
-                        "tickSize": to_decimal(instrument.get("priceFilter", {}).get("tickSize", "0")),
-                        "status": instrument.get("status")
-                    }
-                    
-                # Обновление кэша
-                self.instruments_cache.update(instruments)
-                self.cache_timestamp = current_time
-                
-                if symbol:
-                    return instruments.get(symbol)
-                else:
-                    return instruments
-                    
+                return self.instruments_cache.get(symbol)
+            else:
+                return self.instruments_cache
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка получения информации об инструментах: {e}", module_name="bybit_api")
-            
+
         return None
     
     # =============================================================================
@@ -526,83 +522,33 @@ class BybitAPI:
             log_error(self.user_id, f"Ошибка получения баланса: {e}", module_name="bybit_api")
         return None
 
-    async def calculate_and_format_qty(self, symbol: str, usdt_amount: Decimal) -> Optional[str]:
-        """
-        Объединяет расчет и форматирование в одну атомарную операцию,
-        чтобы вернуть готовую для API строку количества или None, если проверка не пройдена.
-        """
-        from decimal import ROUND_DOWN
-        try:
-            # Шаг 1: Получение актуальной цены
-            ticker = await self.get_ticker(symbol)
-            if not ticker or ticker["lastPrice"] <= 0:
-                log_error(self.user_id, f"Не удалось получить актуальную цену для {symbol}", "bybit_api")
-                return None
-            price = ticker["lastPrice"]
-
-            # Шаг 2: Получение правил инструмента (min qty, qty step)
-            instrument_info = await self.get_instruments_info(symbol)
-            if not instrument_info:
-                log_error(self.user_id, f"Не удалось получить информацию об инструменте для {symbol}", "bybit_api")
-                return None
-
-            qty_step = to_decimal(instrument_info.get("qtyStep", "0.001"))
-            min_qty = to_decimal(instrument_info.get("minOrderQty", "0"))
-
-            # Шаг 3: Расчет базового количества
-            if price <= 0: return None
-            base_qty = usdt_amount / price
-
-            # Шаг 4: Округление ВНИЗ до ближайшего шага (самый важный шаг)
-            if qty_step <= 0: return None
-            floored_qty = (base_qty // qty_step) * qty_step
-
-            # Шаг 5: Проверка на минимально допустимое количество
-            if floored_qty < min_qty:
-                log_warning(self.user_id,
-                            f"Рассчитанное кол-во {floored_qty} для {symbol} меньше минимального {min_qty}. Ордер отменен.",
-                            "bybit_api")
-                return None
-
-            # Шаг 6: Финальное форматирование в строку с нужной точностью
-            if '.' in str(qty_step):
-                precision = len(str(qty_step).split('.')[1].rstrip('0'))
-            else:
-                precision = 0
-
-            quantizer = Decimal('1e-' + str(precision))
-            final_qty_decimal = floored_qty.quantize(quantizer, rounding=ROUND_DOWN)
-
-            return str(final_qty_decimal)
-
-        except Exception as e:
-            log_error(self.user_id, f"Критическая ошибка в calculate_and_format_qty для {symbol}: {e}", "bybit_api")
-            return None
-
     async def place_order(
-            self,
-            symbol: str,
-            side: str,
-            order_type: str,
-            qty: str,
-            price: Optional[Decimal] = None,
-            time_in_force: str = "GTC",
-            reduce_only: bool = False,
-            close_on_trigger: bool = False,
-            stop_loss: Optional[Decimal] = None,
-            take_profit: Optional[Decimal] = None
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        qty: Decimal,
+        price: Optional[Decimal] = None,
+        time_in_force: str = "GTC",
+        reduce_only: bool = False,
+        close_on_trigger: bool = False,
+        stop_loss: Optional[Decimal] = None,
+        take_profit: Optional[Decimal] = None
     ) -> Optional[str]:
         """
         Размещение ордера. Теперь этот метод ДОВЕРЯЕТ полученному qty
         и только форматирует его в правильную строку перед отправкой.
         """
         try:
+            # Форматируем количество в строку с нужной точностью
+            formatted_qty = await self._format_quantity(symbol, qty)
+
             params = {
                 "category": "linear",
                 "symbol": symbol,
                 "side": side,
                 "orderType": order_type,
-                "qty": qty,
+                "qty": formatted_qty, # <-- Используем точно отформатированную строку
                 "timeInForce": time_in_force
             }
 
@@ -622,8 +568,7 @@ class BybitAPI:
             if result and "orderId" in result and result["orderId"]:
                 order_id = result["orderId"]
                 log_info(self.user_id,
-                         f"Ордер успешно размещен: {side} {qty} {symbol} по {price if price else 'рынку'} (ID: {order_id})",
-                         # <-- Логирование теперь использует qty-строку
+                         f"Ордер успешно размещен: {side} {formatted_qty} {symbol} по {price if price else 'рынку'} (ID: {order_id})",
                          "bybit_api")
                 return order_id
             else:
@@ -778,6 +723,77 @@ class BybitAPI:
     # =============================================================================
     # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
     # =============================================================================
+
+    # 1. НОВЫЙ ВСПОМОГАТЕЛЬНЫЙ МЕТОД
+    async def _format_quantity(self, symbol: str, qty: Decimal) -> str:
+        """
+        Форматирует количество в строку с точной десятичной точностью,
+        требуемой биржей для данного символа, используя округление вниз.
+        """
+        from decimal import ROUND_DOWN
+        try:
+            instrument_info = await self.get_instruments_info(symbol)
+            if not instrument_info:
+                return qty.to_eng_string()
+
+            qty_step_str = str(instrument_info.get("qtyStep", "0.001"))
+
+            if '.' in qty_step_str:
+                precision = len(qty_step_str.split('.')[1].rstrip('0'))
+            else:
+                precision = 0
+
+            quantizer = Decimal('1e-' + str(precision))
+
+            formatted_qty_decimal = qty.quantize(quantizer, rounding=ROUND_DOWN)
+
+            return str(formatted_qty_decimal)
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка форматирования количества для {symbol}: {e}", "bybit_api")
+            return qty.to_eng_string()
+
+
+    async def calculate_quantity_from_usdt(
+            self,
+            symbol: str,
+            usdt_amount: Decimal,
+            price: Optional[Decimal] = None
+    ) -> Decimal:
+        """
+        Рассчитывает и ОКРУГЛЯЕТ количество, проверяя МИНИМАЛЬНЫЙ РАЗМЕР ордера.
+        Это единственное место, где происходит математика с количеством.
+        """
+        try:
+            if price is None:
+                ticker = await self.get_ticker(symbol)
+                if not ticker or ticker["lastPrice"] <= 0:
+                    log_error(self.user_id, f"Не удалось получить актуальную цену для {symbol}", "bybit_api")
+                    return Decimal('0')
+                price = ticker["lastPrice"]
+
+            base_qty = usdt_amount / price
+
+            instrument_info = await self.get_instruments_info(symbol)
+            if instrument_info:
+                qty_step = to_decimal(instrument_info.get("qtyStep", "0.001"))
+                min_qty = to_decimal(instrument_info.get("minOrderQty", "0"))
+
+                if qty_step > 0:
+                    # Округление ВНИЗ до ближайшего шага
+                    base_qty = (base_qty // qty_step) * qty_step
+
+                if base_qty < min_qty:
+                    log_warning(self.user_id,
+                                f"Рассчитанное кол-во {base_qty} для {symbol} меньше минимального {min_qty}. Ордер не будет создан.",
+                                "bybit_api")
+                    return Decimal('0')
+
+            return base_qty
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка расчета количества для {symbol}: {e}", "bybit_api")
+            return Decimal('0')
     
     async def round_price(self, symbol: str, price: Decimal) -> Decimal:
         """Округление цены до допустимого шага"""
