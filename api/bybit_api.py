@@ -60,7 +60,7 @@ class BybitAPI:
         self.instruments_cache: Dict[str, Dict] = {}
         self.cache_expiry = 300  # 5 минут
         self.cache_timestamp = 0
-        
+        self._cache_lock = asyncio.Lock()
 
     
     async def __aenter__(self):
@@ -428,53 +428,60 @@ class BybitAPI:
         return None
 
     async def get_instruments_info(self, symbol: str = None) -> Optional[Dict[str, Any]]:
-        """Получение информации об инструментах с кэшированием"""
-        try:
-            current_time = time.time()
-
-            # Если кэш невалиден, полностью обновляем его
-            if not self.instruments_cache or (current_time - self.cache_timestamp > self.cache_expiry):
-                log_info(self.user_id, "Кэш инструментов пуст или устарел. Запрашиваю полный список...",
-                         module_name="bybit_api")
-                params = {"category": "linear"}
-                result = await self._make_request("GET", "/v5/market/instruments-info", params, private=False)
-
-                if result and "list" in result:
-                    new_cache = {}
-                    for instrument in result["list"]:
-                        symbol_name = instrument.get("symbol")
-                        if symbol_name:
-                            new_cache[symbol_name] = {
-                                "symbol": symbol_name,
-                                "baseCoin": instrument.get("baseCoin"),
-                                "quoteCoin": instrument.get("quoteCoin"),
-                                "minOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("minOrderQty", "0")),
-                                "maxOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("maxOrderQty", "0")),
-                                "qtyStep": to_decimal(instrument.get("lotSizeFilter", {}).get("qtyStep", "0")),
-                                "minPrice": to_decimal(instrument.get("priceFilter", {}).get("minPrice", "0")),
-                                "maxPrice": to_decimal(instrument.get("priceFilter", {}).get("maxPrice", "0")),
-                                "tickSize": to_decimal(instrument.get("priceFilter", {}).get("tickSize", "0")),
-                                "status": instrument.get("status")
-                            }
-
-                    self.instruments_cache = new_cache
-                    self.cache_timestamp = current_time
-                    log_info(self.user_id, f"Кэш инструментов обновлен. Загружено {len(new_cache)} символов.",
-                             module_name="bybit_api")
-                else:
-                    log_error(self.user_id, "Не удалось обновить кэш инструментов.", module_name="bybit_api")
-                    return None
-
-            # Теперь, когда кэш гарантированно полный, возвращаем нужную часть
+        """
+        Потокобезопасное получение информации об инструментах с кэшированием.
+        Использует блокировку для предотвращения состояния гонки при обновлении кэша.
+        """
+        current_time = time.time()
+        # Сначала быстро проверяем кэш без блокировки
+        if self.instruments_cache and (current_time - self.cache_timestamp < self.cache_expiry):
             if symbol:
                 return self.instruments_cache.get(symbol)
-            else:
+            return self.instruments_cache
+
+        # Если кэш нужно обновить, используем блокировку
+        async with self._cache_lock:
+            # Повторно проверяем кэш внутри блокировки на случай, если другой поток уже обновил его
+            if self.instruments_cache and (current_time - self.cache_timestamp < self.cache_expiry):
+                if symbol:
+                    return self.instruments_cache.get(symbol)
                 return self.instruments_cache
 
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка получения информации об инструментах: {e}", module_name="bybit_api")
+            log_info(self.user_id, "Кэш инструментов пуст или устарел. Запрашиваю полный список...",
+                     module_name="bybit_api")
+            params = {"category": "linear"}
+            result = await self._make_request("GET", "/v5/market/instruments-info", params, private=False)
 
-        return None
+            if result and "list" in result:
+                new_cache = {}
+                for instrument in result["list"]:
+                    symbol_name = instrument.get("symbol")
+                    if symbol_name:
+                        new_cache[symbol_name] = {
+                            "symbol": symbol_name,
+                            "baseCoin": instrument.get("baseCoin"),
+                            "quoteCoin": instrument.get("quoteCoin"),
+                            "minOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("minOrderQty", "0")),
+                            "maxOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("maxOrderQty", "0")),
+                            "qtyStep": to_decimal(instrument.get("lotSizeFilter", {}).get("qtyStep", "0")),
+                            "minPrice": to_decimal(instrument.get("priceFilter", {}).get("minPrice", "0")),
+                            "maxPrice": to_decimal(instrument.get("priceFilter", {}).get("maxPrice", "0")),
+                            "tickSize": to_decimal(instrument.get("priceFilter", {}).get("tickSize", "0")),
+                            "status": instrument.get("status")
+                        }
+
+                self.instruments_cache = new_cache
+                self.cache_timestamp = current_time
+                log_info(self.user_id, f"Кэш инструментов обновлен. Загружено {len(new_cache)} символов.",
+                         module_name="bybit_api")
+            else:
+                log_error(self.user_id, "Не удалось обновить кэш инструментов.", module_name="bybit_api")
+                return None
+
+        # Возвращаем данные из свежезаполненного кэша
+        if symbol:
+            return self.instruments_cache.get(symbol)
+        return self.instruments_cache
     
     # =============================================================================
     # ПРИВАТНЫЕ МЕТОДЫ API (ТОРГОВЛЯ)

@@ -66,14 +66,6 @@ class GridScalpingStrategy(BaseStrategy):
             await self._load_scalp_parameters()
             await self._set_leverage()
 
-            # --- ГЛАВНОЕ ИСПРАВЛЕНИЕ ---
-            # Принудительно и синхронно загружаем/проверяем кэш инструментов ПЕРЕД расчетом.
-            # Это устраняет состояние гонки (race condition).
-            instrument_info = await self.api.get_instruments_info(self.symbol)
-            if not instrument_info:
-                await self.stop(f"Не удалось получить информацию об инструменте для {self.symbol}")
-                return
-
             order_size_usdt = self._convert_to_decimal(self.get_config_value("order_amount", 10.0))
             leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
 
