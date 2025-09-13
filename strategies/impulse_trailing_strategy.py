@@ -155,7 +155,9 @@ class ImpulseTrailingStrategy(BaseStrategy):
         """Вход в позицию, ожидание исполнения и установка ТОЛЬКО Stop Loss."""
         await self._set_leverage()
         order_size_usdt = self._convert_to_decimal(self.get_config_value("order_amount", 50.0))
-        qty = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt)
+        # ИСПРАВЛЕНИЕ: Получаем плечо из конфига и передаем его в функцию
+        leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
+        qty = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt, leverage)
 
         if qty <= 0:
             await self.stop("Calculated order quantity is zero")

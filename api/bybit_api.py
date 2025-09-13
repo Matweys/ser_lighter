@@ -543,19 +543,18 @@ class BybitAPI:
         take_profit: Optional[Decimal] = None
     ) -> Optional[str]:
         """
-        Размещение ордера. Теперь этот метод ДОВЕРЯЕТ полученному qty
-        и только форматирует его в правильную строку перед отправкой.
+        Размещение ордера. Доверяет полученному qty и просто форматирует его в строку.
         """
         try:
-            # Форматируем количество в строку с нужной точностью
-            formatted_qty = await self._format_quantity(symbol, qty)
+            # Используем to_eng_string() для гарантии, что число не будет в научной нотации (например, 1e-5)
+            formatted_qty = qty.to_eng_string()
 
             params = {
                 "category": "linear",
                 "symbol": symbol,
                 "side": side,
                 "orderType": order_type,
-                "qty": formatted_qty, # <-- Используем точно отформатированную строку
+                "qty": formatted_qty, # Используем просто отформатированную строку
                 "timeInForce": time_in_force
             }
 
@@ -731,96 +730,70 @@ class BybitAPI:
     # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
     # =============================================================================
 
-    # 1. НОВЫЙ ВСПОМОГАТЕЛЬНЫЙ МЕТОД
-    async def _format_quantity(self, symbol: str, qty: Decimal) -> str:
-        """
-        Форматирует количество в строку с точной десятичной точностью,
-        требуемой биржей для данного символа, используя округление вниз.
-        """
-        from decimal import ROUND_DOWN
-        try:
-            instrument_info = await self.get_instruments_info(symbol)
-            if not instrument_info:
-                return qty.to_eng_string()
-
-            qty_step_str = str(instrument_info.get("qtyStep", "0.001"))
-
-            if '.' in qty_step_str:
-                precision = len(qty_step_str.split('.')[1].rstrip('0'))
-            else:
-                precision = 0
-
-            quantizer = Decimal('1e-' + str(precision))
-
-            formatted_qty_decimal = qty.quantize(quantizer, rounding=ROUND_DOWN)
-
-            return str(formatted_qty_decimal)
-
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка форматирования количества для {symbol}: {e}", "bybit_api")
-            return qty.to_eng_string()
 
     async def calculate_quantity_from_usdt(
             self,
             symbol: str,
             usdt_amount: Decimal,
-            leverage: Decimal,  # <-- ДОБАВЛЕН ПАРАМЕТР ПЛЕЧА
+            leverage: Decimal,
             price: Optional[Decimal] = None
     ) -> Decimal:
         """
-        Рассчитывает и ОКРУГЛЯЕТ количество, проверяя МИНИМАЛЬНЫЙ РАЗМЕР ордера.
-        ВКЛЮЧАЕТ УЧЕТ ПЛЕЧА и ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ ДИАГНОСТИКИ.
+        Рассчитывает, округляет и валидирует количество для ордера.
+        Является единым источником правды для расчета qty.
         """
-        log_info(self.user_id, f"--- [QTY DEBUG START] ---", "bybit_api")
-        log_info(self.user_id, f"[QTY_DEBUG] Расчет для {symbol} | Сумма: {usdt_amount} USDT | Плечо: {leverage}x",
+        from decimal import ROUND_DOWN
+        log_info(self.user_id, f"--- [QTY CALC START] ---", "bybit_api")
+        log_info(self.user_id, f"[QTY_CALC] Расчет для {symbol} | Сумма: {usdt_amount} USDT | Плечо: {leverage}x",
                  "bybit_api")
         try:
             if price is None:
                 ticker = await self.get_ticker(symbol)
                 if not ticker or ticker["lastPrice"] <= 0:
-                    log_error(self.user_id, f"[QTY_DEBUG] ОШИБКА: Не удалось получить актуальную цену для {symbol}",
+                    log_error(self.user_id, f"[QTY_CALC] ОШИБКА: Не удалось получить актуальную цену для {symbol}",
                               "bybit_api")
                     return Decimal('0')
                 price = ticker["lastPrice"]
-            log_info(self.user_id, f"[QTY_DEBUG] Цена для расчета: {price}", "bybit_api")
+            log_info(self.user_id, f"[QTY_CALC] Цена для расчета: {price}", "bybit_api")
 
-            # ИСПРАВЛЕНИЕ: Рассчитываем номинальную стоимость позиции с учетом плеча
             notional_value = usdt_amount * leverage
             base_qty = notional_value / price
             log_info(self.user_id,
-                     f"[QTY_DEBUG] Номинальная стоимость: {notional_value:.4f} USDT | Сырое кол-во: {base_qty}",
+                     f"[QTY_CALC] Номинальная стоимость: {notional_value:.4f} USDT | Сырое кол-во: {base_qty}",
                      "bybit_api")
 
             instrument_info = await self.get_instruments_info(symbol)
             if instrument_info:
                 qty_step = instrument_info.get("qtyStep", Decimal("0.001"))
                 min_qty = instrument_info.get("minOrderQty", Decimal("0"))
-                log_info(self.user_id, f"[QTY_DEBUG] Правила инструмента: qtyStep={qty_step}, minOrderQty={min_qty}",
+                log_info(self.user_id, f"[QTY_CALC] Правила инструмента: qtyStep={qty_step}, minOrderQty={min_qty}",
                          "bybit_api")
 
-                if qty_step > 0:
-                    # Округление ВНИЗ до ближайшего шага
-                    floored_qty = (base_qty // qty_step) * qty_step
-                    log_info(self.user_id, f"[QTY_DEBUG] Кол-во после округления вниз до шага: {floored_qty}",
-                             "bybit_api")
-                else:
-                    floored_qty = base_qty
+                if qty_step <= 0:
+                    log_error(self.user_id, f"[QTY_CALC] ОШИБКА: Некорректный qtyStep={qty_step} для {symbol}",
+                              "bybit_api")
+                    return Decimal('0')
 
-                if floored_qty < min_qty:
+                # ЕДИНСТВЕННОЕ ОКРУГЛЕНИЕ: используем quantize для точности
+                quantizer = qty_step
+                rounded_qty = base_qty.quantize(quantizer, rounding=ROUND_DOWN)
+                log_info(self.user_id, f"[QTY_CALC] Кол-во после округления до шага: {rounded_qty}", "bybit_api")
+
+                if rounded_qty < min_qty:
                     log_warning(self.user_id,
-                                f"[QTY_DEBUG] ОШИБКА: Рассчитанное кол-во {floored_qty} меньше минимального {min_qty}.",
+                                f"[QTY_CALC] ПРЕДУПРЕЖДЕНИЕ: Рассчитанное кол-во {rounded_qty} меньше минимального {min_qty}. Возвращаю 0.",
                                 "bybit_api")
                     return Decimal('0')
 
-                log_info(self.user_id, f"--- [QTY DEBUG END] Финальное кол-во (Decimal): {floored_qty} ---",
+                log_info(self.user_id, f"--- [QTY CALC END] Финальное кол-во (Decimal): {rounded_qty} ---",
                          "bybit_api")
-                return floored_qty
+                return rounded_qty
             else:
-                log_error(self.user_id, f"[QTY_DEBUG] ОШИБКА: Не удалось получить instrument_info для {symbol}.",
+                log_error(self.user_id, f"[QTY_CALC] ОШИБКА: Не удалось получить instrument_info для {symbol}.",
                           "bybit_api")
 
         except Exception as e:
-            log_error(self.user_id, f"[QTY_DEBUG] КРИТИЧЕСКАЯ ОШИБКА при расчете: {e}", "bybit_api")
+            log_error(self.user_id, f"[QTY_CALC] КРИТИЧЕСКАЯ ОШИБКА при расчете: {e}", "bybit_api")
 
         return Decimal('0')
     
