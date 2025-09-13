@@ -753,47 +753,69 @@ class BybitAPI:
             log_error(self.user_id, f"Ошибка форматирования количества для {symbol}: {e}", "bybit_api")
             return qty.to_eng_string()
 
-
     async def calculate_quantity_from_usdt(
             self,
             symbol: str,
             usdt_amount: Decimal,
+            leverage: Decimal,  # <-- ДОБАВЛЕН ПАРАМЕТР ПЛЕЧА
             price: Optional[Decimal] = None
     ) -> Decimal:
         """
         Рассчитывает и ОКРУГЛЯЕТ количество, проверяя МИНИМАЛЬНЫЙ РАЗМЕР ордера.
-        Это единственное место, где происходит математика с количеством.
+        ВКЛЮЧАЕТ УЧЕТ ПЛЕЧА и ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ ДИАГНОСТИКИ.
         """
+        log_info(self.user_id, f"--- [QTY DEBUG START] ---", "bybit_api")
+        log_info(self.user_id, f"[QTY_DEBUG] Расчет для {symbol} | Сумма: {usdt_amount} USDT | Плечо: {leverage}x",
+                 "bybit_api")
         try:
             if price is None:
                 ticker = await self.get_ticker(symbol)
                 if not ticker or ticker["lastPrice"] <= 0:
-                    log_error(self.user_id, f"Не удалось получить актуальную цену для {symbol}", "bybit_api")
+                    log_error(self.user_id, f"[QTY_DEBUG] ОШИБКА: Не удалось получить актуальную цену для {symbol}",
+                              "bybit_api")
                     return Decimal('0')
                 price = ticker["lastPrice"]
+            log_info(self.user_id, f"[QTY_DEBUG] Цена для расчета: {price}", "bybit_api")
 
-            base_qty = usdt_amount / price
+            # ИСПРАВЛЕНИЕ: Рассчитываем номинальную стоимость позиции с учетом плеча
+            notional_value = usdt_amount * leverage
+            base_qty = notional_value / price
+            log_info(self.user_id,
+                     f"[QTY_DEBUG] Номинальная стоимость: {notional_value:.4f} USDT | Сырое кол-во: {base_qty}",
+                     "bybit_api")
 
             instrument_info = await self.get_instruments_info(symbol)
             if instrument_info:
-                qty_step = to_decimal(instrument_info.get("qtyStep", "0.001"))
-                min_qty = to_decimal(instrument_info.get("minOrderQty", "0"))
+                qty_step = instrument_info.get("qtyStep", Decimal("0.001"))
+                min_qty = instrument_info.get("minOrderQty", Decimal("0"))
+                log_info(self.user_id, f"[QTY_DEBUG] Правила инструмента: qtyStep={qty_step}, minOrderQty={min_qty}",
+                         "bybit_api")
 
                 if qty_step > 0:
                     # Округление ВНИЗ до ближайшего шага
-                    base_qty = (base_qty // qty_step) * qty_step
+                    floored_qty = (base_qty // qty_step) * qty_step
+                    log_info(self.user_id, f"[QTY_DEBUG] Кол-во после округления вниз до шага: {floored_qty}",
+                             "bybit_api")
+                else:
+                    floored_qty = base_qty
 
-                if base_qty < min_qty:
+                if floored_qty < min_qty:
                     log_warning(self.user_id,
-                                f"Рассчитанное кол-во {base_qty} для {symbol} меньше минимального {min_qty}. Ордер не будет создан.",
+                                f"[QTY_DEBUG] ОШИБКА: Рассчитанное кол-во {floored_qty} меньше минимального {min_qty}.",
                                 "bybit_api")
                     return Decimal('0')
 
-            return base_qty
+                log_info(self.user_id, f"--- [QTY DEBUG END] Финальное кол-во (Decimal): {floored_qty} ---",
+                         "bybit_api")
+                return floored_qty
+            else:
+                log_error(self.user_id, f"[QTY_DEBUG] ОШИБКА: Не удалось получить instrument_info для {symbol}.",
+                          "bybit_api")
 
         except Exception as e:
-            log_error(self.user_id, f"Ошибка расчета количества для {symbol}: {e}", "bybit_api")
-            return Decimal('0')
+            log_error(self.user_id, f"[QTY_DEBUG] КРИТИЧЕСКАЯ ОШИБКА при расчете: {e}", "bybit_api")
+
+        return Decimal('0')
     
     async def round_price(self, symbol: str, price: Decimal) -> Decimal:
         """Округление цены до допустимого шага"""

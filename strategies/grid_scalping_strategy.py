@@ -67,8 +67,10 @@ class GridScalpingStrategy(BaseStrategy):
             await self._set_leverage()
 
             order_size_usdt = self._convert_to_decimal(self.get_config_value("order_amount", 10.0))
-            # Возвращаем использование оригинальной функции calculate_quantity_from_usdt
-            qty = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt)
+            leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
+
+            # Передаем плечо в обновленную функцию расчета
+            qty = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt, leverage)
 
             if qty > 0:
                 self.is_waiting_for_fill = True
@@ -158,7 +160,10 @@ class GridScalpingStrategy(BaseStrategy):
             await self._cancel_tp_order()
 
             order_size_usdt = self._convert_to_decimal(self.get_config_value("order_amount", 10.0))
-            qty_to_buy = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt)
+            leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
+
+            # ИСПРАВЛЕНИЕ: Добавляем недостающий параметр leverage
+            qty_to_buy = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt, leverage)
 
             if qty_to_buy > 0:
                 order_id = await self._place_order(side="Buy", order_type="Market", qty=qty_to_buy)
