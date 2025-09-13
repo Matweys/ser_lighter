@@ -429,19 +429,19 @@ class BybitAPI:
 
     async def get_instruments_info(self, symbol: str = None) -> Optional[Dict[str, Any]]:
         """
-        Потокобезопасное получение информации об инструментах с кэшированием.
-        Использует блокировку для предотвращения состояния гонки при обновлении кэша.
+        Атомарное и потокобезопасное получение информации об инструментах с кэшированием.
+        Гарантирует возврат данных сразу после обновления кэша внутри блокировки.
         """
         current_time = time.time()
-        # Сначала быстро проверяем кэш без блокировки
+        # Быстрая проверка кэша без блокировки для максимальной производительности
         if self.instruments_cache and (current_time - self.cache_timestamp < self.cache_expiry):
             if symbol:
                 return self.instruments_cache.get(symbol)
             return self.instruments_cache
 
-        # Если кэш нужно обновить, используем блокировку
+        # Основная логика с блокировкой для обеспечения целостности данных
         async with self._cache_lock:
-            # Повторно проверяем кэш внутри блокировки на случай, если другой поток уже обновил его
+            # Повторная проверка внутри блокировки на случай, если другой поток уже обновил кэш
             if self.instruments_cache and (current_time - self.cache_timestamp < self.cache_expiry):
                 if symbol:
                     return self.instruments_cache.get(symbol)
@@ -452,36 +452,45 @@ class BybitAPI:
             params = {"category": "linear"}
             result = await self._make_request("GET", "/v5/market/instruments-info", params, private=False)
 
-            if result and "list" in result:
-                new_cache = {}
-                for instrument in result["list"]:
-                    symbol_name = instrument.get("symbol")
-                    if symbol_name:
-                        new_cache[symbol_name] = {
-                            "symbol": symbol_name,
-                            "baseCoin": instrument.get("baseCoin"),
-                            "quoteCoin": instrument.get("quoteCoin"),
-                            "minOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("minOrderQty", "0")),
-                            "maxOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("maxOrderQty", "0")),
-                            "qtyStep": to_decimal(instrument.get("lotSizeFilter", {}).get("qtyStep", "0")),
-                            "minPrice": to_decimal(instrument.get("priceFilter", {}).get("minPrice", "0")),
-                            "maxPrice": to_decimal(instrument.get("priceFilter", {}).get("maxPrice", "0")),
-                            "tickSize": to_decimal(instrument.get("priceFilter", {}).get("tickSize", "0")),
-                            "status": instrument.get("status")
-                        }
-
-                self.instruments_cache = new_cache
-                self.cache_timestamp = current_time
-                log_info(self.user_id, f"Кэш инструментов обновлен. Загружено {len(new_cache)} символов.",
-                         module_name="bybit_api")
-            else:
-                log_error(self.user_id, "Не удалось обновить кэш инструментов.", module_name="bybit_api")
+            if not (result and "list" in result):
+                log_error(self.user_id, "Не удалось обновить кэш инструментов: получен некорректный ответ от API.",
+                          module_name="bybit_api")
                 return None
 
-        # Возвращаем данные из свежезаполненного кэша
-        if symbol:
-            return self.instruments_cache.get(symbol)
-        return self.instruments_cache
+            # Создание нового кэша
+            new_cache = {}
+            for instrument in result["list"]:
+                symbol_name = instrument.get("symbol")
+                if symbol_name:
+                    new_cache[symbol_name] = {
+                        "symbol": symbol_name,
+                        "baseCoin": instrument.get("baseCoin"),
+                        "quoteCoin": instrument.get("quoteCoin"),
+                        "minOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("minOrderQty", "0")),
+                        "maxOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("maxOrderQty", "0")),
+                        "qtyStep": to_decimal(instrument.get("lotSizeFilter", {}).get("qtyStep", "0")),
+                        "minPrice": to_decimal(instrument.get("priceFilter", {}).get("minPrice", "0")),
+                        "maxPrice": to_decimal(instrument.get("priceFilter", {}).get("maxPrice", "0")),
+                        "tickSize": to_decimal(instrument.get("priceFilter", {}).get("tickSize", "0")),
+                        "status": instrument.get("status")
+                    }
+
+            # Обновление кэша
+            self.instruments_cache = new_cache
+            self.cache_timestamp = current_time
+            log_info(self.user_id, f"Кэш инструментов обновлен. Загружено {len(new_cache)} символов.",
+                     module_name="bybit_api")
+
+            # ВОЗВРАТ РЕЗУЛЬТАТА ПРОИСХОДИТ ВНУТРИ БЛОКИРОВКИ
+            if symbol:
+                instrument_data = self.instruments_cache.get(symbol)
+                if not instrument_data:
+                    # Добавляем более детальное логирование для диагностики
+                    log_error(self.user_id, f"КРИТИЧЕСКАЯ ОШИБКА: Символ '{symbol}' не найден в свежезагруженном кэше!",
+                              module_name="bybit_api")
+                return instrument_data
+
+            return self.instruments_cache
     
     # =============================================================================
     # ПРИВАТНЫЕ МЕТОДЫ API (ТОРГОВЛЯ)
