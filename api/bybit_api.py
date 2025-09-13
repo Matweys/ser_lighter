@@ -736,14 +736,14 @@ class BybitAPI:
         try:
             instrument_info = await self.get_instruments_info(symbol)
             if not instrument_info:
-                return format_number(qty)
+                return format_number(qty)  # Фолбэк на старую функцию
 
             qty_step_str = instrument_info.get("qtyStep", "0.001")
 
             # Надежный способ определить количество знаков после запятой
             if '.' in qty_step_str:
                 # Просто берем длину части после точки
-                precision = len(qty_step_str.split('.')[1])
+                precision = len(qty_step_str.split('.')[1].rstrip('0'))
             else:
                 precision = 0
 
