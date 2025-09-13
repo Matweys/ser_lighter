@@ -67,12 +67,15 @@ class GridScalpingStrategy(BaseStrategy):
             await self._set_leverage()
 
             order_size_usdt = self._convert_to_decimal(self.get_config_value("order_amount", 10.0))
-            qty = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt)
+            # Используем новую единую функцию, которая возвращает готовую строку или None
+            qty_str = await self.api.calculate_and_format_qty(self.symbol, order_size_usdt)
 
-            if qty > 0:
+            if qty_str:
                 self.is_waiting_for_fill = True
-                log_info(self.user_id, f"Размещаю начальный рыночный ордер для {self.symbol}.", "grid_scalping")
-                order_id = await self._place_order(side="Buy", order_type="Market", qty=qty)
+                log_info(self.user_id, f"Размещаю начальный рыночный ордер для {self.symbol} с кол-вом {qty_str}.",
+                         "grid_scalping")
+                # ВАЖНО: передаем в _place_order строку qty_str, а не Decimal qty
+                order_id = await self._place_order(side="Buy", order_type="Market", qty=qty_str)
 
                 if order_id:
                     # ПРЯМОЙ ВЫЗОВ API-ПОЛЛЕРА
