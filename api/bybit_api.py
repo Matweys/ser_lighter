@@ -429,8 +429,7 @@ class BybitAPI:
 
     async def get_instruments_info(self, symbol: str = None) -> Optional[Dict[str, Any]]:
         """
-        Атомарное и потокобезопасное получение информации об инструментах с кэшированием.
-        Гарантирует возврат данных сразу после обновления кэша внутри блокировки.
+        Атомарное и потокобезопасное получение ВСЕЙ информации об инструментах с пагинацией и кэшированием.
         """
         current_time = time.time()
         # Быстрая проверка кэша без блокировки для максимальной производительности
@@ -447,47 +446,62 @@ class BybitAPI:
                     return self.instruments_cache.get(symbol)
                 return self.instruments_cache
 
-            log_info(self.user_id, "Кэш инструментов пуст или устарел. Запрашиваю полный список...",
+            log_info(self.user_id, "Кэш инструментов пуст или устарел. Запрашиваю ПОЛНЫЙ список с пагинацией...",
                      module_name="bybit_api")
-            params = {"category": "linear"}
-            result = await self._make_request("GET", "/v5/market/instruments-info", params, private=False)
 
-            if not (result and "list" in result):
-                log_error(self.user_id, "Не удалось обновить кэш инструментов: получен некорректный ответ от API.",
-                          module_name="bybit_api")
-                return None
-
-            # Создание нового кэша
             new_cache = {}
-            for instrument in result["list"]:
-                symbol_name = instrument.get("symbol")
-                if symbol_name:
-                    new_cache[symbol_name] = {
-                        "symbol": symbol_name,
-                        "baseCoin": instrument.get("baseCoin"),
-                        "quoteCoin": instrument.get("quoteCoin"),
-                        "minOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("minOrderQty", "0")),
-                        "maxOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("maxOrderQty", "0")),
-                        "qtyStep": to_decimal(instrument.get("lotSizeFilter", {}).get("qtyStep", "0")),
-                        "minPrice": to_decimal(instrument.get("priceFilter", {}).get("minPrice", "0")),
-                        "maxPrice": to_decimal(instrument.get("priceFilter", {}).get("maxPrice", "0")),
-                        "tickSize": to_decimal(instrument.get("priceFilter", {}).get("tickSize", "0")),
-                        "status": instrument.get("status")
-                    }
+            cursor = ""
+
+            # --- НАЧАЛО ЛОГИКИ ПАГИНАЦИИ ---
+            while True:
+                params = {"category": "linear", "limit": 1000}  # Запрашиваем по 1000 за раз (максимум)
+                if cursor:
+                    params["cursor"] = cursor
+
+                result = await self._make_request("GET", "/v5/market/instruments-info", params, private=False)
+
+                if not (result and "list" in result):
+                    log_error(self.user_id,
+                              f"Не удалось обновить кэш инструментов: получен некорректный ответ от API на странице с курсором '{cursor}'.",
+                              module_name="bybit_api")
+                    # Если уже что-то загрузили, лучше использовать это, чем ничего
+                    if new_cache:
+                        break
+                    return None
+
+                for instrument in result["list"]:
+                    symbol_name = instrument.get("symbol")
+                    if symbol_name:
+                        new_cache[symbol_name] = {
+                            "symbol": symbol_name,
+                            "baseCoin": instrument.get("baseCoin"),
+                            "quoteCoin": instrument.get("quoteCoin"),
+                            "minOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("minOrderQty", "0")),
+                            "maxOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("maxOrderQty", "0")),
+                            "qtyStep": to_decimal(instrument.get("lotSizeFilter", {}).get("qtyStep", "0")),
+                            "minPrice": to_decimal(instrument.get("priceFilter", {}).get("minPrice", "0")),
+                            "maxPrice": to_decimal(instrument.get("priceFilter", {}).get("maxPrice", "0")),
+                            "tickSize": to_decimal(instrument.get("priceFilter", {}).get("tickSize", "0")),
+                            "status": instrument.get("status")
+                        }
+
+                cursor = result.get("nextPageCursor", "")
+                if not cursor:
+                    break  # Выходим из цикла, если больше страниц нет
+            # --- КОНЕЦ ЛОГИКИ ПАГИНАЦИИ ---
 
             # Обновление кэша экземпляра
             self.instruments_cache = new_cache
             self.cache_timestamp = current_time
-            log_info(self.user_id, f"Кэш инструментов обновлен. Загружено {len(new_cache)} символов.",
+            log_info(self.user_id, f"Кэш инструментов обновлен. Загружено {len(new_cache)} символов со всех страниц.",
                      module_name="bybit_api")
 
-            # ИСПРАВЛЕНИЕ: Возвращаем результат из локальной переменной new_cache,
-            # чтобы гарантировать его свежесть и доступность.
+            # Возвращаем результат из локальной переменной new_cache
             if symbol:
                 instrument_data = new_cache.get(symbol)
                 if not instrument_data:
                     log_error(self.user_id,
-                              f"КРИТИЧЕСКАЯ ОШИБКА: Символ '{symbol}' не найден в свежезагруженном ответе API!",
+                              f"КРИТИЧЕСКАЯ ОШИБКА: Символ '{symbol}' не найден даже после полной загрузки!",
                               module_name="bybit_api")
                 return instrument_data
 

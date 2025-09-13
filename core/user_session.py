@@ -250,23 +250,34 @@ class UserSession:
             watchlist = global_config.get("watchlist_symbols", [])
             log_info(self.user_id, f"Запуск Grid Scalping для символов из watchlist: {watchlist}", module_name=__name__)
 
+
+            #TODO этот блок кода можешь потом поменять на тот что ниже, если один токен не доступен то стратегия не запустится
+            # # 3. Запускаем по одной стратегии для каждого символа
+            # for symbol in watchlist:
+            #     # Для постоянных стратегий не нужен специальный сигнал,
+            #     # поэтому signal_data может быть пустым.
+            #     success = await self.start_strategy(
+            #         strategy_type="grid_scalping",
+            #         symbol=symbol,
+            #         analysis_data={'trigger': 'persistent_start'}
+            #     )
+            #     # ИСПРАВЛЕНИЕ: Если запуск хотя бы одной стратегии не удался,
+            #     # прерываем весь процесс для избежания частичной работы.
+            #     if not success:
+            #         log_error(self.user_id,
+            #                   f"Сбой запуска стратегии для {symbol}. Прерываю запуск остальных стратегий.",
+            #                   module_name=__name__)
+            #         # Этот return False может быть использован в вызывающем коде, чтобы остановить всю сессию
+            #         return False
             # 3. Запускаем по одной стратегии для каждого символа
             for symbol in watchlist:
                 # Для постоянных стратегий не нужен специальный сигнал,
                 # поэтому signal_data может быть пустым.
-                success = await self.start_strategy(
+                await self.start_strategy(
                     strategy_type="grid_scalping",
                     symbol=symbol,
                     analysis_data={'trigger': 'persistent_start'}
                 )
-                # ИСПРАВЛЕНИЕ: Если запуск хотя бы одного символа не удался,
-                # прерываем весь процесс для избежания частичной работы.
-                if not success:
-                    log_error(self.user_id,
-                              f"Сбой запуска стратегии для {symbol}. Прерываю запуск остальных стратегий.",
-                              module_name=__name__)
-                    # Этот return False может быть использован в вызывающем коде, чтобы остановить всю сессию
-                    return False
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка при запуске постоянных стратегий: {e}", module_name=__name__)
