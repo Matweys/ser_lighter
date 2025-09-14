@@ -280,8 +280,7 @@ async def cmd_trade_start(message: Message, state: FSMContext):
             return
 
         # Публикуем событие запуска сессии
-        if basic_handler.event_bus:
-            await event_bus.publish(UserSessionStartRequestedEvent(user_id=user_id))
+        await event_bus.publish(UserSessionStartRequestedEvent(user_id=user_id))
 
         await message.answer(
             "🚀 <b>Запуск торговли...</b>\n\n"
@@ -326,8 +325,7 @@ async def cmd_trade_stop(message: Message, state: FSMContext):
             return
 
         # Публикуем событие остановки сессии
-        if basic_handler.event_bus:
-            await event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id))
+        await event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id))
 
         await message.answer(
             "🛑 <b>Остановка торговли...</b>\n\n"
@@ -366,8 +364,7 @@ async def cmd_emergency_stop(message: Message, state: FSMContext):
         await basic_handler.log_command_usage(user_id, "emergency_stop")
 
         # Экстренная остановка всех операций
-        if basic_handler.event_bus:
-            await event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id, reason="EMERGENCY_STOP"))
+        await event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id, reason="EMERGENCY_STOP"))
 
         await message.answer(
             "🚨 <b>ЭКСТРЕННАЯ ОСТАНОВКА!</b>\n\n"
@@ -494,30 +491,28 @@ async def cmd_autotrade_start(message: Message, state: FSMContext):
         await message.answer("✅ Торговля уже запущена.")
         return
 
-    if basic_handler.event_bus:
-        await event_bus.publish(UserSessionStartRequestedEvent(user_id=user_id))
-        await message.answer(
-            "🚀 <b>Запускаю автоматическую торговлю...</b>\nСистема инициализирует сессию и подключается к рынку.",
-            parse_mode="HTML")
+    # Используем импортированный event_bus напрямую, без лишних проверок
+    await event_bus.publish(UserSessionStartRequestedEvent(user_id=user_id))
 
-        # Улучшенная проверка статуса с помощью поллинга
-        is_started = False
-        for _ in range(15):  # Проверяем в течение 15 секунд
-            await asyncio.sleep(1)
-            session_data = await redis_manager.get_user_session(user_id)
-            if session_data and session_data.get('autotrade_enabled', False):
-                is_started = True
-                break
+    await message.answer(
+        "🚀 <b>Запускаю автоматическую торговлю...</b>\nСистема инициализирует сессию и подключается к рынку.",
+        parse_mode="HTML")
 
-        if is_started:
-            await message.answer("✅ <b>Торговля успешно запущена!</b>", parse_mode="HTML")
-        else:
-            await message.answer(
-                "❌ <b>Не удалось запустить торговлю.</b> Проверьте логи для получения дополнительной информации.",
-                parse_mode="HTML")
+    # Улучшенная проверка статуса с помощью поллинга
+    is_started = False
+    for _ in range(15):  # Проверяем в течение 15 секунд
+        await asyncio.sleep(1)
+        session_data = await redis_manager.get_user_session(user_id)
+        if session_data and session_data.get('autotrade_enabled', False):
+            is_started = True
+            break
+
+    if is_started:
+        await message.answer("✅ <b>Торговля успешно запущена!</b>", parse_mode="HTML")
     else:
-        log_error(user_id, "Шина событий (event_bus) недоступна в basic_handler.", "basic_handlers")
-        await message.answer("❌ Системная ошибка: шина событий недоступна. Не могу запустить торговлю.")
+        await message.answer(
+            "❌ <b>Не удалось запустить торговлю.</b> Проверьте логи для получения дополнительной информации.",
+            parse_mode="HTML")
 
 
 @router.message(Command("autotrade_stop"))
@@ -527,26 +522,33 @@ async def cmd_autotrade_stop(message: Message, state: FSMContext):
     await basic_handler.log_command_usage(user_id, "autotrade_stop")
 
     session_status = await redis_manager.get_user_session(user_id)
-    if not session_status or session_status.get('status') != 'active':
-        await message.answer("🔴 Торговля не запущена.")
+    # Проверяем флаг, который реально управляет торговлей
+    if not session_status or not session_status.get('autotrade_enabled', False):
+        await message.answer("🔴 Торговля и так неактивна.")
         return
 
-    if basic_handler.event_bus:
-        await event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id, reason="manual_stop_command"))
-        await message.answer(
-            "🛑 <b>Останавливаю автоматическую торговлю...</b>\nСистема завершит текущие операции и сохранит статистику.",
-            parse_mode="HTML")
+    # Напрямую публикуем событие в глобальную шину
+    await event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id, reason="manual_stop_command"))
 
-        # Добавлено: Ожидание и проверка статуса
-        await asyncio.sleep(2)  # Даем системе время на обработку
+    await message.answer(
+        "🛑 <b>Останавливаю автоматическую торговлю...</b>\nСистема завершит текущие операции и сохранит статистику.",
+        parse_mode="HTML")
+
+    # Улучшенная проверка статуса остановки
+    is_stopped = False
+    for _ in range(15):  # Проверяем в течение 15 секунд
+        await asyncio.sleep(1)
         session_data = await redis_manager.get_user_session(user_id)
         if not session_data or not session_data.get('autotrade_enabled', False):
-            await message.answer("✅ <b>Торговля успешно остановлена.</b>", parse_mode="HTML")
-        else:
-            await message.answer("❌ <b>Не удалось остановить торговлю.</b> Проверьте логи.", parse_mode="HTML")
+            is_stopped = True
+            break
+
+    if is_stopped:
+        await message.answer("✅ <b>Торговля успешно остановлена.</b>", parse_mode="HTML")
     else:
-        log_error(user_id, "Шина событий (event_bus) недоступна в basic_handler.", "basic_handlers")
-        await message.answer("❌ Системная ошибка: шина событий недоступна. Не могу остановить торговлю.")
+        await message.answer(
+            "❌ <b>Не удалось подтвердить остановку торговли.</b> Проверьте статус через /autotrade_status.",
+            parse_mode="HTML")
 
 
 @router.message(Command("autotrade_status"))
