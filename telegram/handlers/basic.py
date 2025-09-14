@@ -344,7 +344,8 @@ async def cmd_settings(message: Message, state: FSMContext):
 # --- Команды управления торговлей ---
 
 @router.message(Command("autotrade_start"))
-async def cmd_autotrade_start(message: Message, state: FSMContext):
+# 2. Добавляем 'bot_application: BotApplication' в аргументы функции
+async def cmd_autotrade_start(message: Message, state: FSMContext, bot_application: BotApplication):
     """Обработчик команды /autotrade_start"""
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "autotrade_start")
@@ -361,7 +362,7 @@ async def cmd_autotrade_start(message: Message, state: FSMContext):
         await message.answer("✅ Торговля уже запущена.")
         return
 
-    # ПРАВИЛЬНЫЙ ВЫЗОВ: напрямую через внедренный bot_application
+    # Теперь этот вызов будет работать, так как aiogram передаст сюда bot_application
     await bot_application.request_session_start(user_id=user_id)
 
     await message.answer(
