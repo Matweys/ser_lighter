@@ -10,7 +10,7 @@ from datetime import datetime
 import asyncio
 
 from database.db_trades import db_manager, UserProfile
-from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent
+from core.events import event_bus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent
 from .states import UserStates
 from cache.redis_manager import redis_manager
 from core.functions import format_currency, format_percentage
@@ -37,8 +37,7 @@ router = Router()
 class BasicCommandHandler:
     """Профессиональный обработчик базовых команд"""
 
-    def __init__(self, event_bus: EventBus):
-        self.event_bus = event_bus
+    def __init__(self):
         self.command_stats = {}
         self.user_sessions = {}
 
@@ -52,11 +51,9 @@ class BasicCommandHandler:
         # Обновляем активность пользователя в Redis
         await redis_manager.update_user_activity(user_id)
 
-basic_handler = BasicCommandHandler(None)  # EventBus будет инициализирован позже
+basic_handler = BasicCommandHandler()
 
-def set_event_bus(event_bus: EventBus):
-    """Установка EventBus для basic handler"""
-    basic_handler.event_bus = event_bus
+
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -284,9 +281,7 @@ async def cmd_trade_start(message: Message, state: FSMContext):
 
         # Публикуем событие запуска сессии
         if basic_handler.event_bus:
-            await basic_handler.event_bus.publish(
-                UserSessionStartRequestedEvent(user_id=user_id)
-            )
+            await event_bus.publish(UserSessionStartRequestedEvent(user_id=user_id))
 
         await message.answer(
             "🚀 <b>Запуск торговли...</b>\n\n"
@@ -332,9 +327,7 @@ async def cmd_trade_stop(message: Message, state: FSMContext):
 
         # Публикуем событие остановки сессии
         if basic_handler.event_bus:
-            await basic_handler.event_bus.publish(
-                UserSessionStopRequestedEvent(user_id=user_id)
-            )
+            await event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id))
 
         await message.answer(
             "🛑 <b>Остановка торговли...</b>\n\n"
@@ -374,12 +367,7 @@ async def cmd_emergency_stop(message: Message, state: FSMContext):
 
         # Экстренная остановка всех операций
         if basic_handler.event_bus:
-            await basic_handler.event_bus.publish(
-                UserSessionStopRequestedEvent(
-                    user_id=user_id,
-                    reason="EMERGENCY_STOP"
-                )
-            )
+            await event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id, reason="EMERGENCY_STOP"))
 
         await message.answer(
             "🚨 <b>ЭКСТРЕННАЯ ОСТАНОВКА!</b>\n\n"
@@ -507,7 +495,7 @@ async def cmd_autotrade_start(message: Message, state: FSMContext):
         return
 
     if basic_handler.event_bus:
-        await basic_handler.event_bus.publish(UserSessionStartRequestedEvent(user_id=user_id))
+        await event_bus.publish(UserSessionStartRequestedEvent(user_id=user_id))
         await message.answer(
             "🚀 <b>Запускаю автоматическую торговлю...</b>\nСистема инициализирует сессию и подключается к рынку.",
             parse_mode="HTML")
@@ -544,8 +532,7 @@ async def cmd_autotrade_stop(message: Message, state: FSMContext):
         return
 
     if basic_handler.event_bus:
-        await basic_handler.event_bus.publish(
-            UserSessionStopRequestedEvent(user_id=user_id, reason="manual_stop_command"))
+        await event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id, reason="manual_stop_command"))
         await message.answer(
             "🛑 <b>Останавливаю автоматическую торговлю...</b>\nСистема завершит текущие операции и сохранит статистику.",
             parse_mode="HTML")

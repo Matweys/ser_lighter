@@ -12,7 +12,7 @@ from datetime import datetime
 from core.logger import log_info, log_error, log_warning
 from core.events import (
     EventType, BaseEvent, UserSessionStartedEvent, UserSessionStoppedEvent,
-    UserSettingsChangedEvent, RiskLimitExceededEvent, EventBus,
+    UserSettingsChangedEvent, RiskLimitExceededEvent, EventBus, event_bus,
     UserSessionStartRequestedEvent, UserSessionStopRequestedEvent
 )
 
@@ -30,7 +30,7 @@ class BotApplication:
     """
     
     def __init__(self):
-        self.event_bus = EventBus()
+        self.event_bus = event_bus
         self.active_sessions: Dict[int, UserSession] = {}
         self.session_tasks: Dict[int, asyncio.Task] = {}
         self._running = False

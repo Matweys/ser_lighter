@@ -299,3 +299,5 @@ class EventBus:
                 logger.error(f"Критическая ошибка в EventBus: {e}")
                 await asyncio.sleep(1)
 
+# ГЛОБАЛЬНЫЙ ЭКЗЕМПЛЯР, КОТОРЫЙ БУДЕТ ИСПОЛЬЗОВАТЬСЯ ВЕЗДЕ
+event_bus = EventBus()
