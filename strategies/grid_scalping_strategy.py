@@ -54,9 +54,8 @@ class GridScalpingStrategy(BaseStrategy):
         self.quick_profit_percent = self._convert_to_decimal(self.get_config_value("profit_percent", 1.0))
         self.stop_loss_percent = self._convert_to_decimal(self.get_config_value("stop_loss_percent", 5.0))
         self.cooldown_after_stop = int(self.get_config_value("cooldown_after_stop_seconds", 60))
-        log_info(self.user_id,
-                 f"Параметры Grid Scalping загружены: уровни={self.scalp_levels}, шаг={self.scalp_spacing_percent}%, профит={self.quick_profit_percent}%",
-                 "grid_scalping")
+        log_info(self.user_id,f"Параметры Grid Scalping загружены: уровни={self.scalp_levels},"
+                              f" профит={self.quick_profit_percent}%","grid_scalping")
 
     # 1. ЛОГИКА ЗАПУСКА И ПЕРВОГО ВХОДА
     async def _execute_strategy_logic(self):

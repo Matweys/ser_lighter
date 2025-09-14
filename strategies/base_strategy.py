@@ -14,7 +14,7 @@ from core.enums import StrategyType, PositionSide, ConfigType, ExchangeType
 from core.events import (
     EventType, BaseEvent, SignalEvent, PriceUpdateEvent,
     OrderFilledEvent, PositionUpdateEvent, PositionClosedEvent,
-    UserSettingsChangedEvent, EventBus
+    UserSettingsChangedEvent, EventBus, OrderUpdateEvent
 )
 from cache.redis_manager import redis_manager
 from api.bybit_api import BybitAPI
