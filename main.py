@@ -31,17 +31,18 @@ async def set_commands():
     """Устанавливает команды, видимые в меню Telegram."""
     commands = [
         BotCommand(command="/start", description="🏠 Главное меню"),
-        BotCommand(command="/autotrade_start", description="🚀 Начать авто-торговлю"),
-        BotCommand(command="/autotrade_stop", description="🛑 Остановить авто-торговлю"),
-        BotCommand(command="/autotrade_status", description="📊 Статус авто-торговли"),
-        BotCommand(command="/positions", description="📈 Открытые позиции"),
-        BotCommand(command="/stop_all", description="🚫 Остановить ВСЕ и закрыть позиции"),
-        BotCommand(command="/stats", description="📊 Моя статистика"),
+        BotCommand(command="/autotrade_start", description="▶️ Начать торговлю"),
+        BotCommand(command="/autotrade_stop", description="⏹️ Остановить торговлю"),
+        BotCommand(command="/stop_all", description="🚫 Экстренная остановка"),
+        BotCommand(command="/settings", description="⚙️ Настройки"),
+        BotCommand(command="/stats", description="📊 Статистика"),
         BotCommand(command="/balance", description="💰 Баланс"),
-        BotCommand(command="/settings", description="⚙️ Настройки бота"),
-        BotCommand(command="/help", description="ℹ️ Помощь"),
-    ]
+        BotCommand(command="/positions", description="📈 Позиции"),
+        BotCommand(command="/orders", description="📋 Ордера"),
+        BotCommand(command="/autotrade_status", description="📊 Статус торговли"),
+        BotCommand(command="/help", description="ℹ️ Помощь")
 
+    ]
     await bot_manager.bot.set_my_commands(commands)
 
 async def setup_admin_user():
