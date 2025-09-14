@@ -573,10 +573,22 @@ class UserSession:
             log_error(self.user_id, f"Ошибка остановки компонентов: {e}", module_name=__name__)
 
     async def _subscribe_to_events(self):
-        """Подписка на события"""
+        """Подписка на события. Явно указываем все события, которые обрабатывает сессия."""
         try:
-            # Подписываем один универсальный обработчик для пользователя
-            self.event_bus.subscribe_user(self.user_id, self._user_event_handler)
+            # Этот список - самодокументируемый контракт. Сразу видно, что умеет делать сессия.
+            events_for_session = [
+                EventType.SIGNAL,
+                EventType.RISK_LIMIT_EXCEEDED,
+                EventType.USER_SETTINGS_CHANGED,
+                EventType.STRATEGY_RESTART_REQUESTED,
+                EventType.ORDER_FILLED,
+                EventType.PRICE_UPDATE,
+                EventType.POSITION_UPDATE,
+                EventType.ORDER_UPDATE,
+            ]
+            for event_type in events_for_session:
+                await self.event_bus.subscribe(event_type, self._user_event_handler, user_id=self.user_id)
+
             log_info(self.user_id, "Успешная подписка на пользовательские события.", module_name=__name__)
         except Exception as e:
             log_error(self.user_id, f"Ошибка подписки на события: {e}", module_name=__name__)
@@ -584,8 +596,8 @@ class UserSession:
     async def _unsubscribe_from_events(self):
         """Отписка от событий"""
         try:
-            # Отписка пользователя от всех его персональных событий
-            self.event_bus.unsubscribe_user(self.user_id)
+            # Новый метод отписки удаляет все подписки для данного обработчика
+            await self.event_bus.unsubscribe(self._user_event_handler)
         except Exception as e:
             log_error(self.user_id, f"Ошибка отписки от событий: {e}", module_name=__name__)
 

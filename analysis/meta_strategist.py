@@ -45,9 +45,10 @@ class MetaStrategist:
         try:
             await self._load_user_config()
 
-            # 2. Меняем подписку с NewCandleEvent на GlobalCandleEvent
-            self.event_bus.subscribe(EventType.GLOBAL_CANDLE, self._handle_global_candle)
-            self.event_bus.subscribe(EventType.USER_SETTINGS_CHANGED, self._handle_settings_changed)
+            # Глобальное событие подписываем без user_id
+            await self.event_bus.subscribe(EventType.GLOBAL_CANDLE, self._handle_global_candle)
+            # Пользовательское событие - с user_id
+            await self.event_bus.subscribe(EventType.USER_SETTINGS_CHANGED, self._handle_settings_changed, user_id=self.user_id)
 
             self.running = True
             log_info(self.user_id, "MetaStrategist запущен", module_name=__name__)
@@ -56,9 +57,12 @@ class MetaStrategist:
             raise
 
     async def stop(self):
-        """Остановка MetaStrategist"""
         if not self.running:
             return
+
+        # Отписываем оба обработчика
+        await self.event_bus.unsubscribe(self._handle_global_candle)
+        await self.event_bus.unsubscribe(self._handle_settings_changed)
 
         self.running = False
         log_info(self.user_id, "MetaStrategist остановлен", module_name=__name__)

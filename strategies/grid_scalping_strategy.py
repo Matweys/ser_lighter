@@ -185,15 +185,23 @@ class GridScalpingStrategy(BaseStrategy):
 
     async def _handle_price_update(self, event: PriceUpdateEvent):
         """Следит за ценой для инициации усреднения по рассчитанной сетке."""
-        if not self.is_running or self.is_waiting_for_fill or not self.averaging_levels:
+
+        # --> ДОБАВЛЯЕМ ДИАГНОСТИКУ ЗДЕСЬ
+        log_debug(self.user_id, f"Grid {self.symbol} получил PriceUpdate: {event.price}", "grid_scalping")
+        if not self.is_running or self.is_waiting_for_fill:
+            # Эта строчка покажет, почему код мог выйти раньше
+            log_debug(self.user_id, f"Выход из price_update: running={self.is_running}, waiting_fill={self.is_waiting_for_fill}", "grid_scalping")
             return
 
-        # Проверяем, есть ли еще доступные уровни для усреднения
+        if not self.averaging_levels:
+            return
+
         if self.averaging_orders_placed >= len(self.averaging_levels):
             return
 
-        # Получаем следующий ценовой уровень из нашей сетки
         next_averaging_price = self.averaging_levels[self.averaging_orders_placed]
+        # --> И ЕЩЕ ОДНУ ВАЖНУЮ СТРОКУ ДИАГНОСТИКИ ЗДЕСЬ
+        log_debug(self.user_id, f"Сравнение цен: Текущая={event.price}, Цель={next_averaging_price}", "grid_scalping")
 
         if event.price <= next_averaging_price:
             self.is_waiting_for_fill = True  # Блокируем новые действия
