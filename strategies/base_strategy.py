@@ -225,23 +225,22 @@ class BaseStrategy(ABC):
 
         try:
             for order_data in event.order_data:
-                # Нас интересуют только ордера для текущего символа стратегии
                 if order_data.get("symbol") != self.symbol:
                     continue
 
                 order_id = order_data.get("orderId")
                 status = order_data.get("orderStatus")
 
-                # Если WebSocket говорит, что ордер исполнен (Filled)
-                # и мы еще не обрабатываем его, запускаем API-валидацию.
-                if status == "Filled" and order_id and order_id not in self.active_orders:
+                # ИСПРАВЛЕНИЕ: Теперь мы проверяем, что ордер находится в списке активных.
+                # Это гарантирует, что мы обрабатываем только те ордера, за которые отвечает эта стратегия.
+                if status == "Filled" and order_id in self.active_orders:
                     log_info(self.user_id,
-                             f"WebSocket-триггер: получен сигнал Filled для ордера {order_id}. Запускаю API-проверку.",
+                             f"WebSocket-триггер: получен сигнал Filled для активного ордера {order_id}. Запускаю API-проверку.",
                              module_name=__name__)
 
-                    # Запускаем существующий, надежный метод API-проверки.
-                    # Он сам вызовет _handle_order_filled после успеха.
-                    # Мы запускаем его как фоновую задачу, чтобы не блокировать другие события.
+                    # Удаляем ордер из списка, чтобы избежать повторной обработки
+                    self.active_orders.pop(order_id, None)
+
                     asyncio.create_task(
                         self._await_order_fill(
                             order_id=order_id,
