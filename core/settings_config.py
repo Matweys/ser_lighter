@@ -20,7 +20,7 @@ from core.enums import ExchangeType, AccountType
 DEFAULT_SYMBOLS = [
     'BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'SOLUSDT', 'DOTUSDT',
     'XRPUSDT', 'LINKUSDT', 'AVAXUSDT', 'ATOMUSDT',
-    'NEARUSDT', 'ICPUSDT'
+    'NEARUSDT', 'ICPUSDT', 'HIFI'
 ]
 # Комиссии бирж для внутреннего расчета PnL
 EXCHANGE_FEES = {

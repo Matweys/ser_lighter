@@ -512,10 +512,16 @@ async def cmd_autotrade_start(message: Message, state: FSMContext):
             "🚀 <b>Запускаю автоматическую торговлю...</b>\nСистема инициализирует сессию и подключается к рынку.",
             parse_mode="HTML")
 
-        # Добавлено: Ожидание и проверка статуса
-        await asyncio.sleep(2)  # Даем системе время на обработку
-        session_data = await redis_manager.get_user_session(user_id)
-        if session_data and session_data.get('autotrade_enabled', False):
+        # Улучшенная проверка статуса с помощью поллинга
+        is_started = False
+        for _ in range(15):  # Проверяем в течение 15 секунд
+            await asyncio.sleep(1)
+            session_data = await redis_manager.get_user_session(user_id)
+            if session_data and session_data.get('autotrade_enabled', False):
+                is_started = True
+                break
+
+        if is_started:
             await message.answer("✅ <b>Торговля успешно запущена!</b>", parse_mode="HTML")
         else:
             await message.answer(

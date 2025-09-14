@@ -132,9 +132,9 @@ class BaseStrategy(ABC):
     async def _await_order_fill(self, order_id: str, side: str, qty: Decimal, max_retries: int = 15,
                                 delay: float = 1.5) -> bool:
         """
-        Ожидает исполнения ордера, опрашивая API. Если ордер исполнен,
-        создает 'mock' OrderFilledEvent и вызывает _handle_order_filled.
-        Возвращает True в случае успеха, False в случае неудачи.
+        Ожидает исполнения ордера, опрашивая API. При успехе, СОЗДАЕТ событие
+        и НАПРЯМУЮ вызывает обработчик _handle_order_filled.
+        Является единственным источником правды об исполнении ордера.
         """
         log_info(self.user_id,
                  f"Ожидание исполнения ордера {order_id} через API-polling (до {int(max_retries * delay)} сек)...",
@@ -148,7 +148,9 @@ class BaseStrategy(ABC):
                     status = order_status.get("orderStatus")
                     if status == "Filled":
                         log_info(self.user_id, f"ПОДТВЕРЖДЕН API: Ордер {order_id} исполнен.", module_name=__name__)
-                        mock_event = OrderFilledEvent(
+
+                        # Создаем объект события со всеми данными из ответа API
+                        filled_event = OrderFilledEvent(
                             user_id=self.user_id,
                             order_id=order_id,
                             symbol=self.symbol,
@@ -157,7 +159,8 @@ class BaseStrategy(ABC):
                             price=self._convert_to_decimal(order_status.get("avgPrice", "0")),
                             fee=self._convert_to_decimal(order_status.get("cumExecFee", "0"))
                         )
-                        await self._handle_order_filled(mock_event)
+                        # Напрямую вызываем внутренний обработчик
+                        await self._handle_order_filled(filled_event)
                         return True
 
                     elif status in ["Cancelled", "Rejected", "Expired"]:
@@ -198,15 +201,11 @@ class BaseStrategy(ABC):
         """
         Публичная единая точка входа для обработки событий, маршрутизируемых из UserSession.
         """
-        # Передаем событие в соответствующий обработчик-обертку стратегии
-        if isinstance(event, OrderFilledEvent):
-            await self._handle_order_filled_wrapper(event)
-        elif isinstance(event, PriceUpdateEvent):
+        if isinstance(event, PriceUpdateEvent):
             await self._handle_price_update_wrapper(event)
         elif isinstance(event, PositionUpdateEvent):
             await self._handle_position_update(event)
         elif isinstance(event, UserSettingsChangedEvent):
-            # Стратегия тоже должна знать об изменении настроек
             await self._handle_settings_changed(event)
 
 
@@ -384,17 +383,7 @@ class BaseStrategy(ABC):
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки обновления цены: {e}", module_name=__name__)
 
-    async def _handle_order_filled_wrapper(self, event: OrderFilledEvent):
-        """Обертка для обработки исполнения ордера"""
-        if event.user_id != self.user_id or event.symbol != self.symbol:
-            return
-        if not self.is_running:
-            return
-        try:
-            # --- вызова абстрактного метода ---
-            await self._handle_order_filled(event)
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка в обертке обработчика исполненного ордера: {e}", module_name=__name__)
+
             
     async def _handle_position_update(self, event: PositionUpdateEvent):
         """Обработка обновления позиции"""

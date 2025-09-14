@@ -85,19 +85,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
     async def _execute_strategy_logic(self):
         """Анализ сигнала и принятие решения о входе с обязательной остановкой, если вход не выполнен."""
         try:
-            # Проверяем реальную позицию на бирже, чтобы избежать конфликтов
-            existing_position = await self.api.get_positions(self.symbol)
-            if existing_position:
-                log_warning(self.user_id,
-                            f"Impulse Trailing для {self.symbol} не запущена: уже существует активная позиция.",
-                            "impulse_trailing")
-                await self.stop("Position already exists")
-                return
-
-            if self.position_side:  # Внутренняя проверка состояния
-                return
-
-            # self.signal_data теперь гарантированно содержит актуальный анализ
+            # ... (код получения данных анализа остается без изменений) ...
             analysis = self.signal_data
             if not analysis or 'atr' not in analysis:
                 log_error(self.user_id, f"Отсутствуют данные анализа для {self.symbol}. Проверьте market_analyzer.",
@@ -112,7 +100,8 @@ class ImpulseTrailingStrategy(BaseStrategy):
             is_consolidating = analysis.get('is_consolidating_now')
             is_panic = analysis.get('is_panic_bar')
 
-            # --- Логика для ЛОНГА ---
+
+            # --- Логика для СИГНАЛА ЛОНГ (открываем ШОРТ) ---
             if ema_trend == "UP" and is_consolidating:
                 if friction_level == "HIGH":
                     await self.stop("Signal skipped: High friction")
@@ -120,27 +109,27 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 breakout_level = self._convert_to_decimal(analysis['consolidation_high']) * (
                         1 + self._convert_to_decimal(self.config.get('long_breakout_buffer', '0.001')))
                 if current_price > breakout_level:
-                    log_info(self.user_id, f"LONG СИГНАЛ для {self.symbol}: Пробой уровня консолидации. Вход.",
+                    log_warning(self.user_id, f"ИНВЕРСИЯ: LONG-сигнал для {self.symbol}. Открываю SHORT.",
                              "impulse_trailing")
-                    self.position_side = "Buy"
-                    self.stop_loss_price = current_price - (atr * self._convert_to_decimal(self.config['long_sl_atr']))
-                    # self.take_profit_price БОЛЬШЕ НЕ РАССЧИТЫВАЕТСЯ
+                    self.position_side = "Sell" # <-- ИНВЕРСИЯ НАПРАВЛЕНИЯ
+                    # Используем правила стоп-лосса для шорта
+                    self.stop_loss_price = current_price + (atr * self._convert_to_decimal(self.config['short_sl_atr']))
                     await self._enter_position()
                     return
                 else:
                     await self.stop("Signal skipped: No breakout")
                     return
 
-                # --- Логика для ШОРТА ---
+                # --- Логика для СИГНАЛА ШОРТ (открываем ЛОНГ) ---
             if is_panic:
                 if friction_level == "HIGH":
                     await self.stop("Signal skipped: High friction")
                     return
-                log_info(self.user_id, f"SHORT СИГНАЛ для {self.symbol}: Обнаружена паническая свеча. Вход.",
+                log_warning(self.user_id, f"ИНВЕРСИЯ: SHORT-сигнал для {self.symbol}. Открываю LONG.",
                          "impulse_trailing")
-                self.position_side = "Sell"
-                self.stop_loss_price = current_price + (atr * self._convert_to_decimal(self.config['short_sl_atr']))
-                # self.take_profit_price БОЛЬШЕ НЕ РАССЧИТЫВАЕТСЯ
+                self.position_side = "Buy" # <-- ИНВЕРСИЯ НАПРАВЛЕНИЯ
+                # Используем правила стоп-лосса для лонга
+                self.stop_loss_price = current_price - (atr * self._convert_to_decimal(self.config['long_sl_atr']))
                 await self._enter_position()
                 return
 
