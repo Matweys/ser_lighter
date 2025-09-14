@@ -109,11 +109,6 @@ async def initialize_default_configs():
             config_enum = getattr(ConfigType, f"STRATEGY_{s_type.upper()}")
             await redis_manager.save_config(template_user_id, config_enum, s_config)
 
-        # Сохраняем конфиги компонентов
-        for c_type, c_config in all_defaults["component_configs"].items():
-            config_enum = getattr(ConfigType, f"COMPONENT_{c_type.upper()}")
-            await redis_manager.save_config(template_user_id, config_enum, c_config)
-
         log_info(0, "Шаблоны конфигураций по умолчанию сохранены в Redis.", module_name=__name__)
     except Exception as err:
         log_error(0, f"Ошибка инициализации конфигураций по умолчанию: {err}", module_name=__name__)

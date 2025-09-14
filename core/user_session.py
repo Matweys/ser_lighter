@@ -37,6 +37,9 @@ from strategies.base_strategy import BaseStrategy
 from strategies.factory import create_strategy
 from strategies.impulse_trailing_strategy import ImpulseTrailingStrategy
 from strategies.grid_scalping_strategy import GridScalpingStrategy
+from telegram.bot import bot_manager
+
+
 
 # Установка точности Decimal
 getcontext().prec = 28
@@ -139,10 +142,19 @@ class UserSession:
             await self._save_session_state()
 
             log_info(self.user_id, "Пользовательская сессия запущена", module_name=__name__)
+            # 2. Отправляем уведомление об успешном запуске
+            if bot_manager and bot_manager.bot:
+                await bot_manager.bot.send_message(self.user_id,"✅ <b>Торговля успешно запущена!</b>",parse_mode="HTML")
             return True
-
         except Exception as e:
             log_error(self.user_id, f"Ошибка запуска сессии: {e}", module_name=__name__)
+            # 3. Отправляем уведомление об ошибке
+            if bot_manager and bot_manager.bot:
+                await bot_manager.bot.send_message(
+                    self.user_id,
+                    f"❌ <b>Не удалось запустить торговлю.</b>\nПричина: <code>{e}</code>\nСмотрите логи для деталей.",
+                    parse_mode="HTML"
+                )
             await self.stop("Startup error")
             return False
 

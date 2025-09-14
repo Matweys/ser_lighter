@@ -343,8 +343,8 @@ async def cmd_settings(message: Message, state: FSMContext):
 
 # --- Команды управления торговлей ---
 
+
 @router.message(Command("autotrade_start"))
-# 2. Добавляем 'bot_application: BotApplication' в аргументы функции
 async def cmd_autotrade_start(message: Message, state: FSMContext, bot_application: BotApplication):
     """Обработчик команды /autotrade_start"""
     user_id = message.from_user.id
@@ -362,28 +362,13 @@ async def cmd_autotrade_start(message: Message, state: FSMContext, bot_applicati
         await message.answer("✅ Торговля уже запущена.")
         return
 
-    # Теперь этот вызов будет работать, так как aiogram передаст сюда bot_application
-    await bot_application.request_session_start(user_id=user_id)
-
+    # Отправляем только первое сообщение
     await message.answer(
-        "🚀 <b>Запускаю автоматическую торговлю...</b>\nСистема инициализирует сессию и подключается к рынку.",
+        "🚀 <b>Запускаю автоматическую торговлю...</b>\nСистема инициализирует сессию и подключается к рынку. Вы получите уведомление по завершении.",
         parse_mode="HTML")
 
-    # Улучшенная проверка статуса с помощью поллинга
-    is_started = False
-    for _ in range(15):  # Проверяем в течение 15 секунд
-        await asyncio.sleep(1)
-        session_data = await redis_manager.get_user_session(user_id)
-        if session_data and session_data.get('autotrade_enabled', False):
-            is_started = True
-            break
-
-    if is_started:
-        await message.answer("✅ <b>Торговля успешно запущена!</b>", parse_mode="HTML")
-    else:
-        await message.answer(
-            "❌ <b>Не удалось запустить торговлю.</b> Проверьте логи для получения дополнительной информации.",
-            parse_mode="HTML")
+    # Отправляем запрос и на этом всё. Дальше работает UserSession.
+    await bot_application.request_session_start(user_id=user_id)
 
 
 @router.message(Command("autotrade_stop"))

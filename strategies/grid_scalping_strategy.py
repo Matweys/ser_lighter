@@ -23,7 +23,6 @@ class GridScalpingStrategy(BaseStrategy):
 
         # --- Параметры, загружаемые из конфигурации ---
         self.scalp_levels: int = 5
-        self.scalp_spacing_percent: Decimal = Decimal('5.0')
         self.quick_profit_percent: Decimal = Decimal('1.0')
         self.stop_loss_percent: Decimal = Decimal('5.0')
         self.cooldown_after_stop: int = 60
@@ -35,6 +34,11 @@ class GridScalpingStrategy(BaseStrategy):
         self.averaging_orders_placed: int = 0
         self.active_tp_order_id: Optional[str] = None
         self.is_waiting_for_fill: bool = False  # Флаг ожидания исполнения ордера (вход/усреднение)
+        # <--ХРАНИЛИЩЕ ДЛЯ УРОВНЕЙ СЕТКИ -->
+        self.averaging_levels: List[Decimal] = []
+
+
+
 
     def _get_strategy_type(self) -> StrategyType:
         return StrategyType.GRID_SCALPING
@@ -47,7 +51,6 @@ class GridScalpingStrategy(BaseStrategy):
             return
 
         self.scalp_levels = int(self.get_config_value("max_averaging_orders", 5))
-        self.scalp_spacing_percent = self._convert_to_decimal(self.get_config_value("scalp_spacing_percent", 5.0))
         self.quick_profit_percent = self._convert_to_decimal(self.get_config_value("profit_percent", 1.0))
         self.stop_loss_percent = self._convert_to_decimal(self.get_config_value("stop_loss_percent", 5.0))
         self.cooldown_after_stop = int(self.get_config_value("cooldown_after_stop_seconds", 60))
@@ -115,6 +118,9 @@ class GridScalpingStrategy(BaseStrategy):
                 # СНАЧАЛА обновляем внутреннее состояние
                 if is_first_entry:
                     self.position_entry_price = event.price
+
+                    # <-- НАЧАЛО НОВОЙ ЛОГИКИ РАСЧЕТА СЕТКИ -->
+                    await self._calculate_averaging_levels()
                 else:
                     self.averaging_orders_placed += 1
 
@@ -141,17 +147,59 @@ class GridScalpingStrategy(BaseStrategy):
         except Exception as e:
             log_error(self.user_id, f"Ошибка в _handle_order_filled: {e}", "grid_scalping")
 
-    # 3. ОБРАБОТКА ИЗМЕНЕНИЯ ЦЕНЫ ДЛЯ УСРЕДНЕНИЯ
-    async def _handle_price_update(self, event: PriceUpdateEvent):
-        """Следит за ценой для инициации усреднения."""
-        if not self.is_running or not self.position_size > 0 or self.is_waiting_for_fill:
+
+
+    async def _calculate_averaging_levels(self):
+        """
+        Рассчитывает и сохраняет ценовые уровни для будущих усреднений.
+        Вызывается один раз после первого входа в позицию.
+        """
+        if not self.position_entry_price or self.scalp_levels == 0:
+            self.averaging_levels = []
             return
 
-        next_avg_price = self.position_avg_price * (1 - self.scalp_spacing_percent / 100)
+        # Рассчитываем цену стоп-лосса
+        stop_loss_price = self.position_entry_price * (Decimal('1') - self.stop_loss_percent / Decimal('100'))
 
-        if event.price <= next_avg_price and self.averaging_orders_placed < self.scalp_levels:
+        # Общее расстояние от входа до стопа
+        total_distance = self.position_entry_price - stop_loss_price
+
+        if total_distance <= 0:
+            self.averaging_levels = []
+            return
+
+        # Делим расстояние на равные части. Если 3 ордера, то 4 части (вход -> о1 -> о2 -> о3 -> стоп)
+        step_size = total_distance / (self.scalp_levels + 1)
+
+        # Вычисляем каждый уровень
+        levels = []
+        for i in range(1, self.scalp_levels + 1):
+            level_price = self.position_entry_price - (step_size * i)
+            levels.append(level_price)
+
+        self.averaging_levels = levels
+        log_info(self.user_id, f"Рассчитана сетка для {self.symbol}. Уровни усреднения: {[f'{p:.4f}' for p in levels]}",
+                 "grid_scalping")
+
+
+    # 3. ОБРАБОТКА ИЗМЕНЕНИЯ ЦЕНЫ ДЛЯ УСРЕДНЕНИЯ
+
+    async def _handle_price_update(self, event: PriceUpdateEvent):
+        """Следит за ценой для инициации усреднения по рассчитанной сетке."""
+        if not self.is_running or self.is_waiting_for_fill or not self.averaging_levels:
+            return
+
+        # Проверяем, есть ли еще доступные уровни для усреднения
+        if self.averaging_orders_placed >= len(self.averaging_levels):
+            return
+
+        # Получаем следующий ценовой уровень из нашей сетки
+        next_averaging_price = self.averaging_levels[self.averaging_orders_placed]
+
+        if event.price <= next_averaging_price:
             self.is_waiting_for_fill = True  # Блокируем новые действия
-            log_info(self.user_id, f"Цена {self.symbol} достигла уровня усреднения ({next_avg_price:.4f}).",
+            log_info(self.user_id,
+                     f"Цена {self.symbol} достигла уровня усреднения №{self.averaging_orders_placed + 1} ({next_averaging_price:.4f}).",
                      "grid_scalping")
 
             await self._cancel_tp_order()
@@ -159,16 +207,13 @@ class GridScalpingStrategy(BaseStrategy):
             order_size_usdt = self._convert_to_decimal(self.get_config_value("order_amount", 10.0))
             leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
 
-            # ИСПРАВЛЕНИЕ: Добавляем недостающий параметр leverage
             qty_to_buy = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt, leverage)
 
             if qty_to_buy > 0:
                 order_id = await self._place_order(side="Buy", order_type="Market", qty=qty_to_buy)
-                if order_id:
-                    # ЖДЕМ ИСПОЛНЕНИЯ ОРДЕРА УСРЕДНЕНИЯ
-                    await self._await_order_fill(order_id, side="Buy", qty=qty_to_buy)
-                else:
-                    self.is_waiting_for_fill = False  # Разблокируем, если ордер не разместился
+                if not order_id:
+                    # Разблокируем, если ордер не разместился
+                    self.is_waiting_for_fill = False
             else:
                 self.is_waiting_for_fill = False  # Разблокируем
 
@@ -225,6 +270,7 @@ class GridScalpingStrategy(BaseStrategy):
         # Сбрасываем состояние перед полной остановкой
         self.position_size = Decimal('0')
         self.is_waiting_for_fill = False
+        self.averaging_levels = []
         await super().stop(reason)
 
     async def request_restart(self, delay_seconds: int = 0):
