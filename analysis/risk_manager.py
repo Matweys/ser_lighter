@@ -9,7 +9,7 @@ from typing import Dict, Optional, List
 from datetime import datetime, timedelta
 from api.bybit_api import BybitAPI
 from cache.redis_manager import redis_manager
-from core.logger import log_info, log_error
+from core.logger import log_info, log_error, log_warning
 from core.events import (
     EventType, OrderFilledEvent, PositionClosedEvent,
     RiskLimitExceededEvent, DrawdownWarningEvent, EventBus
@@ -71,8 +71,8 @@ class RiskManager:
             await self._initialize_daily_stats()
             
             # Подписка на события
-            self.event_bus.subscribe(EventType.ORDER_FILLED, self._handle_order_filled)
-            self.event_bus.subscribe(EventType.POSITION_CLOSED, self._handle_position_closed)
+            await self.event_bus.subscribe(EventType.ORDER_FILLED, self._handle_order_filled, user_id=self.user_id)
+            await self.event_bus.subscribe(EventType.POSITION_CLOSED, self._handle_position_closed, user_id=self.user_id)
             
             self.running = True
             log_info(self.user_id, "RiskManager запущен", module_name=__name__)

@@ -10,7 +10,7 @@ from decimal import Decimal, getcontext
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from api.bybit_api import BybitAPI
-from core.logger import log_info, log_error, log_debug, log_warning
+from core.logger import log_info, log_error, log_debug
 from core.events import EventType, SignalEvent, UserSettingsChangedEvent, EventBus, GlobalCandleEvent
 from cache.redis_manager import redis_manager, ConfigType
 
@@ -57,10 +57,11 @@ class MetaStrategist:
             raise
 
     async def stop(self):
+        """Остановка MetaStrategist"""
         if not self.running:
             return
 
-        # Отписываем оба обработчика
+        # Отписка от событий
         await self.event_bus.unsubscribe(self._handle_global_candle)
         await self.event_bus.unsubscribe(self._handle_settings_changed)
 
