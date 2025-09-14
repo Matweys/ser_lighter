@@ -8,7 +8,7 @@ from aiogram.fsm.context import FSMContext
 from typing import Optional, Dict, Any
 from datetime import datetime
 import asyncio
-
+from core.bot_application import BotApplication
 from database.db_trades import db_manager, UserProfile
 from core.events import event_bus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent
 from .states import UserStates
@@ -339,7 +339,7 @@ async def cmd_settings(message: Message, state: FSMContext):
 # --- Команды управления торговлей ---
 
 @router.message(Command("autotrade_start"))
-async def cmd_autotrade_start(message: Message, state: FSMContext):
+async def cmd_autotrade_start(message: Message, state: FSMContext, bot_application: BotApplication):
     """Обработчик команды /autotrade_start"""
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "autotrade_start")
@@ -356,8 +356,8 @@ async def cmd_autotrade_start(message: Message, state: FSMContext):
         await message.answer("✅ Торговля уже запущена.")
         return
 
-    # Используем импортированный event_bus напрямую, без лишних проверок
-    await event_bus.publish(UserSessionStartRequestedEvent(user_id=user_id))
+    # Напрямую вызываем метод в ядре приложения
+    await bot_application.request_session_start(user_id=user_id)
 
     await message.answer(
         "🚀 <b>Запускаю автоматическую торговлю...</b>\nСистема инициализирует сессию и подключается к рынку.",
@@ -381,7 +381,7 @@ async def cmd_autotrade_start(message: Message, state: FSMContext):
 
 
 @router.message(Command("autotrade_stop"))
-async def cmd_autotrade_stop(message: Message, state: FSMContext):
+async def cmd_autotrade_stop(message: Message, state: FSMContext, bot_application: BotApplication):
     """Обработчик команды /autotrade_stop"""
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "autotrade_stop")
@@ -392,8 +392,7 @@ async def cmd_autotrade_stop(message: Message, state: FSMContext):
         await message.answer("🔴 Торговля и так неактивна.")
         return
 
-    # Напрямую публикуем событие в глобальную шину
-    await event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id, reason="manual_stop_command"))
+    await bot_application.request_session_stop(user_id=user_id, reason="manual_stop_command")
 
     await message.answer(
         "🛑 <b>Останавливаю автоматическую торговлю...</b>\nСистема завершит текущие операции и сохранит статистику.",

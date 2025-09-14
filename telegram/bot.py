@@ -30,29 +30,29 @@ class TelegramBotManager:
         self.event_bus: Optional[EventBus] = None
         self._webhook_app: Optional[web.Application] = None
         self._is_running = False
-        
+
+    # Эта функция остается для совместимости, но мы будем использовать новую
     async def initialize(self) -> None:
-        """Инициализация бота и всех компонентов"""
+        await self.initialize_with_app()
+
+    async def initialize_with_app(self, bot_application: Optional[Any] = None) -> None:
+        """Инициализация бота и всех компонентов с передачей приложения."""
         try:
             log_info(0, "Инициализация Telegram бота...", module_name='bot')
-            
-            # Создаем Redis storage
+
             await self._setup_storage()
-            
-            # Создаем бота с расширенными настройками
             await self._setup_bot()
-            
-            # Создаем диспетчер
-            await self._setup_dispatcher()
-            
-            # Инициализируем EventBus
-            self.event_bus = EventBus()
-            
-            # Настраиваем команды бота
+
+            # Передаем bot_application напрямую в Dispatcher
+            self.dp = Dispatcher(storage=self.storage, bot_application=bot_application)
+
+            self.event_bus = event_bus  # Продолжаем использовать глобальный
+
+            await self._setup_middleware()
             await self._setup_bot_commands()
-            
+
             log_info(0, "Telegram бот успешно инициализирован", module_name='bot')
-            
+
         except Exception as e:
             log_error(0, f"Ошибка инициализации Telegram бота: {e}", module_name='bot')
             raise

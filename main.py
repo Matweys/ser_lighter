@@ -5,6 +5,7 @@ import logging
 from contextlib import asynccontextmanager
 from aiogram.types import BotCommand
 from decimal import Decimal, getcontext
+from aiogram import Dispatcher
 
 # --- 1. Настройка путей (обязательно в самом верху) ---
 project_root = os.path.dirname(os.path.abspath(__file__))
@@ -126,10 +127,16 @@ async def lifespan_context():
     try:
         log_info(0, "=== ЗАПУСК FUTURES TRADING BOT v2.0 ===", module_name="main")
 
-        # Инициализация всех компонентов
+        # Инициализация базовых компонентов
         await db_manager.initialize()
         await redis_manager.init_redis()
-        await bot_manager.initialize()
+
+        # Создание главного приложения ДО инициализации бота
+        bot_app = BotApplication()
+
+        # Инициализация Telegram-бота
+        # Передаем bot_app в dispatcher, чтобы он был доступен во всех хендлерах
+        await bot_manager.initialize_with_app(bot_application=bot_app)
 
         # Регистрация роутеров
         bot_manager.dp.include_router(basic.router)
@@ -174,12 +181,11 @@ async def lifespan_context():
 async def main():
     """Главная функция запуска бота"""
     try:
-        async with lifespan_context() as bot_app:
+        async with lifespan_context():
             await bot_manager.dp.start_polling(
                 bot_manager.bot,
                 allowed_updates=["message", "callback_query"],
                 drop_pending_updates=True,
-                bot_application=bot_app
             )
     except (KeyboardInterrupt, SystemExit):
         log_info(0, "Получен сигнал завершения", module_name=__name__)

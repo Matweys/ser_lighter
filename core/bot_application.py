@@ -533,3 +533,17 @@ class BotApplication:
         session_data['autotrade_enabled'] = False
         await redis_manager.create_user_session(user_id, session_data)
         log_info(user_id, "Статус авто-торговли установлен в 'inactive' в Redis.", module_name=__name__)
+
+    # --- ПУБЛИЧНЫЕ МЕТОДЫ ДЛЯ ВЫЗОВА ИЗВНЕ ---
+
+    async def request_session_start(self, user_id: int):
+        """Публичный метод для безопасного запроса на запуск сессии."""
+        await self._handle_session_start_request(
+            UserSessionStartRequestedEvent(user_id=user_id)
+        )
+
+    async def request_session_stop(self, user_id: int, reason: str = "user_request"):
+        """Публичный метод для безопасного запроса на остановку сессии."""
+        await self._handle_session_stop_request(
+            UserSessionStopRequestedEvent(user_id=user_id, reason=reason)
+        )
