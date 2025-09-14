@@ -213,29 +213,46 @@ class ImpulseTrailingStrategy(BaseStrategy):
 
     async def _handle_price_update(self, event: PriceUpdateEvent):
         """Логика трейлинг-стопа при обновлении цены."""
-        if not self.position_side:
+        if not self.position_side or not self.entry_price:
             return
 
-        # Проверяем, есть ли активная позиция для данного символа
-        position_key = f"{self.symbol}_{self.position_side}"
-        if position_key not in self.active_positions:
-            return
         current_price = event.price
-        if self.peak_price is None or (self.position_side == "Buy" and current_price > self.peak_price) or (
-                self.position_side == "Sell" and current_price < self.peak_price):
+        # 1. Обновляем пиковую цену
+        if self.peak_price is None:
+            self.peak_price = self.entry_price
+
+        if (self.position_side == "Buy" and current_price > self.peak_price) or \
+                (self.position_side == "Sell" and current_price < self.peak_price):
             self.peak_price = current_price
+            log_info(self.user_id, f"Новая пиковая цена для {self.symbol}: {self.peak_price}", "impulse_trailing")
         else:
+            # Если цена не обновила пик, дальнейшие действия не нужны
             return
-        analysis_data = self.signal_data.get('analysis_data', {})
-        atr = self._convert_to_decimal(analysis_data.get('atr', self.entry_price * Decimal('0.01')))
+
+        # 2. Получаем ATR и множитель из данных, сохраненных при входе
+        # ИСПРАВЛЕНИЕ: Получаем 'atr' напрямую из self.signal_data
+        atr = self._convert_to_decimal(self.signal_data.get('atr', self.entry_price * Decimal('0.01')))
         trailing_atr_mult = self._convert_to_decimal(self.config.get('trailing_sl_atr', 1.5))
+
+        if atr <= 0:
+            log_warning(self.user_id, f"Некорректный ATR ({atr}) для {self.symbol}. Трейлинг-стоп пропущен.",
+                        "impulse_trailing")
+            return
+
+        # 3. Рассчитываем и применяем новый стоп-лосс
         if self.position_side == "Buy":
             new_stop_price = self.peak_price - (atr * trailing_atr_mult)
             if new_stop_price > self.stop_loss_price:
+                log_info(self.user_id,
+                         f"Подтягиваю SL для LONG {self.symbol}. Старый: {self.stop_loss_price}, Новый: {new_stop_price}",
+                         "impulse_trailing")
                 self.stop_loss_price = new_stop_price
                 await self.api.set_trading_stop(symbol=self.symbol, stop_loss=self.stop_loss_price)
         elif self.position_side == "Sell":
             new_stop_price = self.peak_price + (atr * trailing_atr_mult)
             if new_stop_price < self.stop_loss_price:
+                log_info(self.user_id,
+                         f"Подтягиваю SL для SHORT {self.symbol}. Старый: {self.stop_loss_price}, Новый: {new_stop_price}",
+                         "impulse_trailing")
                 self.stop_loss_price = new_stop_price
                 await self.api.set_trading_stop(symbol=self.symbol, stop_loss=self.stop_loss_price)
