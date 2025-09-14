@@ -9,7 +9,7 @@ from decimal import Decimal, getcontext
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from aiogram import Bot
-from core.logger import log_info, log_error, log_warning
+from core.logger import log_info, log_error, log_warning, log_debug
 from core.enums import StrategyType, PositionSide, ConfigType, ExchangeType
 from core.events import (
     EventType, BaseEvent, SignalEvent, PriceUpdateEvent,

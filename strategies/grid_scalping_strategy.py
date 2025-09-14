@@ -5,7 +5,7 @@ from decimal import Decimal, getcontext
 from api.bybit_api import BybitAPI
 from .base_strategy import BaseStrategy
 from core.enums import StrategyType
-from core.logger import log_info, log_error, log_warning
+from core.logger import log_info, log_error, log_warning, log_debug
 from core.events import OrderFilledEvent, EventBus, StrategyRestartRequestEvent, PriceUpdateEvent
 
 getcontext().prec = 28
