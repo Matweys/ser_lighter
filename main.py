@@ -23,7 +23,7 @@ from telegram.handlers import basic, callback
 from core.default_configs import DefaultConfigs
 from core.enums import ConfigType
 from aiogram.exceptions import TelegramRetryAfter
-
+from core.events import EventBus
 # --- 3. Настройка точности ---
 getcontext().prec = 28
 
@@ -124,24 +124,25 @@ async def initialize_default_configs():
 async def lifespan_context():
     """Контекстный менеджер для управления жизненным циклом приложения"""
     bot_app = None
+    # Создаем EventBus здесь, в самом начале
+    event_bus = EventBus()
     try:
         log_info(0, "=== ЗАПУСК FUTURES TRADING BOT v2.0 ===", module_name="main")
 
-        # Инициализация базовых компонентов
+        # Инициализация всех компонентов
         await db_manager.initialize()
         await redis_manager.init_redis()
-
-        # Создание главного приложения ДО инициализации бота
-        bot_app = BotApplication()
-
-        # Инициализация Telegram-бота
-        # Передаем bot_app в dispatcher, чтобы он был доступен во всех хендлерах
-        await bot_manager.initialize_with_app(bot_application=bot_app)
+        # Передаем event_bus в bot_manager при инициализации
+        await bot_manager.initialize(event_bus=event_bus)
 
         # Регистрация роутеров
         bot_manager.dp.include_router(basic.router)
         bot_manager.dp.include_router(callback.router)
         log_info(0, "Обработчики Telegram (роутеры) зарегистрированы.", module_name="main")
+
+        # Передаем event_bus в обработчики, как и раньше
+        basic.set_event_bus(event_bus)
+        callback.set_event_bus(event_bus)
 
         # Вызов ваших функций
         await setup_admin_user()
@@ -155,16 +156,9 @@ async def lifespan_context():
         except Exception as err:
             log_error(0, f"Непредвиденная ошибка при установке команд: {err}", module_name=__name__)
 
-        # Создание и запуск основного приложения
+        # Создание и запуск основного приложения с передачей event_bus
         bot_app = BotApplication()
         await bot_app.start()
-
-        # # --- ВАЖНО: "Пробрасываем" EventBus в обработчики ---
-        # if bot_app.event_bus:
-        #     basic.set_event_bus(bot_app.event_bus)
-        #     callback.set_event_bus(bot_app.event_bus)
-        #     log_info(0, "Шина событий (EventBus) успешно передана в обработчики.", module_name="main")
-        # --------------------------------------------------
 
         log_info(0, "=== БОТ УСПЕШНО ЗАПУЩЕН ===", module_name=__name__)
         yield bot_app

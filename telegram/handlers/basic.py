@@ -10,7 +10,7 @@ from datetime import datetime
 import asyncio
 from core.bot_application import BotApplication
 from database.db_trades import db_manager, UserProfile
-from core.events import event_bus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent
+from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent
 from .states import UserStates
 from cache.redis_manager import redis_manager
 from core.functions import format_currency, format_percentage
@@ -40,6 +40,8 @@ class BasicCommandHandler:
     def __init__(self):
         self.command_stats = {}
         self.user_sessions = {}
+        self.event_bus: Optional[EventBus] = None
+
 
     async def log_command_usage(self, user_id: int, command: str):
         """Логирование использования команд"""
@@ -54,6 +56,9 @@ class BasicCommandHandler:
 basic_handler = BasicCommandHandler()
 
 
+def set_event_bus(event_bus: EventBus):
+    """Установка EventBus для basic handler"""
+    basic_handler.event_bus = event_bus
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -339,7 +344,7 @@ async def cmd_settings(message: Message, state: FSMContext):
 # --- Команды управления торговлей ---
 
 @router.message(Command("autotrade_start"))
-async def cmd_autotrade_start(message: Message, state: FSMContext, bot_application: BotApplication):
+async def cmd_autotrade_start(message: Message, state: FSMContext):
     """Обработчик команды /autotrade_start"""
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "autotrade_start")
@@ -356,7 +361,7 @@ async def cmd_autotrade_start(message: Message, state: FSMContext, bot_applicati
         await message.answer("✅ Торговля уже запущена.")
         return
 
-    # Напрямую вызываем метод в ядре приложения
+    # ПРАВИЛЬНЫЙ ВЫЗОВ: напрямую через внедренный bot_application
     await bot_application.request_session_start(user_id=user_id)
 
     await message.answer(

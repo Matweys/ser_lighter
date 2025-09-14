@@ -31,24 +31,16 @@ class TelegramBotManager:
         self._webhook_app: Optional[web.Application] = None
         self._is_running = False
 
-    # Эта функция остается для совместимости, но мы будем использовать новую
-    async def initialize(self) -> None:
-        await self.initialize_with_app()
-
-    async def initialize_with_app(self, bot_application: Optional[Any] = None) -> None:
-        """Инициализация бота и всех компонентов с передачей приложения."""
+    async def initialize(self, event_bus: EventBus) -> None:
+        """Инициализация бота и всех компонентов"""
         try:
             log_info(0, "Инициализация Telegram бота...", module_name='bot')
 
+            self.event_bus = event_bus  # Сохраняем переданный event_bus
+
             await self._setup_storage()
             await self._setup_bot()
-
-            # Передаем bot_application напрямую в Dispatcher
-            self.dp = Dispatcher(storage=self.storage, bot_application=bot_application)
-
-            self.event_bus = event_bus  # Продолжаем использовать глобальный
-
-            await self._setup_middleware()
+            await self._setup_dispatcher()
             await self._setup_bot_commands()
 
             log_info(0, "Telegram бот успешно инициализирован", module_name='bot')
@@ -103,13 +95,9 @@ class TelegramBotManager:
     async def _setup_dispatcher(self) -> None:
         """Настройка диспетчера"""
         try:
-            self.dp = Dispatcher(
-                storage=self.storage,
-            )
-
-            # Настраиваем middleware
+            # Передаем event_bus в контекст dispatcher'а
+            self.dp = Dispatcher(storage=self.storage, event_bus=self.event_bus)
             await self._setup_middleware()
-
             log_info(0, "Диспетчер настроен", module_name='bot')
 
         except Exception as e:
@@ -322,52 +310,3 @@ class TelegramBotManager:
 
 # Глобальный экземпляр менеджера бота
 bot_manager = TelegramBotManager()
-
-# Для обратной совместимости
-bot = None
-dp = None
-storage = None
-
-async def initialize_bot() -> TelegramBotManager:
-    """Инициализация глобального экземпляра бота"""
-    global bot, dp, storage
-    
-    await bot_manager.initialize()
-    
-    # Устанавливаем глобальные переменные для обратной совместимости
-    bot = bot_manager.bot
-    dp = bot_manager.dp
-    storage = bot_manager.storage
-    
-    return bot_manager
-
-async def start_bot_polling():
-    """Запуск бота в режиме polling"""
-    if not bot_manager.bot:
-        await initialize_bot()
-    
-    await bot_manager.start_polling()
-
-async def start_bot_webhook(webhook_url: str, webhook_path: str = "/webhook") -> web.Application:
-    """Запуск бота в режиме webhook"""
-    if not bot_manager.bot:
-        await initialize_bot()
-    
-    return await bot_manager.start_webhook(webhook_url, webhook_path)
-
-async def stop_bot():
-    """Остановка бота"""
-    await bot_manager.stop()
-
-# Context manager для управления жизненным циклом бота
-@asynccontextmanager
-async def bot_lifespan():
-    """Context manager для управления жизненным циклом бота"""
-    try:
-        await initialize_bot()
-        log_info(0, "Бот инициализирован в context manager", module_name='bot')
-        yield bot_manager
-    finally:
-        await stop_bot()
-        log_info(0, "Бот остановлен в context manager", module_name='bot')
-

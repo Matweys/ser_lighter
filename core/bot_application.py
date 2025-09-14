@@ -24,6 +24,8 @@ from core.enums import ConfigType
 from core.settings_config import system_config
 from core.impulse_scanner import ImpulseScanner
 
+
+
 class BotApplication:
     """
     Главный класс приложения, управляющий жизненным циклом пользовательских торговых сессий
