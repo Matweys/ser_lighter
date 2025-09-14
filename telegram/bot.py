@@ -115,31 +115,38 @@ class TelegramBotManager:
         except Exception as e:
             log_error(0, f"Ошибка настройки диспетчера: {e}", module_name='bot')
             raise
-    
+
     async def _setup_middleware(self) -> None:
         """Настройка middleware"""
         try:
-            # Здесь будут подключаться middleware для:
-            # - Логирования запросов
-            # - Аутентификации пользователей
-            # - Rate limiting
-            # - Мониторинга производительности
-            
+            # Импортируем наш глобальный event_bus
+            from core.events import event_bus
+
+            # Middleware для передачи событий в нашу систему
+            @self.dp.update.outer_middleware()
+            async def event_bus_middleware(handler, event, data):
+                # Просто "пробрасываем" событие в нашу шину, не ожидая ответа
+                # Это позволяет основной логике бота работать независимо
+                asyncio.create_task(event_bus.publish(event))
+                return await handler(event, data)
+
+            log_info(0, "EventBus middleware зарегистрирован.", module_name='bot')
+
             # Пример базового middleware для логирования
             @self.dp.message.middleware()
             async def logging_middleware(handler, event, data):
                 user_id = event.from_user.id if event.from_user else None
                 log_info(user_id, f"Получено сообщение: {event.text[:50]}...", module_name='bot')
                 return await handler(event, data)
-            
+
             @self.dp.callback_query.middleware()
             async def callback_logging_middleware(handler, event, data):
                 user_id = event.from_user.id if event.from_user else None
                 log_info(user_id, f"Получен callback: {event.data}", module_name='bot')
                 return await handler(event, data)
-            
+
             log_info(0, "Middleware настроены", module_name='bot')
-            
+
         except Exception as e:
             log_error(0, f"Ошибка настройки middleware: {e}", module_name='bot')
             raise
