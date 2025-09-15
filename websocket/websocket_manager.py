@@ -12,7 +12,7 @@ from datetime import datetime
 import hmac
 import hashlib
 import time
-
+from core.functions import to_decimal
 from core.logger import log_info, log_error, log_warning
 from core.events import (
     EventType, NewCandleEvent, PriceUpdateEvent, OrderUpdateEvent,
