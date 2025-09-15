@@ -95,8 +95,8 @@ class BaseStrategy(ABC):
         self.active_orders: Dict[str, Dict] = {}  # order_id -> order_data
         self.active_positions: Dict[str, Dict] = {}  # position_key -> position_data
 
-        log_info(self.user_id,f"Инициализирована стратегия {self.strategy_type.value} для {symbol} (ID: {self.strategy_id})",
-            module_name=__name__)
+        self._position_monitor_task: Optional[asyncio.Task] = None
+        log_info(self.user_id,f"Инициализирована стратегия {self.strategy_type.value} для {symbol} (ID: {self.strategy_id})", module_name=__name__)
 
 
     @staticmethod
@@ -308,20 +308,16 @@ class BaseStrategy(ABC):
         except Exception as e:
             log_error(self.user_id, f"Ошибка запуска стратегии: {e}", module_name=__name__)
             return False
-            
+
     async def stop(self, reason: str = "Manual stop") -> bool:
-        """
-        Остановка стратегии
-        
-        Args:
-            reason: Причина остановки
-            
-        Returns:
-            bool: True если стратегия успешно остановлена
-        """
         if not self.is_running:
             return True
-        log_info(self.user_id, f"Остановка стратегии {self.strategy_type.value}: {reason}",module_name=__name__)
+
+        if self._position_monitor_task and not self._position_monitor_task.done():
+            self._position_monitor_task.cancel()
+            self._position_monitor_task = None
+
+        log_info(self.user_id, f"Остановка стратегии {self.strategy_type.value}: {reason}", module_name=__name__)
         try:
             async with self.lock:
                 self.is_running = False
@@ -890,6 +886,57 @@ class BaseStrategy(ABC):
             log_info(self.user_id, "Уведомление о закрытии сделки отправлено успешно.", "base_strategy")
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления о закрытии сделки: {e}", "base_strategy")
+
+    async def _monitor_active_position(self):
+        """
+        Фоновая задача-"сторож". Раз в минуту проверяет через API,
+        не закрылась ли позиция без ведома стратегии (из-за сбоя WebSocket).
+        """
+        log_info(self.user_id, f"Запущен API-монитор для позиции {self.symbol}", "BaseStrategy")
+
+        while self.is_running and self.position_size > 0:
+            try:
+                await asyncio.sleep(30)  # Проверка раз в минуту
+
+                if not self.is_running or self.position_size == 0:
+                    break  # Выходим, если стратегия остановлена или позиция закрыта штатно
+
+                positions = await self.api.get_positions(symbol=self.symbol)
+
+                # Если API вернул пустой список, значит позиции на бирже больше нет
+                if not positions:
+                    log_warning(self.user_id,
+                                f"ДЕСИНХРОНИЗАЦИЯ! API сообщает, что позиции по {self.symbol} нет, но стратегия об этом не знала. Принудительное закрытие.",
+                                "BaseStrategy")
+
+                    # Получаем последнюю сделку, чтобы рассчитать PnL
+                    last_trade = await self.api.get_last_trade(self.symbol)
+                    if last_trade:
+                        # Создаем "фейковое" событие исполнения, чтобы запустить всю стандартную логику
+                        fake_filled_event = OrderFilledEvent(
+                            user_id=self.user_id,
+                            order_id=last_trade.get('orderId', 'unknown_fallback'),
+                            symbol=self.symbol,
+                            side="Sell",  # Закрытие всегда Sell для LONG-only
+                            qty=self._convert_to_decimal(last_trade.get('execQty', '0')),
+                            price=self._convert_to_decimal(last_trade.get('execPrice', '0')),
+                            fee=self._convert_to_decimal(last_trade.get('execFee', '0'))
+                        )
+                        await self._handle_order_filled(fake_filled_event)
+                    else:
+                        # Если не удалось получить сделку, просто останавливаемся
+                        await self.stop("position_desync_no_trade_history")
+
+                    break  # Выходим из цикла мониторинга
+
+            except asyncio.CancelledError:
+                break  # Штатный выход при отмене задачи
+            except Exception as e:
+                log_error(self.user_id, f"Ошибка в API-мониторе для {self.symbol}: {e}", "BaseStrategy")
+                await asyncio.sleep(60)  # В случае ошибки ждем дольше
+
+        log_info(self.user_id, f"Остановка API-монитора для позиции {self.symbol}", "BaseStrategy")
+
 
     def __str__(self) -> str:
         """Строковое представление стратегии."""

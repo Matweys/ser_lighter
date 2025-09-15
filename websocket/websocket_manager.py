@@ -530,20 +530,41 @@ class DataFeedHandler:
         except Exception as e:
             log_error(self.user_id, f"Ошибка парсинга приватного сообщения: {e}", module_name=__name__)
 
-    async def _handle_order_update(self, order_data: List[Dict]):
-        """Обработка обновления ордера. Публикует ТОЛЬКО OrderUpdateEvent."""
+    async def _handle_order_update(self, data: List[Dict]):
+        """
+        УЛУЧШЕННАЯ ВЕРСИЯ.
+        Анализирует статус ордера и публикует правильное событие:
+        - OrderFilledEvent для исполненных ордеров.
+        - OrderUpdateEvent для всех остальных статусов.
+        """
         try:
-            for order in order_data:
-                # Мы публикуем только общее событие для информационных целей (например, логирования).
-                # Критическое событие OrderFilledEvent больше здесь НЕ создается.
-                order_event = OrderUpdateEvent(
+            for order_data in data:
+                status = order_data.get("orderStatus")
+
+                if status == "Filled":
+                    # Если ордер исполнен, создаем главное событие OrderFilledEvent
+                    log_info(self.user_id, f"WebSocket: Ордер {order_data.get('orderId')} исполнен.", "DataFeedHandler")
+
+                    filled_event = OrderFilledEvent(
+                        user_id=self.user_id,
+                        order_id=order_data.get("orderId"),
+                        symbol=order_data.get("symbol"),
+                        side=order_data.get("side"),
+                        qty=to_decimal(order_data.get("cumExecQty", "0")),
+                        price=to_decimal(order_data.get("avgPrice", "0")),
+                        fee=to_decimal(order_data.get("cumExecFee", "0"))
+                    )
+                    await self.event_bus.publish(filled_event)
+
+                # Также публикуем общее событие для логирования или других систем
+                update_event = OrderUpdateEvent(
                     user_id=self.user_id,
-                    order_data=order
+                    order_data=order_data
                 )
-                await self.event_bus.publish(order_event)
+                await self.event_bus.publish(update_event)
 
         except Exception as e:
-            log_error(self.user_id, f"Ошибка обработки ордера: {e}", module_name=__name__)
+            log_error(self.user_id, f"Ошибка обработки обновления ордера: {e}", module_name=__name__)
 
 
     async def _handle_position_update(self, position_data: List[Dict]):

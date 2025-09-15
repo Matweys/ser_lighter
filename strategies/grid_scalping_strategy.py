@@ -117,9 +117,10 @@ class GridScalpingStrategy(BaseStrategy):
                 # СНАЧАЛА обновляем внутреннее состояние
                 if is_first_entry:
                     self.position_entry_price = event.price
-
-                    # <-- НАЧАЛО НОВОЙ ЛОГИКИ РАСЧЕТА СЕТКИ -->
                     await self._calculate_averaging_levels()
+                    # <-- ЗАПУСКАЕМ API-МОНИТОР ПОСЛЕ ПЕРВОГО ВХОДА -->
+                    if self._position_monitor_task: self._position_monitor_task.cancel()
+                    self._position_monitor_task = asyncio.create_task(self._monitor_active_position())
                 else:
                     self.averaging_orders_placed += 1
 
