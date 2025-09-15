@@ -532,7 +532,7 @@ class DataFeedHandler:
 
     async def _handle_order_update(self, data: List[Dict]):
         """
-        УЛУЧШЕННАЯ ВЕРСИЯ.
+        ФИНАЛЬНАЯ ВЕРСИЯ.
         Анализирует статус ордера и публикует правильное событие:
         - OrderFilledEvent для исполненных ордеров.
         - OrderUpdateEvent для всех остальных статусов.
@@ -541,9 +541,11 @@ class DataFeedHandler:
             for order_data in data:
                 status = order_data.get("orderStatus")
 
+                # ГЛАВНОЕ УСЛОВИЕ: если ордер исполнен, создаем событие-действие
                 if status == "Filled":
-                    # Если ордер исполнен, создаем главное событие OrderFilledEvent
-                    log_info(self.user_id, f"WebSocket: Ордер {order_data.get('orderId')} исполнен.", "DataFeedHandler")
+                    log_info(self.user_id,
+                             f"WebSocket: Ордер {order_data.get('orderId')} исполнен. Создаю OrderFilledEvent.",
+                             "DataFeedHandler")
 
                     filled_event = OrderFilledEvent(
                         user_id=self.user_id,
@@ -556,7 +558,7 @@ class DataFeedHandler:
                     )
                     await self.event_bus.publish(filled_event)
 
-                # Также публикуем общее событие для логирования или других систем
+                # Для всех статусов (включая Filled) публикуем общее событие для информации
                 update_event = OrderUpdateEvent(
                     user_id=self.user_id,
                     order_data=order_data

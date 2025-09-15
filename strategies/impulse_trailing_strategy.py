@@ -55,7 +55,17 @@ class ImpulseTrailingStrategy(BaseStrategy):
             json.dumps({"status": "initializing", "symbol": self.symbol}),
             ttl=600  # 10 минут на случай, если что-то пойдет не так до входа в сделку
         )
-        log_info(self.user_id, f"Установлена предварительная блокировка Impulse Trailing для символа {self.symbol}.", "impulse_trailing")
+        log_info(self.user_id, f"Установлена предварительная блокировка Impulse Trailing для символа {self.symbol}.",
+                 "impulse_trailing")
+
+        # Подписываемся на события цены в EventBus
+        from core.enums import EventType
+        await self.event_bus.subscribe(
+            event_type=EventType.PRICE_UPDATE,
+            handler=self._handle_price_update,
+            user_id=self.user_id
+        )
+        log_info(self.user_id, f"🔔 Подписка на события цены в EventBus активирована", "impulse_trailing")
 
         return await super().start()
 
@@ -65,6 +75,13 @@ class ImpulseTrailingStrategy(BaseStrategy):
         # 1. Снимаем блокировку, чтобы освободить слот для следующей сделки
         await redis_manager.delete_cached_data(self.redis_lock_key)
         log_info(self.user_id, f"Снята блокировка Impulse Trailing. Причина: {reason}", "impulse_trailing")
+
+        # Отписываемся от событий при остановке
+        try:
+            await self.event_bus.unsubscribe(self._handle_price_update)
+            log_info(self.user_id, f"🔕 Отписка от событий цены выполнена", "impulse_trailing")
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка отписки от событий: {e}", "impulse_trailing")
 
         # 2. Вызываем оригинальный метод stop из BaseStrategy для выполнения остальной логики
         await super().stop(reason)
@@ -167,14 +184,19 @@ class ImpulseTrailingStrategy(BaseStrategy):
         order_id = await self._place_order(
             side=self.position_side,
             order_type="Market",
-            qty=qty,
-            stop_loss=self.stop_loss_price,
-            take_profit=None  # <-- Явно указываем None, чтобы TP не выставлялся
+            qty=qty
         )
 
         if order_id:
             filled = await self._await_order_fill(order_id, side=self.position_side, qty=qty)
-            if not filled:
+            if filled:
+                # Устанавливаем SL через отдельный API вызов
+                sl_result = await self.api.set_trading_stop(symbol=self.symbol, stop_loss=self.stop_loss_price)
+                if sl_result:
+                    log_info(self.user_id, f"✅ Начальный SL установлен: {self.stop_loss_price}", "impulse_trailing")
+                else:
+                    log_error(self.user_id, f"❌ Не удалось установить начальный SL", "impulse_trailing")
+            else:
                 await self.stop("Failed to fill entry order")
         else:
             await self.stop("Failed to place entry order")
@@ -215,6 +237,21 @@ class ImpulseTrailingStrategy(BaseStrategy):
             # --- КОНЕЦ НОВОГО БЛОКА ---
 
             await self._send_trade_open_notification(event.side, event.price, event.qty)
+
+            # ИСПРАВЛЕНИЕ: Подписываемся на обновления цены для трейлинга
+            try:
+                from core.user_session import UserSession
+                user_session = UserSession.get_session(self.user_id)
+                if user_session and hasattr(user_session, 'websocket_manager'):
+                    await user_session.websocket_manager.subscribe_symbol(self.user_id, self.symbol)
+                    log_info(self.user_id, f"🔔 Подписка на обновления цены {self.symbol} активирована",
+                             "impulse_trailing")
+                else:
+                    log_error(self.user_id, f"❌ Не найден websocket_manager для подписки на {self.symbol}",
+                              "impulse_trailing")
+            except Exception as e:
+                log_error(self.user_id, f"❌ Ошибка подписки на обновления цены {self.symbol}: {e}", "impulse_trailing")
+
             return
 
         # --- Сценарий: Закрытие позиции (ордер на продажу) ---

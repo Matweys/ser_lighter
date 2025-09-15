@@ -333,10 +333,10 @@ class BybitAPI:
                 # Это может произойти, если ордер еще не попал в историю. Не считаем это ошибкой.
                 log_info(self.user_id, f"Статус для ордера {order_id} пока не найден в истории. Ответ API: {response_data}", module_name=__name__)
                 return None
-
         except Exception as e:
             log_error(self.user_id, f"Критическая ошибка при получении статуса ордера {order_id}: {e}", module_name=__name__)
             return None
+
 
     async def get_positions(self, symbol: str = None) -> Optional[List[Dict[str, Any]]]:
         """Получение позиций"""
