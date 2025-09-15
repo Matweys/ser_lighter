@@ -240,16 +240,19 @@ class ImpulseTrailingStrategy(BaseStrategy):
 
             # ИСПРАВЛЕНИЕ: Подписываемся на обновления цены для трейлинга
             try:
-                # Получаем websocket_manager через bot
-                if hasattr(self.bot, 'websocket_manager') and self.bot.websocket_manager:
-                    await self.bot.websocket_manager.subscribe_symbol(self.user_id, self.symbol)
+                # Получаем global_websocket_manager через bot.app
+                if (hasattr(self.bot, 'app') and
+                        hasattr(self.bot.app, 'global_websocket_manager') and
+                        self.bot.app.global_websocket_manager):
+                    await self.bot.app.global_websocket_manager.subscribe_symbol(self.user_id, self.symbol)
                     log_info(self.user_id, f"🔔 Подписка на обновления цены {self.symbol} активирована",
                              "impulse_trailing")
                 else:
-                    log_error(self.user_id, f"❌ Не найден websocket_manager в bot для подписки на {self.symbol}",
+                    log_error(self.user_id, f"❌ Не найден global_websocket_manager для подписки на {self.symbol}",
                               "impulse_trailing")
             except Exception as e:
                 log_error(self.user_id, f"❌ Ошибка подписки на обновления цены {self.symbol}: {e}", "impulse_trailing")
+
             return
 
         # --- Сценарий: Закрытие позиции (ордер на продажу) ---
