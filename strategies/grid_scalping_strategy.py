@@ -9,8 +9,7 @@ from core.logger import log_info, log_error, log_warning, log_debug
 from core.events import OrderFilledEvent, EventBus, StrategyRestartRequestEvent, PriceUpdateEvent
 
 getcontext().prec = 28
-#TODO  SOLUSDT. Уровни усреднения: ['241.7342', '241.1283', '240.5224']
-#TODO Рассчитана сетка для ETHUSDT. Уровни усреднения: ['4611.0834', '4599.5268', '4587.9702']
+
 
 class GridScalpingStrategy(BaseStrategy):
     """

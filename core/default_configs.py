@@ -18,6 +18,7 @@ class DefaultConfigs:
             "config_version": "2.1.0" # Обновляем версию
         }
 
+
     @staticmethod
     async def create_default_user_config(user_id: int):
         """Создание конфигураций по умолчанию для пользователя."""
@@ -59,7 +60,23 @@ class DefaultConfigs:
             "long_tp_atr": 1.8,      # TP для лонга = цена + (ATR * N)
             "short_sl_atr": 0.8,     # SL для шорта = цена + (ATR * N)
             "short_tp_atr": 0.8,     # TP для шорта = цена - (ATR * N)
-            "trailing_sl_atr": 1.5   # Трейлинг SL = пик - (ATR * N)
+            "trailing_sl_atr": 1.5,   # Трейлинг SL = пик - (ATR * N)
+            # --- НОВЫЕ ПАРАМЕТРЫ АГРЕССИВНОГО ТРЕЙЛИНГА ---
+
+            # 1. Начальный стоп-лосс (% от цены входа)
+            "initial_sl_percent": 3.0,  # SL на 3% от цены входа
+
+            # 2. Минимальная прибыль для активации трейлинга (в USDT)
+            "min_profit_activation_usdt": 3.0,  # Трейлинг при +2 USDT
+
+            # 3. Расстояние трейлинг стопа (% от текущей цены)
+            "trailing_distance_percent": 1.2,  # Стоп на 0.8% от пика
+
+            # 4. Порог отката для закрытия (% от пика)
+            "pullback_close_percent": 1.0,  # Закрытие при откате 0.7% от пика
+
+            # 5. Минимальный шаг подтягивания стопа (% роста цены)
+            "min_trailing_step_percent": 0.3  # Подтягиваем при росте на 0.2%
         }
 
     @staticmethod

@@ -199,20 +199,39 @@ class BaseStrategy(ABC):
 
     async def handle_event(self, event: BaseEvent):
         """
-        Публичная единая точка входа для обработки событий, маршрутизируемых из UserSession.
+        УЛУЧШЕННАЯ ВЕРСИЯ.
+        Публичная единая точка входа для обработки событий из UserSession.
         """
-        # --- 1. ДОБАВЛЯЕМ ОБРАБОТЧИК ОБНОВЛЕНИЙ ОРДЕРОВ ---
-        if isinstance(event, OrderUpdateEvent):
-            # Передаем событие в новый специальный метод
-            await self._handle_order_update(event)
+        if not self.is_running:
+            return
 
-        # --- Существующая логика остается без изменений ---
-        elif isinstance(event, PriceUpdateEvent):
-            await self._handle_price_update_wrapper(event)
-        elif isinstance(event, PositionUpdateEvent):
-            await self._handle_position_update(event)
-        elif isinstance(event, UserSettingsChangedEvent):
-            await self._handle_settings_changed(event)
+        try:
+            # Сначала обрабатываем события, которые не требуют API-валидации
+            if isinstance(event, PriceUpdateEvent):
+                await self._handle_price_update_wrapper(event)
+                return
+            elif isinstance(event, PositionUpdateEvent):
+                await self._handle_position_update(event)
+                return
+            elif isinstance(event, UserSettingsChangedEvent):
+                await self._handle_settings_changed(event)
+                return
+
+            # Теперь обрабатываем события, связанные с ордерами,
+            # которые требуют нашей логики "Триггер -> Подтверждение -> Действие"
+            if isinstance(event, OrderFilledEvent):
+                # Это событие - уже результат подтверждения (либо от API-поллинга, либо от WebSocket).
+                # Оно является "источником правды" и напрямую вызывает финальный обработчик.
+                log_info(self.user_id, f"Стратегия {self.symbol} получила подтвержденное событие OrderFilledEvent для ордера {event.order_id}", "BaseStrategy")
+                await self._handle_order_filled(event)
+
+            elif isinstance(event, OrderUpdateEvent):
+                # Это событие - сырой "сигнал" от WebSocket.
+                # Оно запускает процесс API-подтверждения.
+                await self._handle_order_update(event)
+
+        except Exception as e:
+            log_error(self.user_id, f"Критическая ошибка в BaseStrategy.handle_event: {e}", "BaseStrategy")
 
     # --- 2. ДОБАВЛЯЕМ НОВЫЙ МЕТОД ДЛЯ ЛОГИКИ "ТРИГГЕР -> ПОДТВЕРЖДЕНИЕ" ---
     async def _handle_order_update(self, event: OrderUpdateEvent):
@@ -220,27 +239,23 @@ class BaseStrategy(ABC):
         Обрабатывает сырые данные об ордерах из WebSocket.
         Используется как ТРИГГЕР для запуска API-проверки.
         """
-        if not self.is_running:
-            return
-
         try:
             for order_data in event.order_data:
+                # Игнорируем события не для нашего символа
                 if order_data.get("symbol") != self.symbol:
                     continue
 
-                order_id = order_data.get("orderId")
                 status = order_data.get("orderStatus")
+                order_id = order_data.get("orderId")
 
-                # ИСПРАВЛЕНИЕ: Теперь мы проверяем, что ордер находится в списке активных.
-                # Это гарантирует, что мы обрабатываем только те ордера, за которые отвечает эта стратегия.
-                if status == "Filled" and order_id in self.active_orders:
+                # Нас интересуют только исполненные ордера как триггер
+                if status == "Filled":
                     log_info(self.user_id,
-                             f"WebSocket-триггер: получен сигнал Filled для активного ордера {order_id}. Запускаю API-проверку.",
-                             module_name=__name__)
+                             f"WebSocket-триггер: получен сигнал Filled для ордера {order_id}. Запускаю API-проверку.",
+                             "BaseStrategy")
 
-                    # Удаляем ордер из списка, чтобы избежать повторной обработки
-                    self.active_orders.pop(order_id, None)
-
+                    # Запускаем фоновую задачу API-подтверждения.
+                    # _await_order_fill после успеха сам создаст OrderFilledEvent и вызовет _handle_order_filled
                     asyncio.create_task(
                         self._await_order_fill(
                             order_id=order_id,
@@ -248,9 +263,8 @@ class BaseStrategy(ABC):
                             qty=self._convert_to_decimal(order_data.get("qty"))
                         )
                     )
-
         except Exception as e:
-            log_error(self.user_id, f"Ошибка в _handle_order_update: {e}", module_name=__name__)
+            log_error(self.user_id, f"Ошибка в _handle_order_update: {e}", "BaseStrategy")
 
 
     async def start(self) -> bool:
