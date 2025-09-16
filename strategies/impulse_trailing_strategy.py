@@ -238,30 +238,14 @@ class ImpulseTrailingStrategy(BaseStrategy):
 
             await self._send_trade_open_notification(event.side, event.price, event.qty)
 
-            # ИСПРАВЛЕНИЕ: Подписываемся на обновления цены через BotApplication
+            # ИСПРАВЛЕНИЕ: Подписываемся на обновления цены через глобальный websocket_manager
             try:
-                # Получаем BotApplication через глобальный импорт
-                from core.bot_application import BotApplication
-                # Ищем экземпляр BotApplication в глобальных переменных
-                import sys
-                bot_app = None
-                for obj in sys.modules.values():
-                    if hasattr(obj, '__dict__'):
-                        for attr_name, attr_value in obj.__dict__.items():
-                            if isinstance(attr_value, BotApplication):
-                                bot_app = attr_value
-                                break
-                        if bot_app:
-                            break
-
-                if bot_app and bot_app.global_websocket_manager:
-                    await bot_app.global_websocket_manager.subscribe_symbol(self.user_id, self.symbol)
-                    log_info(self.user_id, f"🔔 Подписка на обновления цены {self.symbol} активирована",
-                             "impulse_trailing")
-                else:
-                    log_error(self.user_id,
-                              f"❌ Не найден BotApplication или global_websocket_manager для {self.symbol}",
-                              "impulse_trailing")
+                # Используем глобальный экземпляр websocket_manager
+                from websocket.websocket_manager import GlobalWebSocketManager
+                # Создаем временный экземпляр для подписки (он подключится к существующему соединению)
+                temp_ws_manager = GlobalWebSocketManager(self.event_bus)
+                await temp_ws_manager.subscribe_symbol(self.user_id, self.symbol)
+                log_info(self.user_id, f"🔔 Подписка на обновления цены {self.symbol} активирована", "impulse_trailing")
             except Exception as e:
                 log_error(self.user_id, f"❌ Ошибка подписки на обновления цены {self.symbol}: {e}", "impulse_trailing")
 
