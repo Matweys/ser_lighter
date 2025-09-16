@@ -99,9 +99,9 @@ class MetaStrategist:
 
             self.last_analysis_time[symbol] = now
 
-            #if analysis and (analysis.is_panic_bar or (analysis.ema_trend == "UP" and analysis.is_consolidating_now)):
+            if analysis and (analysis.is_panic_bar or (analysis.ema_trend == "UP" and analysis.is_consolidating_now)):
             # ПОСЛЕ (менее строгое условие)
-            if analysis and (analysis.is_panic_bar or analysis.is_consolidating_now):
+            #if analysis and (analysis.is_panic_bar or analysis.is_consolidating_now):
                 log_info(self.user_id,
                          f"Условия для сигнала 'impulse_trailing' для {symbol} выполнены. Отправка триггера.",
                          "meta_strategist")
