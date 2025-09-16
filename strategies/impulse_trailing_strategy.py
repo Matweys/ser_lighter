@@ -63,7 +63,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
         await self.event_bus.subscribe(
             event_type=EventType.PRICE_UPDATE,
             handler=self._handle_price_update,
-            user_id=self.user_id
+            user_id=None  # ГЛОБАЛЬНАЯ подписка на ВСЕ события цены
         )
         log_info(self.user_id, f"🔔 Подписка на события цены в EventBus активирована", "impulse_trailing")
 
@@ -260,6 +260,10 @@ class ImpulseTrailingStrategy(BaseStrategy):
 
     async def _handle_price_update(self, event: PriceUpdateEvent):
         """АГРЕССИВНАЯ логика трейлинг-стопа с активацией по прибыли и закрытием при откате."""
+        # ФИЛЬТРАЦИЯ: Обрабатываем только события для нашего символа
+        if event.symbol != self.symbol:
+            return
+
         # ДИАГНОСТИКА: Логируем каждое обновление цены
         log_info(self.user_id, f"🔍 PRICE UPDATE: {self.symbol} = {event.price}", "impulse_trailing")
 
@@ -275,17 +279,19 @@ class ImpulseTrailingStrategy(BaseStrategy):
 
         if self.position_side == "Buy":
             price_change_percent = (current_price - self.entry_price) / self.entry_price
-            current_profit_usdt = price_change_percent * order_amount * leverage
         elif self.position_side == "Sell":
             price_change_percent = (self.entry_price - current_price) / self.entry_price
-            current_profit_usdt = price_change_percent * order_amount * leverage
         else:
             return
-        # ДИАГНОСТИКА: Логируем расчет прибыли
+
+        # Расчет прибыли ОДИН РАЗ после определения price_change_percent
         current_profit_usdt = price_change_percent * order_amount * leverage
+
+        # ДИАГНОСТИКА: Логируем расчет прибыли
         log_info(self.user_id,
                  f"💰 Текущая прибыль: {current_profit_usdt:.2f} USDT ({price_change_percent * 100:.2f}%)",
                  "impulse_trailing")
+
         # конец временной диагностики
 
         # 2. АКТИВАЦИЯ ТРЕЙЛИНГА ПРИ ДОСТИЖЕНИИ МИНИМАЛЬНОЙ ПРИБЫЛИ
