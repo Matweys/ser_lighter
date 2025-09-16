@@ -260,7 +260,11 @@ class ImpulseTrailingStrategy(BaseStrategy):
 
     async def _handle_price_update(self, event: PriceUpdateEvent):
         """АГРЕССИВНАЯ логика трейлинг-стопа с активацией по прибыли и закрытием при откате."""
+        # ДИАГНОСТИКА: Логируем каждое обновление цены
+        log_info(self.user_id, f"🔍 PRICE UPDATE: {self.symbol} = {event.price}", "impulse_trailing")
+
         if not self.position_side or not self.entry_price:
+            log_info(self.user_id, f"⏸️ Нет активной позиции для трейлинга {self.symbol}", "impulse_trailing")
             return
 
         current_price = event.price
@@ -277,16 +281,24 @@ class ImpulseTrailingStrategy(BaseStrategy):
             current_profit_usdt = price_change_percent * order_amount * leverage
         else:
             return
+        # ДИАГНОСТИКА: Логируем расчет прибыли
+        current_profit_usdt = price_change_percent * order_amount * leverage
+        log_info(self.user_id,
+                 f"💰 Текущая прибыль: {current_profit_usdt:.2f} USDT ({price_change_percent * 100:.2f}%)",
+                 "impulse_trailing")
+        # конец временной диагностики
 
         # 2. АКТИВАЦИЯ ТРЕЙЛИНГА ПРИ ДОСТИЖЕНИИ МИНИМАЛЬНОЙ ПРИБЫЛИ
         if not self.trailing_active:
             if current_profit_usdt >= self.min_profit_threshold_usdt:
                 self.trailing_active = True
                 log_info(self.user_id,
-                         f"🚀 ТРЕЙЛИНГ АКТИВИРОВАН для {self.symbol}! Прибыль: {current_profit_usdt:.2f} USDT",
+                         f"🎯 ТРЕЙЛИНГ АКТИВИРОВАН! Прибыль {current_profit_usdt:.2f} >= {self.min_profit_threshold_usdt}",
                          "impulse_trailing")
             else:
-                # Трейлинг еще не активен, выходим
+                log_info(self.user_id,
+                         f"⏳ Трейлинг НЕ активен. Прибыль {current_profit_usdt:.2f} < {self.min_profit_threshold_usdt}",
+                         "impulse_trailing")
                 return
 
         # 3. ИНИЦИАЛИЗАЦИЯ ПИКОВОЙ ЦЕНЫ
