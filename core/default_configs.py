@@ -8,7 +8,6 @@ class DefaultConfigs:
     def get_global_config() -> Dict[str, Any]:
         """Глобальная конфигурация пользователя."""
         return {
-            "leverage": 3,
             "max_simultaneous_trades": 3,
             "max_daily_loss_usdt": 10.0,
             "watchlist_symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
@@ -38,6 +37,7 @@ class DefaultConfigs:
         return {
             # --- Общие настройки, видимые пользователю ---
             "is_enabled": True,
+            "leverage": 2,
             "order_amount": 50.0,
             "analysis_timeframe": "5m",
 
@@ -64,19 +64,19 @@ class DefaultConfigs:
             # --- НОВЫЕ ПАРАМЕТРЫ АГРЕССИВНОГО ТРЕЙЛИНГА ---
 
             # 1. Начальный стоп-лосс (% от цены входа)
-            "initial_sl_percent": 1.5,  # SL на 3% от цены входа
+            "initial_sl_percent": 0.1,  # SL на 3% от цены входа
 
             # 2. Минимальная прибыль для активации трейлинга (в USDT)
-            "min_profit_activation_usdt": 3.0,  # Трейлинг при +2 USDT
+            "min_profit_activation_usdt": 2.0,  # Трейлинг при +2 USDT
 
             # 3. Расстояние трейлинг стопа (% от текущей цены)
-            "trailing_distance_percent": 1.2,  # Стоп на 0.8% от пика
+            "trailing_distance_percent": 0.8,  # Стоп на 0.8% от пика
 
             # 4. Порог отката для закрытия (% от пика)
             "pullback_close_percent": 1.0,  # Закрытие при откате 0.7% от пика
 
             # 5. Минимальный шаг подтягивания стопа (% роста цены)
-            "min_trailing_step_percent": 0.3  # Подтягиваем при росте на 0.2%
+            "min_trailing_step_percent": 0.2  # Подтягиваем при росте на 0.2%
         }
 
     @staticmethod
@@ -84,6 +84,7 @@ class DefaultConfigs:
         """Конфигурация стратегии грид-скальпинга."""
         return {
             "is_enabled": True,
+            "leverage": 2,
             "order_amount": 50.0,
             "max_averaging_orders": 3,      # Макс. ордеров на усреднение
             "profit_percent": 0.3,          # Процент для фиксации прибыли

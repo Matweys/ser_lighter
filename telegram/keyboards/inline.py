@@ -42,7 +42,6 @@ def get_risk_settings_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура настроек риск-менеджмента."""
     buttons = [
         [{"text": "💰 Макс. дневной убыток (USDT)", "callback_data": "set_max_daily_loss_usdt"}],
-        [{"text": "⚖️ Кредитное плечо", "callback_data": "set_leverage"}],
         [{"text": "⚙️ Назад в Настройки", "callback_data": "settings"}]
     ]
     return KeyboardBuilder.build_keyboard(buttons)
@@ -69,6 +68,7 @@ def get_strategy_config_keyboard(strategy_type: str, config: Dict[str, Any]) -> 
 
     if strategy_type == StrategyType.GRID_SCALPING.value:
         editable_params = {
+            "leverage": f"Кредитное плечо: x{config.get('leverage', 2)}",
             "order_amount": f"Сумма ордера: {config.get('order_amount', 0)} USDT",
             "max_averaging_orders": f"Макс. усреднений: {config.get('max_averaging_orders', 0)}",
             "profit_percent": f"Процент прибыли: {config.get('profit_percent', 0)}%",
@@ -76,6 +76,7 @@ def get_strategy_config_keyboard(strategy_type: str, config: Dict[str, Any]) -> 
         }
     elif strategy_type == StrategyType.IMPULSE_TRAILING.value:
         editable_params = {
+            "leverage": f"Кредитное плечо: x{config.get('leverage', 0)}",
             "order_amount": f"Сумма ордера: {config.get('order_amount', 0)} USDT",
         }
 

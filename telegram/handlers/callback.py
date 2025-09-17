@@ -888,8 +888,7 @@ async def _show_risk_settings_menu(bot, chat_id: int, message_id: int, user_id: 
             f"🛡️ <b>Настройки риск-менеджмента</b>\n\n"
             f"Здесь устанавливаются глобальные правила безопасности для вашего аккаунта.\n\n"
             f"<b>Текущие параметры:</b>\n"
-            f"∙ Макс. убыток в день: <b>{final_config.get('max_daily_loss_usdt')} USDT</b>\n"
-            f"∙ Кредитное плечо: <b>x{final_config.get('leverage')}</b>"
+            f"∙ Макс. убыток в день: <b>{final_config.get('max_daily_loss_usdt')} USDT</b>"
         )
         reply_markup = get_risk_settings_keyboard()
 
@@ -939,19 +938,6 @@ async def callback_set_max_daily_loss(callback: CallbackQuery, state: FSMContext
     await callback.answer()
 
 
-@router.callback_query(F.data == "set_leverage")
-async def callback_set_leverage(callback: CallbackQuery, state: FSMContext):
-    """Запрашивает ввод нового значения для кредитного плеча."""
-    await state.set_state(UserStates.SETTING_LEVERAGE)
-    await state.update_data(menu_message_id=callback.message.message_id)
-    await callback.message.edit_text(
-        "✏️ Введите новое значение кредитного плеча (целое число, например, `10`):",
-        reply_markup=get_back_keyboard("risk_settings"),
-        parse_mode="HTML"
-    )
-    await callback.answer()
-
-
 # --- 4. ОБРАБОТЧИКИ ВВОДА ЗНАЧЕНИЙ ОТ ПОЛЬЗОВАТЕЛЯ ---
 @router.message(UserStates.SETTING_MAX_DAILY_LOSS_USDT)
 async def process_max_daily_loss_usdt(message: Message, state: FSMContext):
@@ -983,36 +969,6 @@ async def process_max_daily_loss_usdt(message: Message, state: FSMContext):
     except (ValueError, TypeError):
         await message.answer("❌ Некорректный формат. Введите число (например, `50.5`).")
 
-
-@router.message(UserStates.SETTING_LEVERAGE)
-async def process_leverage(message: Message, state: FSMContext):
-    """Обрабатывает и сохраняет новое значение кредитного плеча."""
-    user_id = message.from_user.id
-    try:
-        value = int(message.text.strip())
-        if not (1 <= value <= 100):
-            await message.answer("❌ Плечо должно быть в диапазоне от 1 до 100.")
-            return
-
-        default_config = DefaultConfigs.get_global_config()
-        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL) or {}
-        final_config = default_config.copy()
-        final_config.update(user_config)
-        final_config["leverage"] = value
-        await redis_manager.save_config(user_id, ConfigType.GLOBAL, final_config)
-
-        log_info(user_id, f"Обновлен параметр риска: leverage = {value}", "callback")
-
-        state_data = await state.get_data()
-        menu_message_id = state_data.get("menu_message_id")
-        await message.delete()  # Удаляем сообщение пользователя с числом
-        await state.clear()  # Сбрасываем состояние
-
-        # Вызываем нашу новую функцию для корректного обновления меню
-        await _show_risk_settings_menu(message.bot, message.chat.id, menu_message_id, user_id)
-
-    except (ValueError, TypeError):
-        await message.answer("❌ Некорректный формат. Введите целое число (например, `10`).")
 
 
 # --- ОБРАБОТЧИКИ НАСТРОЕК СТРАТЕГИЙ ---

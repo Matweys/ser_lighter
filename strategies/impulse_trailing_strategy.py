@@ -5,7 +5,7 @@ import json
 from api.bybit_api import BybitAPI
 from .base_strategy import BaseStrategy
 from core.enums import StrategyType
-from core.logger import log_info, log_error, log_warning
+from core.logger import log_info, log_error, log_warning, log_debug
 from core.events import EventBus, PriceUpdateEvent, OrderFilledEvent
 from core.settings_config import EXCHANGE_FEES
 from core.enums import ExchangeType
@@ -37,9 +37,10 @@ class ImpulseTrailingStrategy(BaseStrategy):
         # Добавляем переменные для агрессивного трейлинга
         self.trailing_active: bool = False
         self.min_profit_threshold_usdt: Optional[Decimal] = None
-        self.last_peak_for_step_check: Optional[Decimal] = None  # Для проверки минимального шага
+        self.last_peak_for_step_check: Optional[Decimal] = None # Для проверки минимального шага
+        self.position_initiated: bool = False
 
-        # ДОБАВЛЕНО: Ключ для блокировки в Redis, уникальный для каждого пользователя
+        # Ключ для блокировки в Redis, уникальный для каждого пользователя
         self.redis_lock_key = f"user:{self.user_id}:impulse_trailing_lock"
 
     async def start(self) -> bool:
@@ -196,192 +197,151 @@ class ImpulseTrailingStrategy(BaseStrategy):
         log_info(self.user_id, f"[TRACE] ImpulseTrailing._handle_order_filled: side={event.side}, price={event.price}",
                  "impulse_trailing")
 
-        # --- Сценарий: Вход в позицию (ордер на покупку) ---
+        # --- Сценарий: Вход в позицию ---
         if self.position_side and event.side == self.position_side:
+            # === НАЧАЛО БЛОКА ЗАЩИТЫ ОТ ДУБЛИРОВАНИЯ ===
+            if self.position_initiated:
+                log_warning(self.user_id,
+                            f"Получено дублирующее событие исполненного ордера {event.order_id}. Игнорируется.",
+                            "impulse_trailing")
+                return
+            self.position_initiated = True
+            # === КОНЕЦ БЛОКА ЗАЩИТЫ ===
+
             self.entry_price = event.price
             self.position_size = event.qty
             self.peak_price = event.price
-
-            # Инициализируем переменные агрессивного трейлинга
             self.trailing_active = False
             self.last_peak_for_step_check = event.price
 
-            # >>> НОВЫЙ БЛОК: ОБНОВЛЕНИЕ БЛОКИРОВКИ ПОЛНОЙ ИНФОРМАЦИЕЙ О СДЕЛКЕ <<<
+            # Обновление блокировки в Redis с полной информацией о сделке
             try:
                 lock_data = {
-                    "status": "active",
-                    "strategy_id": self.strategy_id,
-                    "symbol": self.symbol,
-                    "side": self.position_side,
-                    "entry_price": str(self.entry_price),
-                    "position_size": str(self.position_size),
-                    "order_id": event.order_id
+                    "status": "active", "strategy_id": self.strategy_id, "symbol": self.symbol,
+                    "side": self.position_side, "entry_price": str(self.entry_price),
+                    "position_size": str(self.position_size), "order_id": event.order_id
                 }
-                # Сохраняем на 24 часа. Если сделка длится дольше, это уже аномалия.
                 await redis_manager.cache_data(self.redis_lock_key, json.dumps(lock_data), ttl=86400)
-                log_info(self.user_id,
-                         f"Блокировка Impulse Trailing для {self.symbol} обновлена с деталями активной сделки.",
+                log_info(self.user_id, f"Блокировка Impulse Trailing для {self.symbol} обновлена с деталями активной сделки.",
                          "impulse_trailing")
             except Exception as e:
                 log_error(self.user_id, f"Не удалось обновить данные блокировки в Redis: {e}", "impulse_trailing")
-            # --- КОНЕЦ НОВОГО БЛОКА ---
 
             await self._send_trade_open_notification(event.side, event.price, event.qty)
-
-            # ИСПРАВЛЕНИЕ: Подписываемся на обновления цены через глобальный websocket_manager
-            try:
-                # Используем глобальный экземпляр websocket_manager
-                from websocket.websocket_manager import GlobalWebSocketManager
-                # Создаем временный экземпляр для подписки (он подключится к существующему соединению)
-                temp_ws_manager = GlobalWebSocketManager(self.event_bus)
-                await temp_ws_manager.subscribe_symbol(self.user_id, self.symbol)
-                log_info(self.user_id, f"🔔 Подписка на обновления цены {self.symbol} активирована", "impulse_trailing")
-            except Exception as e:
-                log_error(self.user_id, f"❌ Ошибка подписки на обновления цены {self.symbol}: {e}", "impulse_trailing")
-
             return
 
-        # --- Сценарий: Закрытие позиции (ордер на продажу) ---
+        # --- Сценарий: Закрытие позиции ---
         if self.position_side and event.side != self.position_side:
             pnl_gross = (event.price - self.entry_price) * self.position_size if self.position_side == "Buy" else (self.entry_price - event.price) * self.position_size
             pnl_net = pnl_gross - event.fee
             await self._send_trade_close_notification(pnl_net, event.fee)
             await self.stop("Position closed by TP/SL")
 
+    # impulse_trailing_strategy.py -> _handle_price_update()
+
     async def _handle_price_update(self, event: PriceUpdateEvent):
         """АГРЕССИВНАЯ логика трейлинг-стопа с активацией по прибыли и закрытием при откате."""
-        # ФИЛЬТРАЦИЯ: Обрабатываем только события для нашего символа
-        if event.symbol != self.symbol:
+        if not self.is_running or not self.position_initiated or event.symbol != self.symbol:
             return
 
-        # ДИАГНОСТИКА: Логируем каждое обновление цены
-        log_info(self.user_id, f"🔍 PRICE UPDATE: {self.symbol} = {event.price}", "impulse_trailing")
-
-        if not self.position_side or not self.entry_price:
-            log_info(self.user_id, f"⏸️ Нет активной позиции для трейлинга {self.symbol}", "impulse_trailing")
-            return
-
-        current_price = event.price
-
-        # 1. РАСЧЕТ ТЕКУЩЕЙ ПРИБЫЛИ С УЧЕТОМ ПЛЕЧА
-        order_amount = self._convert_to_decimal(self.config.get("order_amount", 50.0))
-        leverage = self._convert_to_decimal(self.config.get("leverage", 1.0))
-
-        if self.position_side == "Buy":
-            price_change_percent = (current_price - self.entry_price) / self.entry_price
-        elif self.position_side == "Sell":
-            price_change_percent = (self.entry_price - current_price) / self.entry_price
-        else:
-            return
-
-        # Расчет прибыли ОДИН РАЗ после определения price_change_percent
-        current_profit_usdt = price_change_percent * order_amount * leverage
-
-        # ДИАГНОСТИКА: Логируем расчет прибыли
-        log_info(self.user_id,
-                 f"💰 Текущая прибыль: {current_profit_usdt:.2f} USDT ({price_change_percent * 100:.2f}%)",
-                 "impulse_trailing")
-
-        # конец временной диагностики
-
-        # 2. АКТИВАЦИЯ ТРЕЙЛИНГА ПРИ ДОСТИЖЕНИИ МИНИМАЛЬНОЙ ПРИБЫЛИ
-        if not self.trailing_active:
-            if current_profit_usdt >= self.min_profit_threshold_usdt:
-                self.trailing_active = True
-                log_info(self.user_id,
-                         f"🎯 ТРЕЙЛИНГ АКТИВИРОВАН! Прибыль {current_profit_usdt:.2f} >= {self.min_profit_threshold_usdt}",
-                         "impulse_trailing")
-            else:
-                log_info(self.user_id,
-                         f"⏳ Трейлинг НЕ активен. Прибыль {current_profit_usdt:.2f} < {self.min_profit_threshold_usdt}",
-                         "impulse_trailing")
+        # --- НАЧАЛО БЛОКА ДЕТАЛЬНОГО ЛОГИРОВАНИЯ ---
+        try:
+            current_price = event.price
+            if not self.position_side or not self.entry_price or not self.position_size:
                 return
 
-        # 3. ИНИЦИАЛИЗАЦИЯ ПИКОВОЙ ЦЕНЫ
-        if self.peak_price is None:
-            self.peak_price = self.entry_price
+            # 1. Расчет текущей прибыли
+            order_amount = self._convert_to_decimal(self.config.get("order_amount", 50.0))
+            leverage = self._convert_to_decimal(self.config.get("leverage", 1.0))
+            price_change_percent = (
+                                               current_price - self.entry_price) / self.entry_price if self.position_side == "Buy" else (
+                                                                                                                                                    self.entry_price - current_price) / self.entry_price
+            current_profit_usdt = price_change_percent * order_amount * leverage
 
-        # 4. ПРОВЕРКА ОТКАТА ОТ ПИКА (ПРИОРИТЕТНАЯ ПРОВЕРКА)
-        pullback_percent = self._convert_to_decimal(self.config.get('pullback_close_percent', 0.7))
+            log_debug(self.user_id,
+                      f"[{self.symbol}] Trailing Check: Цена={current_price:.4f}, PnL={current_profit_usdt:.2f} USDT",
+                      "impulse_trailing")
 
-        if self.position_side == "Buy":
-            pullback_threshold = self.peak_price * (1 - pullback_percent / 100)
-            if current_price <= pullback_threshold:
-                pullback_actual = ((self.peak_price - current_price) / self.peak_price * 100)
-                log_info(self.user_id,
-                         f"🚨 ЗАКРЫТИЕ ПО ОТКАТУ LONG {self.symbol}: откат {pullback_actual:.2f}% от пика {self.peak_price:.6f}",
-                         "impulse_trailing")
-                await self._close_position_market("Pullback exceeded threshold")
-                return
-        elif self.position_side == "Sell":
-            pullback_threshold = self.peak_price * (1 + pullback_percent / 100)
-            if current_price >= pullback_threshold:
-                pullback_actual = ((current_price - self.peak_price) / self.peak_price * 100)
-                log_info(self.user_id,
-                         f"🚨 ЗАКРЫТИЕ ПО ОТКАТУ SHORT {self.symbol}: откат {pullback_actual:.2f}% от пика {self.peak_price:.6f}",
-                         "impulse_trailing")
-                await self._close_position_market("Pullback exceeded threshold")
-                return
+            # 2. Активация трейлинга
+            if not self.trailing_active:
+                if current_profit_usdt >= self.min_profit_threshold_usdt:
+                    self.trailing_active = True
+                    log_info(self.user_id,
+                             f"[{self.symbol}] ТРЕЙЛИНГ АКТИВИРОВАН! Прибыль {current_profit_usdt:.2f} >= порога {self.min_profit_threshold_usdt}",
+                             "impulse_trailing")
+                else:
+                    return  # Если трейлинг не активен, дальше не идем
 
-        # 5. ОБНОВЛЕНИЕ ПИКОВОЙ ЦЕНЫ И ПОДТЯГИВАНИЕ СТОПА
-        price_improved = False
-        min_step_percent = self._convert_to_decimal(self.config.get('min_trailing_step_percent', 0.2))
+            # 3. Обновление пиковой цены
+            if self.peak_price is None: self.peak_price = self.entry_price
 
-        if self.position_side == "Buy" and current_price > self.peak_price:
-            # Проверяем минимальный шаг для подтягивания
-            step_threshold = self.last_peak_for_step_check * (1 + min_step_percent / 100)
-            if current_price >= step_threshold:
-                old_peak = self.peak_price
+            price_improved = False
+            if self.position_side == "Buy" and current_price > self.peak_price:
                 self.peak_price = current_price
-                self.last_peak_for_step_check = current_price
                 price_improved = True
-                log_info(self.user_id, f"📈 НОВЫЙ ПИК для LONG {self.symbol}: {old_peak:.6f} → {self.peak_price:.6f}",
-                         "impulse_trailing")
-        elif self.position_side == "Sell" and current_price < self.peak_price:
-            # Проверяем минимальный шаг для подтягивания
-            step_threshold = self.last_peak_for_step_check * (1 - min_step_percent / 100)
-            if current_price <= step_threshold:
-                old_peak = self.peak_price
+                log_info(self.user_id, f"[{self.symbol}] Новый пик LONG: {self.peak_price:.4f}", "impulse_trailing")
+            elif self.position_side == "Sell" and current_price < self.peak_price:
                 self.peak_price = current_price
-                self.last_peak_for_step_check = current_price
                 price_improved = True
-                log_info(self.user_id, f"📉 НОВЫЙ ПИК для SHORT {self.symbol}: {old_peak:.6f} → {self.peak_price:.6f}",
-                         "impulse_trailing")
+                log_info(self.user_id, f"[{self.symbol}] Новый пик SHORT: {self.peak_price:.4f}", "impulse_trailing")
 
-        # 6. ПОДТЯГИВАНИЕ СТОП-ЛОССА (только при улучшении пика)
-        if price_improved:
-            trailing_distance_percent = self._convert_to_decimal(self.config.get('trailing_distance_percent', 0.8))
-
-            new_stop_price = None
-            should_update = False
-
+            # 4. Проверка отката от пика (приоритет)
+            pullback_percent = self._convert_to_decimal(self.config.get('pullback_close_percent', 1.0))
             if self.position_side == "Buy":
-                new_stop_price = self.peak_price * (1 - trailing_distance_percent / 100)
-                should_update = new_stop_price > self.stop_loss_price
+                pullback_threshold = self.peak_price * (1 - pullback_percent / 100)
+                if current_price <= pullback_threshold:
+                    log_warning(self.user_id,
+                                f"[{self.symbol}] ЗАКРЫТИЕ ПО ОТКАТУ LONG: Цена {current_price:.4f} <= Порога {pullback_threshold:.4f}",
+                                "impulse_trailing")
+                    await self._close_position_market("Pullback exceeded")
+                    return
             elif self.position_side == "Sell":
-                new_stop_price = self.peak_price * (1 + trailing_distance_percent / 100)
-                should_update = new_stop_price < self.stop_loss_price
+                pullback_threshold = self.peak_price * (1 + pullback_percent / 100)
+                if current_price >= pullback_threshold:
+                    log_warning(self.user_id,
+                                f"[{self.symbol}] ЗАКРЫТИЕ ПО ОТКАТУ SHORT: Цена {current_price:.4f} >= Порога {pullback_threshold:.4f}",
+                                "impulse_trailing")
+                    await self._close_position_market("Pullback exceeded")
+                    return
 
-            if should_update and new_stop_price:
-                log_info(self.user_id,
-                         f"🔄 ПОДТЯГИВАНИЕ SL для {self.position_side} {self.symbol}: {self.stop_loss_price:.6f} → {new_stop_price:.6f}",
-                         "impulse_trailing")
+            # 5. Подтягивание стопа, если цена улучшилась и пройден минимальный шаг
+            if price_improved:
+                min_step_percent = self._convert_to_decimal(self.config.get('min_trailing_step_percent', 0.3))
+                step_threshold_passed = False
+                if self.position_side == "Buy":
+                    step_threshold = self.last_peak_for_step_check * (1 + min_step_percent / 100)
+                    if current_price >= step_threshold: step_threshold_passed = True
+                else:  # Sell
+                    step_threshold = self.last_peak_for_step_check * (1 - min_step_percent / 100)
+                    if current_price <= step_threshold: step_threshold_passed = True
 
-                old_stop_price = self.stop_loss_price
-                self.stop_loss_price = new_stop_price
+                if step_threshold_passed:
+                    log_info(self.user_id, f"[{self.symbol}] Пройден минимальный шаг для подтягивания стопа.",
+                             "impulse_trailing")
+                    self.last_peak_for_step_check = self.peak_price  # Обновляем точку отсчета для шага
 
-                try:
-                    result = await self.api.set_trading_stop(symbol=self.symbol, stop_loss=self.stop_loss_price)
-                    if result:
-                        log_info(self.user_id, f"✅ Стоп-лосс обновлен на бирже для {self.symbol}", "impulse_trailing")
-                    else:
-                        self.stop_loss_price = old_stop_price
-                        log_error(self.user_id, f"❌ Не удалось обновить стоп-лосс для {self.symbol}",
-                                  "impulse_trailing")
-                except Exception as e:
-                    self.stop_loss_price = old_stop_price
-                    log_error(self.user_id, f"❌ Ошибка обновления стоп-лосса для {self.symbol}: {e}",
-                              "impulse_trailing")
+                    trailing_distance_percent = self._convert_to_decimal(
+                        self.config.get('trailing_distance_percent', 1.2))
+                    new_stop_price = self.peak_price * (
+                                1 - trailing_distance_percent / 100) if self.position_side == "Buy" else self.peak_price * (
+                                1 + trailing_distance_percent / 100)
+
+                    should_update = (new_stop_price > self.stop_loss_price) if self.position_side == "Buy" else (
+                                new_stop_price < self.stop_loss_price)
+
+                    if should_update:
+                        log_info(self.user_id,
+                                 f"[{self.symbol}] ПОДТЯГИВАНИЕ SL: {self.stop_loss_price:.4f} -> {new_stop_price:.4f}",
+                                 "impulse_trailing")
+                        result = await self.api.set_trading_stop(symbol=self.symbol, stop_loss=new_stop_price)
+                        if result:
+                            self.stop_loss_price = new_stop_price
+                            log_info(self.user_id, f"[{self.symbol}] SL успешно обновлен на бирже.", "impulse_trailing")
+                        else:
+                            log_error(self.user_id, f"[{self.symbol}] НЕ удалось обновить SL на бирже.",
+                                      "impulse_trailing")
+        except Exception as e:
+            log_error(self.user_id, f"Критическая ошибка в логике трейлинга для {self.symbol}: {e}", "impulse_trailing")
 
     async def _close_position_market(self, reason: str):
         """Принудительное закрытие позиции рыночным ордером."""
