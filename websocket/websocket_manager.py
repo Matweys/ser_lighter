@@ -329,6 +329,11 @@ class DataFeedHandler:
             await self._load_api_credentials()
             await self._subscribe_to_watchlist()
 
+            # --- НАЧАЛО ИСПРАВЛЕНИЯ ---
+            # Подписываем обработчик на события обновления позиций
+            await self.event_bus.subscribe(EventType.POSITION_UPDATE, self._handle_position_activity, user_id=self.user_id)
+            # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
             if self.api_key and self.api_secret:
                 self._private_task = asyncio.create_task(self._private_websocket_loop())
 

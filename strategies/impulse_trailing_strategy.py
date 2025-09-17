@@ -109,7 +109,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
             self.min_profit_threshold_usdt = self._convert_to_decimal(
                 self.config.get('min_profit_activation_usdt', 3.0))
             initial_sl_percent = self._convert_to_decimal(
-                self.config.get('initial_sl_percent', 1.5))  # Используем 1.5% как в конфиге по умолчанию
+                self.config.get('initial_sl_percent', 0.2))  # Используем 1.5% как в конфиге по умолчанию
             long_breakout_buffer = self._convert_to_decimal(self.config.get('long_breakout_buffer', '0.001'))
             # --- КОНЕЦ БЛОКА ПАРАМЕТРОВ ---
 
@@ -253,14 +253,10 @@ class ImpulseTrailingStrategy(BaseStrategy):
             # 1. Расчет текущей прибыли
             order_amount = self._convert_to_decimal(self.config.get("order_amount", 50.0))
             leverage = self._convert_to_decimal(self.config.get("leverage", 1.0))
-            price_change_percent = (
-                                               current_price - self.entry_price) / self.entry_price if self.position_side == "Buy" else (
-                                                                                                                                                    self.entry_price - current_price) / self.entry_price
+            price_change_percent = (current_price - self.entry_price) / self.entry_price if self.position_side == "Buy" else (
+                    self.entry_price - current_price) / self.entry_price
             current_profit_usdt = price_change_percent * order_amount * leverage
-
-            log_debug(self.user_id,
-                      f"[{self.symbol}] Trailing Check: Цена={current_price:.4f}, PnL={current_profit_usdt:.2f} USDT",
-                      "impulse_trailing")
+            log_info(self.user_id, f"[{self.symbol}] Trailing Check: Цена={current_price:.4f}, PnL={current_profit_usdt:.2f} USDT", "impulse_trailing")
 
             # 2. Активация трейлинга
             if not self.trailing_active:

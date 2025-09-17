@@ -67,10 +67,10 @@ class DefaultConfigs:
             "initial_sl_percent": 0.1,  # SL на 3% от цены входа
 
             # 2. Минимальная прибыль для активации трейлинга (в USDT)
-            "min_profit_activation_usdt": 2.0,  # Трейлинг при +2 USDT
+            "min_profit_activation_usdt": 3.0,  # Трейлинг при +2 USDT
 
             # 3. Расстояние трейлинг стопа (% от текущей цены)
-            "trailing_distance_percent": 0.8,  # Стоп на 0.8% от пика
+            "trailing_distance_percent": 1.2,  # Стоп на 0.8% от пика
 
             # 4. Порог отката для закрытия (% от пика)
             "pullback_close_percent": 1.0,  # Закрытие при откате 0.7% от пика
