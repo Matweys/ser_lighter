@@ -42,11 +42,12 @@ class ImpulseTrailingStrategy(BaseStrategy):
         # ДОБАВЛЕНО: Ключ для блокировки в Redis, уникальный для каждого пользователя
         self.redis_lock_key = f"user:{self.user_id}:impulse_trailing_lock"
 
-
     async def start(self) -> bool:
         """Переопределяем start для добавления логики блокировки."""
         if await redis_manager.get_cached_data(self.redis_lock_key):
-            log_warning(self.user_id, f"Запуск Impulse Trailing для {self.symbol} отменен: другая impulse-сделка уже активна.", "impulse_trailing")
+            log_warning(self.user_id,
+                        f"Запуск Impulse Trailing для {self.symbol} отменен: другая impulse-сделка уже активна.",
+                        "impulse_trailing")
             return False
 
         # Устанавливаем ВРЕМЕННУЮ блокировку на время инициализации
@@ -57,34 +58,16 @@ class ImpulseTrailingStrategy(BaseStrategy):
         )
         log_info(self.user_id, f"Установлена предварительная блокировка Impulse Trailing для символа {self.symbol}.",
                  "impulse_trailing")
-
-        # Подписываемся на события цены в EventBus
-        from core.enums import EventType
-        await self.event_bus.subscribe(
-            event_type=EventType.PRICE_UPDATE,
-            handler=self._handle_price_update,
-            user_id=None  # ГЛОБАЛЬНАЯ подписка на ВСЕ события цены
-        )
-        log_info(self.user_id, f"🔔 Подписка на события цены в EventBus активирована", "impulse_trailing")
-
         return await super().start()
 
-    # ДОБАВЛЕНО: Переопределяем stop для снятия блокировки
     async def stop(self, reason: str = "Manual stop"):
         """Переопределяем stop для гарантированного снятия блокировки."""
         # 1. Снимаем блокировку, чтобы освободить слот для следующей сделки
         await redis_manager.delete_cached_data(self.redis_lock_key)
         log_info(self.user_id, f"Снята блокировка Impulse Trailing. Причина: {reason}", "impulse_trailing")
-
-        # Отписываемся от событий при остановке
-        try:
-            await self.event_bus.unsubscribe(self._handle_price_update)
-            log_info(self.user_id, f"🔕 Отписка от событий цены выполнена", "impulse_trailing")
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка отписки от событий: {e}", "impulse_trailing")
-
         # 2. Вызываем оригинальный метод stop из BaseStrategy для выполнения остальной логики
         await super().stop(reason)
+
 
     # --- ВСЕ ОСТАЛЬНЫЕ МЕТОДЫ ОСТАЮТСЯ В ПОЛНОЙ, ДЕТАЛИЗИРОВАННОЙ ВЕРСИИ ---
 
@@ -104,6 +87,8 @@ class ImpulseTrailingStrategy(BaseStrategy):
     def _get_strategy_type(self) -> StrategyType:
         return StrategyType.IMPULSE_TRAILING
 
+    # impulse_trailing_strategy.py -> _execute_strategy_logic()
+
     async def _execute_strategy_logic(self):
         """Анализ сигнала и принятие решения о входе с обязательной остановкой, если вход не выполнен."""
         try:
@@ -114,52 +99,57 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 await self.stop("Insufficient analysis data in signal")
                 return
 
+            # --- ЯВНОЕ ПОЛУЧЕНИЕ ВСЕХ ПАРАМЕТРОВ ---
             current_price = self._convert_to_decimal(analysis['current_price'])
             friction_level = analysis.get('friction_level', 'NEUTRAL')
             ema_trend = analysis.get('ema_trend')
             is_consolidating = analysis.get('is_consolidating_now')
             is_panic = analysis.get('is_panic_bar')
-
-
-            # --- Логика для СИГНАЛА ЛОНГ (открываем ШОРТ) ---
-            # Устанавливаем минимальный порог прибыли в USDT для активации трейлинга
             self.min_profit_threshold_usdt = self._convert_to_decimal(
                 self.config.get('min_profit_activation_usdt', 3.0))
+            initial_sl_percent = self._convert_to_decimal(
+                self.config.get('initial_sl_percent', 1.5))  # Используем 1.5% как в конфиге по умолчанию
+            long_breakout_buffer = self._convert_to_decimal(self.config.get('long_breakout_buffer', '0.001'))
+            # --- КОНЕЦ БЛОКА ПАРАМЕТРОВ ---
 
+            # --- Логика для СИГНАЛА ЛОНГ (открываем ШОРТ) ---
             if ema_trend == "UP" and is_consolidating:
                 if friction_level == "HIGH":
                     await self.stop("Signal skipped: High friction")
                     return
-                breakout_level = self._convert_to_decimal(analysis['consolidation_high']) * (
-                        1 + self._convert_to_decimal(self.config.get('long_breakout_buffer', '0.001')))
+                breakout_level = self._convert_to_decimal(analysis['consolidation_high']) * (1 + long_breakout_buffer)
                 if current_price > breakout_level:
                     log_warning(self.user_id, f"ИНВЕРСИЯ: LONG-сигнал для {self.symbol}. Открываю SHORT.",
                                 "impulse_trailing")
-                    self.position_side = "Sell"  # <-- ИНВЕРСИЯ НАПРАВЛЕНИЯ
-                    # Используем процентный стоп-лосс вместо ATR
-                    initial_sl_percent = self._convert_to_decimal(self.config.get('initial_sl_percent', 3.0))
+                    self.position_side = "Sell"
                     self.stop_loss_price = current_price * (1 + initial_sl_percent / 100)
+                    # --- ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ РАСЧЕТА ---
+                    log_info(self.user_id,
+                             f"Расчет SL для SHORT: Цена={current_price:.4f} * (1 + {initial_sl_percent / 100}) = {self.stop_loss_price:.4f}",
+                             "impulse_trailing")
                     await self._enter_position()
                     return
                 else:
                     await self.stop("Signal skipped: No breakout")
                     return
 
-                # --- Логика для СИГНАЛА ШОРТ (открываем ЛОНГ) ---
+            # --- Логика для СИГНАЛА ШОРТ (открываем ЛОНГ) ---
             if is_panic:
                 if friction_level == "HIGH":
                     await self.stop("Signal skipped: High friction")
                     return
                 log_warning(self.user_id, f"ИНВЕРСИЯ: SHORT-сигнал для {self.symbol}. Открываю LONG.",
                             "impulse_trailing")
-                self.position_side = "Buy"  # <-- ИНВЕРСИЯ НАПРАВЛЕНИЯ
-                # Используем процентный стоп-лосс вместо ATR
-                initial_sl_percent = self._convert_to_decimal(self.config.get('initial_sl_percent', 3.0))
+                self.position_side = "Buy"
                 self.stop_loss_price = current_price * (1 - initial_sl_percent / 100)
+                # --- ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ РАСЧЕТА ---
+                log_info(self.user_id,
+                         f"Расчет SL для LONG: Цена={current_price:.4f} * (1 - {initial_sl_percent / 100}) = {self.stop_loss_price:.4f}",
+                         "impulse_trailing")
                 await self._enter_position()
                 return
 
-                # --- Если ни одно из условий не выполнено ---
+            # --- Если ни одно из условий не выполнено ---
             await self.stop("Signal conditions not met")
 
         except Exception as e:
