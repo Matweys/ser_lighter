@@ -342,41 +342,75 @@ class BaseStrategy(ABC):
             "active_orders_count": len(self.active_orders),
             "active_positions_count": len(self.active_positions)
         }
-        
+    #Временно пробуем
     async def _load_strategy_config(self):
-        """Загрузка конфигурации стратегии"""
+        """Загрузка конфигурации стратегии с правильным каскадом наследования."""
         try:
-            # Загрузка глобальной конфигурации пользователя
-            global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
-            
-            if not global_config:
-                log_error(self.user_id, "Глобальная конфигурация не найдена", module_name=__name__)
-                return
-                
-            # Загрузка конфигурации конкретной стратегии
+            # Уровень 1: Загружаем "железные" настройки по умолчанию из кода
+            all_defaults = DefaultConfigs.get_all_default_configs()
+            default_global = all_defaults.get("global_config", {})
+            default_strategy = all_defaults.get("strategy_configs", {}).get(self.strategy_type.value, {})
+
+            # Уровень 2: Загружаем глобальные настройки пользователя из Redis
+            user_global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL) or {}
+
+            # Уровень 3: Загружаем настройки конкретной стратегии пользователя из Redis
             strategy_config_enum = ConfigType[f"STRATEGY_{self.strategy_type.value.upper()}"]
-            strategy_config = await redis_manager.get_config(self.user_id, strategy_config_enum)
-            
-            if not strategy_config:
-                log_error(self.user_id,f"Конфигурация стратегии {self.strategy_type.value} не найдена", module_name=__name__)
-                return
-                
-            # Объединение конфигураций
+            user_strategy_config = await redis_manager.get_config(self.user_id, strategy_config_enum) or {}
+
+            # Собираем финальную конфигурацию с правильным приоритетом
+            # (пользовательские настройки всегда перезаписывают стандартные)
             self.config = {
-                **global_config,
-                **strategy_config,
+                **default_global,
+                **default_strategy,
+                **user_global_config,
+                **user_strategy_config,
                 "signal_data": self.signal_data
             }
-            
+
             # Обновление базовых параметров
             self.leverage = self.config.get('leverage', self.leverage)
             self.order_amount = self.config.get('order_amount', self.order_amount)
             self.profit_percent = self.config.get('profit_percent', self.profit_percent)
-            
+
             self.last_config_update = datetime.now()
-            log_info(self.user_id,f"Конфигурация стратегии {self.strategy_type.value} загружена",module_name=__name__)
+            log_info(self.user_id, f"Конфигурация стратегии {self.strategy_type.value} загружена", module_name=__name__)
         except Exception as e:
             log_error(self.user_id, f"Ошибка загрузки конфигурации: {e}", module_name=__name__)
+    # async def _load_strategy_config(self):
+    #     """Загрузка конфигурации стратегии"""
+    #     try:
+    #         # Загрузка глобальной конфигурации пользователя
+    #         global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
+    #
+    #         if not global_config:
+    #             log_error(self.user_id, "Глобальная конфигурация не найдена", module_name=__name__)
+    #             return
+    #
+    #         # Загрузка конфигурации конкретной стратегии
+    #         strategy_config_enum = ConfigType[f"STRATEGY_{self.strategy_type.value.upper()}"]
+    #         strategy_config = await redis_manager.get_config(self.user_id, strategy_config_enum)
+    #
+    #         if not strategy_config:
+    #             log_error(self.user_id,f"Конфигурация стратегии {self.strategy_type.value} не найдена", module_name=__name__)
+    #             return
+    #
+    #         # Объединение конфигураций
+    #         self.config = {
+    #             **global_config,
+    #             **strategy_config,
+    #             "signal_data": self.signal_data
+    #         }
+    #
+    #         # Обновление базовых параметров
+    #         self.leverage = self.config.get('leverage', self.leverage)
+    #         self.order_amount = self.config.get('order_amount', self.order_amount)
+    #         self.profit_percent = self.config.get('profit_percent', self.profit_percent)
+    #
+    #         self.last_config_update = datetime.now()
+    #         log_info(self.user_id,f"Конфигурация стратегии {self.strategy_type.value} загружена",module_name=__name__)
+    #     except Exception as e:
+    #         log_error(self.user_id, f"Ошибка загрузки конфигурации: {e}", module_name=__name__)
 
 
     async def _ensure_config_fresh(self):
