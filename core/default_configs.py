@@ -70,7 +70,7 @@ class DefaultConfigs:
             "min_profit_activation_usdt": 3.0,  # Активация трейлинга при прибыли в +2.0 USDT
 
             # 3. Расстояние трейлинг-стопа от пика (в USDT)
-            "trailing_distance_usdt": 2.0,  # Стоп будет отставать от пика
+            "trailing_distance_usdt": 10.0,  # Стоп будет отставать от пика
 
             # 4. Порог отката от пика для закрытия (в USDT)
             "pullback_close_usdt": 4.0,  # Закрытие, если цена откатила от пика
