@@ -22,7 +22,7 @@ from ..keyboards.inline import (
     get_strategy_settings_keyboard,
     get_back_keyboard
 )
-from .states import UserStates, state_validator
+from .states import UserStates
 from cache.redis_manager import redis_manager
 from core.functions import format_currency, format_percentage, validate_symbol
 from core.default_configs import DefaultConfigs
