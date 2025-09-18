@@ -152,7 +152,7 @@ async def lifespan_context():
             log_error(0, f"Непредвиденная ошибка при установке команд: {err}", module_name=__name__)
 
         # Создание и запуск основного приложения с передачей event_bus
-        bot_app = BotApplication()
+        bot_app = BotApplication(bot=bot_manager.bot)
         await bot_app.start()
 
         log_info(0, "=== БОТ УСПЕШНО ЗАПУЩЕН ===", module_name=__name__)

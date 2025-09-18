@@ -8,7 +8,7 @@ import asyncio
 from typing import Dict, Optional, Set, Any, List
 from decimal import Decimal
 from datetime import datetime
-
+from aiogram import Bot
 from core.logger import log_info, log_error, log_warning
 from core.events import (
     EventType, BaseEvent, UserSessionStartedEvent, UserSessionStoppedEvent,
@@ -31,7 +31,8 @@ class BotApplication:
     Главный класс приложения, управляющий жизненным циклом пользовательских торговых сессий
     """
     
-    def __init__(self):
+    def __init__(self, bot: Bot):
+        self.bot = bot
         self.event_bus = event_bus
         self.active_sessions: Dict[int, UserSession] = {}
         self.session_tasks: Dict[int, asyncio.Task] = {}
@@ -152,7 +153,7 @@ class BotApplication:
                 await self._initialize_user_configs(user_id)
                 
                 # Создание сессии
-                session = UserSession(user_id, self.event_bus, self.global_websocket_manager)
+                session = UserSession(user_id, self.event_bus, self.global_websocket_manager, self.bot)
                 
                 # Запуск сессии
                 if await session.start():
@@ -340,7 +341,7 @@ class BotApplication:
                         continue
 
                     # Создание и запуск сессии
-                    session = UserSession(user_id, self.event_bus, self.global_websocket_manager)
+                    session = UserSession(user_id, self.event_bus, self.global_websocket_manager, self.bot)
                     if await session.start():
                         self.active_sessions[user_id] = session
                         restored_count += 1

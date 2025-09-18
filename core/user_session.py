@@ -31,7 +31,7 @@ from api.bybit_api import BybitAPI
 from websocket.websocket_manager import GlobalWebSocketManager, DataFeedHandler
 from database.db_trades import db_manager
 from core.settings_config import system_config
-from telegram.bot import bot_manager
+from aiogram import Bot
 # Импорт стратегий
 from strategies.base_strategy import BaseStrategy
 from strategies.factory import create_strategy
@@ -61,10 +61,11 @@ class UserSession:
     - Автоматическое управление жизненным циклом стратегий
     """
 
-    def __init__(self, user_id: int, event_bus: EventBus, global_ws_manager: GlobalWebSocketManager):
+    def __init__(self, user_id: int, event_bus: EventBus, global_ws_manager: GlobalWebSocketManager, bot: Bot):
         self.user_id = user_id
         self.event_bus = event_bus
         self.global_ws_manager = global_ws_manager
+        self.bot = bot
         self.running = False
 
         # API клиент сессии
@@ -357,20 +358,14 @@ class UserSession:
                           module_name=__name__)
                 return False
 
-            bot_instance = bot_manager.bot if hasattr(bot_manager, 'bot') else None
-            if not bot_instance:
-                log_error(self.user_id,
-                          f"Критическая ошибка: bot не инициализирован. Уведомления для стратегии {strategy_type} работать не будут.",
-                          module_name=__name__)
-
             strategy = create_strategy(
                 strategy_type=strategy_type,
+                bot=self.bot,
                 user_id=self.user_id,
                 symbol=symbol,
                 signal_data=signal_data_for_strategy,  # Передаем подготовленные данные
                 api=self.api,
                 event_bus=self.event_bus,
-                bot=bot_instance,
                 config=None
             )
 
