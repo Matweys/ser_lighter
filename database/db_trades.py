@@ -589,7 +589,7 @@ class DatabaseManager:
         except Exception as e:
             log_error(user_id, f"Ошибка получения API ключей: {e}", module_name='database')
             return None
-    
+
     async def save_trade(self, trade: TradeRecord) -> Optional[int]:
         """Сохранение сделки"""
         try:
@@ -601,21 +601,43 @@ class DatabaseManager:
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                 RETURNING id
             """
-            
+
             result = await self._execute_query(query, (
                 trade.user_id, trade.symbol, trade.side, trade.entry_price, trade.exit_price,
                 trade.quantity, trade.leverage, trade.profit, trade.commission, trade.status,
                 trade.strategy_type, trade.order_id, trade.position_idx, trade.entry_time,
                 trade.exit_time, json.dumps(trade.metadata or {}, cls=DecimalEncoder)
             ), fetch_one=True)
-            
+
             trade_id = result['id'] if result else None
             log_info(trade.user_id, f"Сделка сохранена с ID: {trade_id}", module_name='database')
             return trade_id
-            
+
         except Exception as e:
             log_error(trade.user_id, f"Ошибка сохранения сделки: {e}", module_name='database')
             return None
+
+    async def update_trade_on_close(self, trade_id: int, exit_price: Decimal, pnl: Decimal, commission: Decimal,
+                                    exit_time: datetime) -> bool:
+        """Обновление записи о сделке при ее закрытии."""
+        try:
+            query = """
+                UPDATE trades
+                SET 
+                    exit_price = $1,
+                    profit = $2,
+                    commission = $3,
+                    exit_time = $4,
+                    status = 'CLOSED',
+                    updated_at = NOW()
+                WHERE id = $5
+            """
+            await self._execute_query(query, (exit_price, pnl, commission, exit_time, trade_id))
+            log_info(0, f"Сделка с ID {trade_id} успешно обновлена и закрыта в БД.", module_name='database')
+            return True
+        except Exception as e:
+            log_error(0, f"Ошибка обновления сделки {trade_id} в БД: {e}", module_name='database')
+            return False
     
     async def get_user_trades(self, user_id: int, limit: int = 100, offset: int = 0) -> List[TradeRecord]:
         """Получение сделок пользователя"""

@@ -27,8 +27,8 @@ class DefaultConfigs:
         # Сохраняем конфигурации стратегий
         await redis_manager.save_config(user_id, ConfigType.STRATEGY_IMPULSE_TRAILING,
                                         all_configs["strategy_configs"]["impulse_trailing"])
-        await redis_manager.save_config(user_id, ConfigType.STRATEGY_GRID_SCALPING,
-                                        all_configs["strategy_configs"]["grid_scalping"])
+        await redis_manager.save_config(user_id, ConfigType.STRATEGY_SIGNAL_SCALPER,
+                                        all_configs["strategy_configs"]["signal_scalper"])
 
 
     @staticmethod
@@ -64,28 +64,38 @@ class DefaultConfigs:
 
             # --- НОВЫЕ ПАРАМЕТРЫ АГРЕССИВНОГО ТРЕЙЛИНГА (В USDT) ---
             # 1. Начальный стоп-лосс (в USDT)
-            "initial_sl_usdt": 15.91,  # SL при убытке в 1.5 USDT от суммы ордера
+            "initial_sl_usdt": 20.91,  # SL при убытке в 1.5 USDT от суммы ордера
 
             # 2. Минимальная прибыль для активации трейлинга (в USDT)
-            "min_profit_activation_usdt": 3.0,  # Активация трейлинга при прибыли в +2.0 USDT
+            "min_profit_activation_usdt": 5.0,  # Активация трейлинга при прибыли в +2.0 USDT
 
             # 3. Расстояние трейлинг-стопа от пика (в USDT)
-            "trailing_distance_usdt": 10.0,  # Стоп будет отставать от пика
+            "trailing_distance_usdt": 15.89,  # Стоп будет отставать от пика
 
             # 4. Порог отката от пика для закрытия (в USDT)
-            "pullback_close_usdt": 4.0,  # Закрытие, если цена откатила от пика
+            "pullback_close_usdt": 7.87,  # Закрытие, если цена откатила от пика
         }
 
     @staticmethod
-    def get_grid_scalping_config() -> Dict[str, Any]:
-        """Конфигурация стратегии грид-скальпинга."""
+    def get_signal_scalper_config() -> Dict[str, Any]:
+        """Конфигурация для Signal Scalper Strategy (бывший Grid Scalping)."""
         return {
+            # --- Основные ---
             "is_enabled": True,
-            "leverage": 2,
             "order_amount": 50.0,
-            "max_averaging_orders": 3,      # Макс. ордеров на усреднение
-            "profit_percent": 0.3,          # Процент для фиксации прибыли
-            "stop_loss_percent": 1.0,       # Общий стоп-лосс от цены первого входа в %
+            "leverage": 2,
+            "analysis_timeframe": "5m",
+
+            # --- Управление выходом ---
+            "min_profit_usd": 1.2,
+            "trailing_pullback_usd": 1.0,  # Откат от пика прибыли для закрытия
+
+            # --- Параметры ТА (неизменяемые, согласно заданию) ---
+            "EMA_SHORT": 9,
+            "EMA_LONG": 21,
+            "RSI_PERIOD": 14,
+            "RSI_OVERBOUGHT": 70,
+            "RSI_OVERSOLD": 30
         }
 
 
@@ -96,6 +106,6 @@ class DefaultConfigs:
             "global_config": DefaultConfigs.get_global_config(),
             "strategy_configs": {
                 "impulse_trailing": DefaultConfigs.get_impulse_trailing_config(),
-                "grid_scalping": DefaultConfigs.get_grid_scalping_config()
+                "signal_scalper": DefaultConfigs.get_signal_scalper_config()
             }
         }

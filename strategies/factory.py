@@ -9,7 +9,7 @@ from aiogram import Bot
 from api.bybit_api import BybitAPI
 from core.events import EventBus
 from .base_strategy import BaseStrategy
-from .grid_scalping_strategy import GridScalpingStrategy
+from .signal_scalper_strategy import SignalScalperStrategy
 from .impulse_trailing_strategy import ImpulseTrailingStrategy
 from core.logger import log_error
 
@@ -27,7 +27,7 @@ def create_strategy(
     Фабричная функция для создания стратегий.
     """
     strategy_map = {
-        "grid_scalping": GridScalpingStrategy,
+        "grid_scalping": SignalScalperStrategy,
         "impulse_trailing": ImpulseTrailingStrategy,
     }
 

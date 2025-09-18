@@ -726,8 +726,28 @@ class BaseStrategy(ABC):
 
     async def _send_trade_open_notification(self, side: str, price: Decimal, quantity: Decimal,
                                             intended_amount: Optional[Decimal] = None):
-        """Отправляет уведомление об открытии новой сделки."""
+        """Отправляет уведомление и СОЗДАЕТ запись о сделке в БД."""
         try:
+            # --- БЛОК ДЛЯ ЗАПИСИ В БД ПРИ ОТКРЫТИИ ---
+            from database.db_trades import TradeRecord
+            new_trade = TradeRecord(
+                user_id=self.user_id,
+                symbol=self.symbol,
+                side=side,
+                entry_price=price,
+                quantity=quantity,
+                leverage=int(self.get_config_value("leverage", 1)),
+                status="ACTIVE",
+                strategy_type=self.strategy_type.value,
+                entry_time=datetime.now(timezone.utc),
+                profit=Decimal('0'), # PnL при открытии всегда 0
+                commission=Decimal('0')
+            )
+            trade_id = await db_manager.save_trade(new_trade)
+            if trade_id:
+                # Сохраняем ID для будущего обновления при закрытии
+                self.active_trade_db_id = trade_id
+
             # Проверяем, что бот инициализирован
             if not self.bot:
                 log_error(self.user_id, "Telegram бот не инициализирован. Уведомление об открытии сделки не отправлено.", "base_strategy")
@@ -801,9 +821,20 @@ class BaseStrategy(ABC):
 
 
     # strategies/base_strategy.py -> _send_trade_close_notification
-    async def _send_trade_close_notification(self, pnl: Decimal, commission: Decimal = Decimal('0')):
-        """Отправляет уведомление о закрытии сделки, включая комиссию и обновление всех статистик."""
+    async def _send_trade_close_notification(self, pnl: Decimal, commission: Decimal = Decimal('0'), exit_price: Optional[Decimal] = None):
+        """Отправляет уведомление, обновляет статистику и ОБНОВЛЯЕТ запись о сделке в БД."""
         try:
+            # --- БЛОК ДЛЯ ОБНОВЛЕНИЯ В БД ПРИ ЗАКРЫТИИ ---
+            if hasattr(self, 'active_trade_db_id') and self.active_trade_db_id:
+                await db_manager.update_trade_on_close(
+                    trade_id=self.active_trade_db_id,
+                    exit_price=exit_price if exit_price else Decimal('0'),
+                    pnl=pnl,
+                    commission=commission,
+                    exit_time=datetime.now(timezone.utc)
+                )
+                del self.active_trade_db_id # Очищаем ID после использования
+
             # 1. Обновляем статистику самой стратегии
             self.stats["orders_count"] += 1
             self.stats["total_pnl"] += pnl

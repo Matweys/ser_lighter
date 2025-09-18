@@ -35,20 +35,13 @@ from telegram.bot import bot_manager
 # Импорт стратегий
 from strategies.base_strategy import BaseStrategy
 from strategies.factory import create_strategy
-from strategies.impulse_trailing_strategy import ImpulseTrailingStrategy
-from strategies.grid_scalping_strategy import GridScalpingStrategy
+
 from telegram.bot import bot_manager
 
 
 
 # Установка точности Decimal
 getcontext().prec = 28
-
-# Маппинг типов стратегий на классы
-STRATEGY_CLASSES = {
-    "impulse_trailing": ImpulseTrailingStrategy,
-    "grid_scalping": GridScalpingStrategy
-}
 
 
 class UserSession:
@@ -245,7 +238,7 @@ class UserSession:
         log_info(self.user_id, "Проверка и запуск постоянных стратегий...", module_name=__name__)
         try:
             # 1. Загружаем конфиг для grid_scalping, чтобы проверить, включена ли стратегия
-            grid_config_enum = ConfigType.STRATEGY_GRID_SCALPING
+            grid_config_enum = ConfigType.STRATEGY_SIGNAL_SCALPER
             grid_config = await redis_manager.get_config(self.user_id, grid_config_enum)
 
             if not grid_config or not grid_config.get("is_enabled", False):
@@ -262,31 +255,10 @@ class UserSession:
             watchlist = global_config.get("watchlist_symbols", [])
             log_info(self.user_id, f"Запуск Grid Scalping для символов из watchlist: {watchlist}", module_name=__name__)
 
-
-            #TODO этот блок кода можешь потом поменять на тот что ниже, если один токен не доступен то стратегия не запустится
-            # # 3. Запускаем по одной стратегии для каждого символа
-            # for symbol in watchlist:
-            #     # Для постоянных стратегий не нужен специальный сигнал,
-            #     # поэтому signal_data может быть пустым.
-            #     success = await self.start_strategy(
-            #         strategy_type="grid_scalping",
-            #         symbol=symbol,
-            #         analysis_data={'trigger': 'persistent_start'}
-            #     )
-            #     # ИСПРАВЛЕНИЕ: Если запуск хотя бы одной стратегии не удался,
-            #     # прерываем весь процесс для избежания частичной работы.
-            #     if not success:
-            #         log_error(self.user_id,
-            #                   f"Сбой запуска стратегии для {symbol}. Прерываю запуск остальных стратегий.",
-            #                   module_name=__name__)
-            #         # Этот return False может быть использован в вызывающем коде, чтобы остановить всю сессию
-            #         return False
             # 3. Запускаем по одной стратегии для каждого символа
             for symbol in watchlist:
-                # Для постоянных стратегий не нужен специальный сигнал,
-                # поэтому signal_data может быть пустым.
                 await self.start_strategy(
-                    strategy_type="grid_scalping",
+                    strategy_type=StrategyType.SIGNAL_SCALPER.value,
                     symbol=symbol,
                     analysis_data={'trigger': 'persistent_start'}
                 )

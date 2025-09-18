@@ -122,20 +122,19 @@ class ImpulseTrailingStrategy(BaseStrategy):
             initial_sl_usdt = self._convert_to_decimal(self.get_config_value("initial_sl_usdt", 1.5))
             price_offset = initial_sl_usdt / qty
 
-            # --- Логика для СИГНАЛА ЛОНГ (открываем ШОРТ) ---
+            # --- Логика для СИГНАЛА ЛОНГ (открываем ЛОНГ) ---
             if ema_trend == "UP" and is_consolidating:
                 if friction_level == "HIGH":
                     await self.stop("Signal skipped: High friction")
                     return
                 breakout_level = self._convert_to_decimal(analysis['consolidation_high']) * (1 + long_breakout_buffer)
                 if current_price > breakout_level:
-                    log_warning(self.user_id, f"ИНВЕРСИЯ: LONG-сигнал для {self.symbol}. Открываю SHORT.",
-                                "impulse_trailing")
-                    self.position_side = "Sell"
-                    self.stop_loss_price = current_price + price_offset
+                    log_info(self.user_id, f"Сигнал LONG для {self.symbol}. Открываю LONG.", "impulse_trailing")
+                    self.position_side = "Buy"
+                    self.stop_loss_price = current_price - price_offset
 
                     log_info(self.user_id,
-                             f"Расчет SL для SHORT: Цена={current_price:.4f} + (Убыток {initial_sl_usdt} USDT / Кол-во {qty}) = {self.stop_loss_price:.4f}",
+                             f"Расчет SL для LONG: Цена={current_price:.4f} - (Убыток {initial_sl_usdt} USDT / Кол-во {qty}) = {self.stop_loss_price:.4f}",
                              "impulse_trailing")
 
                     await self._enter_position(qty=qty)
@@ -149,15 +148,12 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 if friction_level == "HIGH":
                     await self.stop("Signal skipped: High friction")
                     return
+                log_info(self.user_id, f"Сигнал SHORT для {self.symbol}. Открываю SHORT.", "impulse_trailing")
+                self.position_side = "Sell"
+                sself.stop_loss_price = current_price + price_offset
 
-                log_warning(self.user_id, f"ИНВЕРСИЯ: SHORT-сигнал для {self.symbol}. Открываю LONG.",
-                            "impulse_trailing")
-                self.position_side = "Buy"
-                self.stop_loss_price = current_price - price_offset
-
-                log_info(self.user_id,
-                         f"Расчет SL для LONG: Цена={current_price:.4f} - (Убыток {initial_sl_usdt} USDT / Кол-во {qty}) = {self.stop_loss_price:.4f}",
-                         "impulse_trailing")
+                log_info(self.user_id,f"Расчет SL для SHORT: Цена={current_price:.4f} + "
+                  f"(Убыток {initial_sl_usdt} USDT / Кол-во {qty}) = {self.stop_loss_price:.4f}","impulse_trailing")
 
                 await self._enter_position(qty=qty)
                 return
