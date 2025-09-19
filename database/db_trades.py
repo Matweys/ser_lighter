@@ -122,6 +122,12 @@ class OrderRecord:
     updated_at: Optional[datetime] = None
     metadata: Optional[Dict[str, Any]] = None
 
+
+# константы для переподключения к БД
+DB_RETRY_COUNT = 5
+DB_RETRY_DELAY = 10  # секунд
+
+
 class DatabaseManager:
     """Профессиональный менеджер базы данных"""
     
@@ -135,22 +141,35 @@ class DatabaseManager:
         """Инициализация базы данных"""
         try:
             log_info(0, "Инициализация базы данных...", module_name='database')
-            
-            # Создаем пул соединений
-            await self._create_pool()
+
+            for attempt in range(DB_RETRY_COUNT):
+                try:
+                    # Создаем пул соединений
+                    await self._create_pool()
+
+                    # Если пул создан успешно, выходим из цикла
+                    log_info(0, f"Успешное подключение к БД (попытка {attempt + 1}/{DB_RETRY_COUNT})",
+                             module_name='database')
+                    break
+
+                except Exception as e:
+                    log_error(0, f"Ошибка подключения к БД (попытка {attempt + 1}/{DB_RETRY_COUNT}): {e}",
+                              module_name='database')
+                    if attempt == DB_RETRY_COUNT - 1:
+                        # Если это последняя попытка, пробрасываем ошибку дальше
+                        raise DatabaseError(f"Не удалось подключиться к базе данных после {DB_RETRY_COUNT} попыток.")
+
+                    log_info(0, f"Следующая попытка через {DB_RETRY_DELAY} секунд...", module_name='database')
+                    await asyncio.sleep(DB_RETRY_DELAY)
             
             # Инициализируем шифрование
             self._setup_encryption()
-            
             # Создаем таблицы
             await self._create_tables()
-
             # добавлять недостающие колонки
             await self._run_migrations()
-
             # Создаем индексы
             await self._create_indexes()
-            
             self._is_initialized = True
             log_info(0, "База данных успешно инициализирована", module_name='database' )
             
@@ -184,6 +203,14 @@ class DatabaseManager:
     async def _create_pool(self) -> None:
         """Создание пула соединений"""
         try:
+            # --- БЛОК ДИАГНОСТИКИ ---
+            from urllib.parse import urlparse
+            parsed_url = urlparse(self.config.url)
+            masked_url = parsed_url._replace(
+                netloc=f"{parsed_url.username}:***@{parsed_url.hostname}:{parsed_url.port}")
+            log_info(0, f"Попытка подключения к БД: {masked_url.geturl()}", module_name='database')
+            # --- КОНЕЦ БЛОКА ДИАГНОСТИКИ ---
+
             self.pool = await asyncpg.create_pool(
                 dsn=self.config.url,
                 min_size=5,
