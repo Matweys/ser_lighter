@@ -52,7 +52,7 @@ def get_strategy_settings_keyboard(configs: Dict[str, Dict[str, Any]]) -> Inline
         return "✅" if configs.get(strategy_type, {}).get("is_enabled", False) else "❌"
 
     buttons = [
-        [{"text": f"{get_status_icon('grid_scalping')} Сигнальный Скальпер", "callback_data": f"configure_strategy_{StrategyType.SIGNAL_SCALPER.value}"}],
+        [{"text": f"{get_status_icon('grid_scalping')} Сеточный скальпинг", "callback_data": "configure_strategy_grid_scalping"}],
         [{"text": f"{get_status_icon('impulse_trailing')} Асимметричный Импульс", "callback_data": "configure_strategy_impulse_trailing"}],
         [{"text": "⚙️ Назад в Настройки", "callback_data": "settings"}]
     ]

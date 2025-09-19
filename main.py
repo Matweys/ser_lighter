@@ -170,12 +170,11 @@ async def lifespan_context():
 async def main():
     """Главная функция запуска бота"""
     try:
-        async with lifespan_context() as bot_app:
+        async with lifespan_context() as _:
             await bot_manager.dp.start_polling(
                 bot_manager.bot,
                 allowed_updates=["message", "callback_query"],
                 drop_pending_updates=True,
-                bot_application=bot_app
             )
     except (KeyboardInterrupt, SystemExit):
         log_info(0, "Получен сигнал завершения", module_name=__name__)

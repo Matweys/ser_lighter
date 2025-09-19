@@ -147,7 +147,7 @@ async def cmd_start(message: Message, state: FSMContext):
         )
 
 @router.message(Command("help"))
-async def cmd_help(message: Message, state: FSMContext):
+async def cmd_help(message: Message, _: FSMContext):
     """Обработчик команды /help"""
     user_id = message.from_user.id
 
@@ -195,7 +195,7 @@ async def cmd_help(message: Message, state: FSMContext):
         await message.answer("❌ Ошибка получения справки")
 
 @router.message(Command("status"))
-async def cmd_status(message: Message, state: FSMContext):
+async def cmd_status(message: Message, _: FSMContext):
     """Обработчик команды /status"""
     user_id = message.from_user.id
 
@@ -255,7 +255,7 @@ async def cmd_status(message: Message, state: FSMContext):
 
 
 @router.message(Command("orders"))
-async def cmd_orders(message: Message, state: FSMContext):
+async def cmd_orders(message: Message, _: FSMContext):
     """Обработчик команды /orders для отображения открытых ордеров"""
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "orders")
@@ -294,7 +294,7 @@ async def cmd_orders(message: Message, state: FSMContext):
 
 
 @router.message(Command("stats"))
-async def cmd_stats(message: Message, state: FSMContext):
+async def cmd_stats(message: Message, _: FSMContext):
     """Шаг 1: Предлагает пользователю выбрать период для статистики."""
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "stats")
@@ -345,7 +345,7 @@ async def cmd_settings(message: Message, state: FSMContext):
 
 
 @router.message(Command("autotrade_start"))
-async def cmd_autotrade_start(message: Message, state: FSMContext, bot_application: BotApplication):
+async def cmd_autotrade_start(message: Message, _: FSMContext):
     """Обработчик команды /autotrade_start"""
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "autotrade_start")
@@ -367,12 +367,12 @@ async def cmd_autotrade_start(message: Message, state: FSMContext, bot_applicati
         "🚀 <b>Запускаю автоматическую торговлю...</b>\nСистема инициализирует сессию и подключается к рынку. Вы получите уведомление по завершении.",
         parse_mode="HTML")
 
-    # Отправляем запрос и на этом всё. Дальше работает UserSession.
-    await bot_application.request_session_start(user_id=user_id)
+    # Отправляем событие в шину
+    await basic_handler.event_bus.publish(UserSessionStartRequestedEvent(user_id=user_id))
 
 
 @router.message(Command("autotrade_stop"))
-async def cmd_autotrade_stop(message: Message, state: FSMContext, bot_application: BotApplication):
+async def cmd_autotrade_stop(message: Message, _: FSMContext):
     """Обработчик команды /autotrade_stop"""
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "autotrade_stop")
@@ -383,7 +383,8 @@ async def cmd_autotrade_stop(message: Message, state: FSMContext, bot_applicatio
         await message.answer("🔴 Торговля и так неактивна.")
         return
 
-    await bot_application.request_session_stop(user_id=user_id, reason="manual_stop_command")
+    # Отправляем событие в шину
+    await basic_handler.event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id, reason="manual_stop_command"))
 
     await message.answer(
         "🛑 <b>Останавливаю автоматическую торговлю...</b>\nСистема завершит текущие операции и сохранит статистику.",
@@ -407,7 +408,7 @@ async def cmd_autotrade_stop(message: Message, state: FSMContext, bot_applicatio
 
 
 @router.message(Command("autotrade_status"))
-async def cmd_autotrade_status(message: Message, state: FSMContext):
+async def cmd_autotrade_status(message: Message, _: FSMContext):
     """Обработчик команды /autotrade_status"""
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "autotrade_status")
@@ -438,7 +439,7 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
 # --- Команды получения информации ---
 
 @router.message(Command("balance"))
-async def cmd_balance(message: Message, state: FSMContext):
+async def cmd_balance(message: Message, _: FSMContext):
     """Обработчик команды /balance"""
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "balance")
@@ -478,7 +479,7 @@ async def cmd_balance(message: Message, state: FSMContext):
 
 
 @router.message(Command("positions"))
-async def cmd_positions(message: Message, state: FSMContext):
+async def cmd_positions(message: Message, _: FSMContext):
     """Обработчик команды /positions"""
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "positions")
@@ -520,7 +521,7 @@ async def cmd_positions(message: Message, state: FSMContext):
 
 
 @router.message(Command("stop_all"))
-async def cmd_stop_all(message: Message, state: FSMContext):
+async def cmd_stop_all(message: Message, _: FSMContext):
     """Обработчик команды /stop_all (экстренная остановка)"""
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "stop_all")
@@ -535,7 +536,7 @@ async def cmd_stop_all(message: Message, state: FSMContext):
 
 # Обработчик неизвестных команд
 @router.message(StateFilter(None))
-async def handle_unknown_message(message: Message, state: FSMContext):
+async def handle_unknown_message(message: Message, _: FSMContext):
     """Обработчик неизвестных сообщений, который не мешает FSM."""
     user_id = message.from_user.id
     try:

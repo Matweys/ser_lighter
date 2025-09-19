@@ -169,7 +169,7 @@ async def _generate_stats_report(user_id: int, start_date: Optional[datetime] = 
 
 
 @router.callback_query(F.data.startswith("stats_period_"))
-async def callback_stats_period(callback: CallbackQuery, state: FSMContext):
+async def callback_stats_period(callback: CallbackQuery, _: FSMContext):
     """Обрабатывает выбор периода и показывает статистику."""
     user_id = callback.from_user.id
     period = callback.data.replace("stats_period_", "")
@@ -199,14 +199,9 @@ async def callback_stats_period(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(report_text, parse_mode="HTML", reply_markup=get_back_keyboard("main_menu"))
     await callback.answer()
 
-
-# >>> КОНЕЦ НОВОГО БЛОКА <<<
-
-
-
 # Настройки
 @router.callback_query(F.data == "settings")
-async def callback_settings(callback: CallbackQuery, state: FSMContext):
+async def callback_settings(callback: CallbackQuery, _: FSMContext):
     """Главное меню настроек"""
     user_id = callback.from_user.id
     
@@ -246,7 +241,7 @@ async def callback_settings(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data == "strategy_settings")
-async def callback_strategy_settings(callback: CallbackQuery, state: FSMContext):
+async def callback_strategy_settings(callback: CallbackQuery, _: FSMContext):
     """Настройки стратегий"""
     user_id = callback.from_user.id
 
@@ -279,34 +274,47 @@ async def callback_strategy_settings(callback: CallbackQuery, state: FSMContext)
 
 # --- НОВЫЙ БЛОК ДЛЯ УПРАВЛЕНИЯ НАСТРОЙКАМИ СТРАТЕГИЙ ---
 
+# ЗАМЕНИТЕ ВАШУ СТАРУЮ ФУНКЦИЮ НА ЭТУ:
+
 @router.callback_query(F.data.startswith("configure_strategy_"))
-async def callback_configure_strategy(callback: CallbackQuery, state: FSMContext,
+async def callback_configure_strategy(callback: CallbackQuery, _: FSMContext,
                                       strategy_type_override: Optional[str] = None):
     """Отображает меню настройки для конкретной стратегии."""
     user_id = callback.from_user.id
-    # --- ИСПРАВЛЕНИЕ: Инициализируем переменную до блока try ---
-    strategy_type = "unknown"
-    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+    strategy_type = "unknown"  # Инициализируем, чтобы избежать ошибок
     try:
         if strategy_type_override:
             strategy_type = strategy_type_override
         else:
             parts = callback.data.split('_')
-            # Собираем название стратегии из всех частей после префикса
             strategy_type = "_".join(parts[2:])
 
-        if strategy_type not in callback_handler.strategy_descriptions:
-            log_error(user_id,
-                      f"Попытка настроить несуществующую стратегию: '{strategy_type}' из callback: '{callback.data}'",
-                      module_name='callback')
-            await callback.answer("❌ Неизвестный тип стратегии.", show_alert=True)
+        # --- ИЗМЕНЕНИЕ 1: Надежное получение типа конфигурации ---
+        # Вместо getattr, который вызывал ошибку, используем явную карту соответствия.
+        strategy_enum_map = {
+            StrategyType.SIGNAL_SCALPER.value: ConfigType.STRATEGY_SIGNAL_SCALPER,
+            StrategyType.IMPULSE_TRAILING.value: ConfigType.STRATEGY_IMPULSE_TRAILING
+        }
+        config_enum = strategy_enum_map.get(strategy_type)
+
+        if not config_enum:
+            log_error(user_id, f"Не найдено соответствие ConfigType для стратегии: '{strategy_type}'", 'callback')
+            await callback.answer("❌ Внутренняя ошибка конфигурации.", show_alert=True)
             return
 
-        # Загружаем актуальный конфиг стратегии
-        config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
-        config = await redis_manager.get_config(user_id, config_enum)
-        if not config:
-            config = DefaultConfigs.get_all_default_configs()["strategy_configs"][strategy_type]
+        # --- 2: Гарантированное слияние настроек ---
+        # Это гарантирует, что меню всегда будет полным, даже если у пользователя сохранены не все настройки.
+
+        # 1. Загружаем шаблон с полным набором параметров по умолчанию
+        all_defaults = DefaultConfigs.get_all_default_configs()["strategy_configs"]
+        default_config = all_defaults.get(strategy_type, {})
+
+        # 2. Загружаем сохраненный конфиг пользователя из Redis (если он есть)
+        user_config = await redis_manager.get_config(user_id, config_enum) or {}
+
+        # 3. Сливаем конфиги: пользовательские настройки перезаписывают дефолтные
+        config = default_config.copy()
+        config.update(user_config)
 
         strategy_info = callback_handler.strategy_descriptions[strategy_type]
         status_text = "✅ Включена" if config.get("is_enabled", False) else "❌ Отключена"
@@ -532,7 +540,7 @@ async def _show_strategy_config_menu(bot, chat_id: int, message_id: int, strateg
 
 # Статистика
 @router.callback_query(F.data == "statistics")
-async def callback_statistics(callback: CallbackQuery, state: FSMContext):
+async def callback_statistics(callback: CallbackQuery, _: FSMContext):
     """Показ статистики пользователя"""
     user_id = callback.from_user.id
 
@@ -641,7 +649,7 @@ async def callback_cancel(callback: CallbackQuery, state: FSMContext):
 # --- Обработчики кнопок из главного меню подтверждение экстренной остановки---
 
 @router.callback_query(F.data == "confirm_emergency_stop")
-async def callback_confirm_emergency_stop(callback: CallbackQuery, state: FSMContext):
+async def callback_confirm_emergency_stop(callback: CallbackQuery, _: FSMContext):
     """
     Обрабатывает подтверждение экстренной остановки.
     """
@@ -671,7 +679,7 @@ async def callback_confirm_emergency_stop(callback: CallbackQuery, state: FSMCon
 # --- Обработчики кнопок из главного меню ---
 
 @router.callback_query(F.data == "show_balance")
-async def callback_show_balance(callback: CallbackQuery, state: FSMContext):
+async def callback_show_balance(callback: CallbackQuery, _: FSMContext):
     """Обработчик кнопки 'Баланс'"""
     user_id = callback.from_user.id
     await callback.answer("Запрашиваю баланс...")
@@ -724,7 +732,7 @@ async def callback_show_balance(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data == "api_keys")
-async def callback_api_keys(callback: CallbackQuery, state: FSMContext):
+async def callback_api_keys(callback: CallbackQuery, _: FSMContext):
     """Обработчик кнопки 'API ключи'"""
     user_id = callback.from_user.id
     await callback.answer()
@@ -763,7 +771,7 @@ async def callback_api_keys(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data == "general_settings")
-async def callback_general_settings(callback: CallbackQuery, state: FSMContext):
+async def callback_general_settings(callback: CallbackQuery, _: FSMContext):
     """Обработчик кнопки 'Общие'."""
     user_id = callback.from_user.id
     await callback.answer()
@@ -782,7 +790,7 @@ async def callback_general_settings(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data == "reset_settings")
-async def callback_reset_settings(callback: CallbackQuery, state: FSMContext):
+async def callback_reset_settings(callback: CallbackQuery, _: FSMContext):
     """
     Обработчик кнопки 'Сбросить настройки'.
     Показывает пользователю предупреждение и клавиатуру для подтверждения.
@@ -801,7 +809,7 @@ async def callback_reset_settings(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data == "confirm_do_reset_settings")
-async def callback_confirm_reset_settings(callback: CallbackQuery, state: FSMContext):
+async def callback_confirm_reset_settings(callback: CallbackQuery, _: FSMContext):
     """
     Подтверждение и выполнение сброса настроек. (ИСПРАВЛЕННАЯ ВЕРСИЯ)
     """
@@ -840,7 +848,7 @@ async def callback_confirm_reset_settings(callback: CallbackQuery, state: FSMCon
 
 
 @router.callback_query(F.data == "api_settings")
-async def callback_api_settings(callback: CallbackQuery, state: FSMContext):
+async def callback_api_settings(callback: CallbackQuery, _: FSMContext):
     """Обработчик кнопки 'API ключи' в настройках"""
     user_id = callback.from_user.id
     await callback.answer()
@@ -941,7 +949,7 @@ async def callback_set_max_daily_loss(callback: CallbackQuery, state: FSMContext
 # --- 4. ОБРАБОТЧИКИ ВВОДА ЗНАЧЕНИЙ ОТ ПОЛЬЗОВАТЕЛЯ ---
 @router.message(UserStates.SETTING_MAX_DAILY_LOSS_USDT)
 async def process_max_daily_loss_usdt(message: Message, state: FSMContext):
-    """Обрабатывает и сохраняет новое значение макс. суточного убытка."""
+    """Обрабатывает и сохраняет новое значение макс. Суточного убытка."""
     user_id = message.from_user.id
     try:
         value = float(message.text.strip().replace(',', '.'))
@@ -999,7 +1007,7 @@ async def callback_toggle_all_strategies(callback: CallbackQuery, state: FSMCont
         await callback.answer("❌ Произошла ошибка.", show_alert=True)
 
 
-async def send_or_edit_symbol_selection_menu(callback_or_message, state: FSMContext, is_edit: bool):
+async def send_or_edit_symbol_selection_menu(callback_or_message, _: FSMContext, is_edit: bool):
     """Вспомогательная функция для отображения/обновления меню выбора символов."""
     user_id = callback_or_message.from_user.id
     try:
@@ -1129,7 +1137,7 @@ async def callback_help(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data.in_({"user_guide", "faq", "support"}))
-async def callback_help_sections_stub(callback: CallbackQuery, state: FSMContext):
+async def callback_help_sections_stub(callback: CallbackQuery, _: FSMContext):
     """Обработчик-заглушка для разделов помощи."""
     section_names = {
         "user_guide": "📖 Руководство пользователя",
