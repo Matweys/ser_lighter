@@ -8,6 +8,7 @@ from typing import Optional, List, Dict, Any, Union, Tuple
 from decimal import Decimal
 from contextlib import asynccontextmanager
 import json
+import ssl
 from dataclasses import dataclass, asdict
 from enum import Enum
 
@@ -128,9 +129,8 @@ DB_RETRY_COUNT = 5
 DB_RETRY_DELAY = 10  # секунд
 
 
-class _DatabaseManager:  # Класс становится "приватным"
+class _DatabaseManager:
     """Внутренняя реализация менеджера БД."""
-
     def __init__(self):
         self.config = system_config.database
         self.pool: Optional[asyncpg.Pool] = None
@@ -148,7 +148,8 @@ class _DatabaseManager:  # Класс становится "приватным"
 
             for attempt in range(DB_RETRY_COUNT):
                 try:
-                    # Используем конфигурацию, максимально приближенную к вашему рабочему примеру
+                    # Создаем SSL-контекст, который не проверяет сертификат.
+                    # Это необходимо для работы с некоторыми облачными провайдерами.
                     ctx = ssl.create_default_context(cafile=None)
                     ctx.check_hostname = False
                     ctx.verify_mode = ssl.CERT_NONE
@@ -159,12 +160,13 @@ class _DatabaseManager:  # Класс становится "приватным"
                         max_size=15,
                         timeout=30,
                         command_timeout=60,
-                        ssl=ctx
+                        ssl=ctx  # Используем созданный контекст
                     )
 
                     log_info(0, f"Пул соединений успешно создан (попытка {attempt + 1})", 'database')
                     self._setup_encryption()
-                    await self._create_tables()
+                    # В реальном приложении здесь должны быть миграции
+                    # await self._create_tables()
                     self._is_initialized = True
                     return  # Успех, выходим
 
