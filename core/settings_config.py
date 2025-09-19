@@ -39,7 +39,7 @@ class DatabaseConfig:
     url: str
     pool_size: int = 20
     max_overflow: int = 30
-    pool_timeout: int = 90
+    pool_timeout: int = 30
     pool_recycle: int = 3600
     echo: bool = False
 

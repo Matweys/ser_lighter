@@ -238,23 +238,24 @@ class UserSession:
         """
         log_info(self.user_id, "Проверка и запуск постоянных стратегий...", module_name=__name__)
         try:
-            # 1. Загружаем конфиг для grid_scalping, чтобы проверить, включена ли стратегия
+            # 1. Загружаем конфиг для signal_scalper, чтобы проверить, включена ли стратегия
             grid_config_enum = ConfigType.STRATEGY_SIGNAL_SCALPER
             grid_config = await redis_manager.get_config(self.user_id, grid_config_enum)
 
             if not grid_config or not grid_config.get("is_enabled", False):
-                log_info(self.user_id, "Стратегия Grid Scalping отключена в настройках. Пропускаем запуск.",
+                log_info(self.user_id, "Стратегия Signal Scalper отключена в настройках. Пропускаем запуск.",
                          module_name=__name__)
                 return
 
             # 2. Загружаем глобальный конфиг, чтобы получить watchlist
             global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
             if not global_config or not global_config.get("watchlist_symbols"):
-                log_info(self.user_id, "Watchlist пуст. Стратегии Grid Scalping не запущены.", module_name=__name__)
+                log_info(self.user_id, "Watchlist пуст. Стратегии Signal Scalper не запущены.", module_name=__name__)
                 return
 
             watchlist = global_config.get("watchlist_symbols", [])
-            log_info(self.user_id, f"Запуск Grid Scalping для символов из watchlist: {watchlist}", module_name=__name__)
+            log_info(self.user_id, f"Запуск Signal Scalper для символов из watchlist: {watchlist}",
+                     module_name=__name__)
 
             # 3. Запускаем по одной стратегии для каждого символа
             for symbol in watchlist:

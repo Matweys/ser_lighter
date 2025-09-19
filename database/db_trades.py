@@ -201,36 +201,53 @@ class DatabaseManager:
             raise
 
     async def _create_pool(self) -> None:
-        """Создание пула соединений"""
+        """Создание пула соединений с улучшенной отказоустойчивостью."""
         try:
-            # --- БЛОК ДИАГНОСТИКИ ---
             from urllib.parse import urlparse
             parsed_url = urlparse(self.config.url)
             masked_url = parsed_url._replace(
                 netloc=f"{parsed_url.username}:***@{parsed_url.hostname}:{parsed_url.port}")
             log_info(0, f"Попытка подключения к БД: {masked_url.geturl()}", module_name='database')
-            # --- КОНЕЦ БЛОКА ДИАГНОСТИКИ ---
 
+            # Увеличиваем таймауты и добавляем keepalive для стабильности
             self.pool = await asyncpg.create_pool(
                 dsn=self.config.url,
-                min_size=5,
-                max_size=self.config.pool_size,
-                max_queries=50000,
-                max_inactive_connection_lifetime=300,
+                min_size=self.config.pool_size,
+                max_size=self.config.max_overflow,
+                # Таймаут на получение соединения из пула
                 timeout=self.config.pool_timeout,
+                # Таймаут на выполнение одной команды
                 command_timeout=60,
-                server_settings={
-                    'jit': 'off',
-                    'application_name': 'trading_bot'
-                }
+                # Настройки keepalive для поддержания соединения
+                connection_class=asyncpg.Connection,
+                init=self._setup_connection,
+                server_settings={'application_name': 'trading_bot'}
             )
-            
-            log_info(0, f"Пул соединений создан (размер: {self.config.pool_size})", module_name='database')
+            log_info(0, f"Пул соединений создан (min: {self.config.pool_size}, max: {self.config.max_overflow})",
+                     module_name='database')
 
         except Exception as e:
             log_error(0, f"Ошибка создания пула соединений: {e}", module_name='database')
             raise DBConnectionError(f"Ошибка создания пула соединений: {e}")
-    
+
+    @staticmethod
+    async def _setup_connection(connection):
+        """Настройка каждого нового соединения в пуле."""
+        # Добавляем кодеки для работы с Decimal и JSON
+        await connection.set_type_codec(
+            'numeric',
+            encoder=str,
+            decoder=Decimal,
+            schema='pg_catalog'
+        )
+        await connection.set_type_codec(
+            'jsonb',
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema='pg_catalog'
+        )
+        log_debug(0, f"Соединение {connection} настроено с кодеками Decimal/JSONB.", 'database')
+
     def _setup_encryption(self) -> None:
         """Настройка шифрования"""
         try:

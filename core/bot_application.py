@@ -550,3 +550,11 @@ class BotApplication:
         await self._handle_session_stop_request(
             UserSessionStopRequestedEvent(user_id=user_id, reason=reason)
         )
+
+    @property
+    def is_running(self) -> bool:
+        """
+        Публичное свойство для безопасной проверки, запущено ли приложение.
+        Возвращает True, если приложение активно.
+        """
+        return self._running

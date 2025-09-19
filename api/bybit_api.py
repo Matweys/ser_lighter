@@ -464,9 +464,7 @@ class BybitAPI:
                     log_error(self.user_id,
                               f"Не удалось обновить кэш инструментов: получен некорректный ответ от API на странице с курсором '{cursor}'.",
                               module_name="bybit_api")
-                    # Если уже что-то загрузили, лучше использовать это, чем ничего
-                    if new_cache:
-                        break
+                    if new_cache: break
                     return None
 
                 for instrument in result["list"]:
@@ -474,13 +472,8 @@ class BybitAPI:
                     if symbol_name:
                         new_cache[symbol_name] = {
                             "symbol": symbol_name,
-                            "baseCoin": instrument.get("baseCoin"),
-                            "quoteCoin": instrument.get("quoteCoin"),
                             "minOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("minOrderQty", "0")),
-                            "maxOrderQty": to_decimal(instrument.get("lotSizeFilter", {}).get("maxOrderQty", "0")),
                             "qtyStep": to_decimal(instrument.get("lotSizeFilter", {}).get("qtyStep", "0")),
-                            "minPrice": to_decimal(instrument.get("priceFilter", {}).get("minPrice", "0")),
-                            "maxPrice": to_decimal(instrument.get("priceFilter", {}).get("maxPrice", "0")),
                             "tickSize": to_decimal(instrument.get("priceFilter", {}).get("tickSize", "0")),
                             "status": instrument.get("status")
                         }
@@ -490,23 +483,15 @@ class BybitAPI:
                     break  # Выходим из цикла, если больше страниц нет
             # --- КОНЕЦ ЛОГИКИ ПАГИНАЦИИ ---
 
-            # Обновление кэша экземпляра
             self.instruments_cache = new_cache
             self.cache_timestamp = current_time
-            log_info(self.user_id, f"Кэш инструментов обновлен. Загружено {len(new_cache)} символов со всех страниц.",
+            log_info(self.user_id, f"Кэш инструментов обновлен. Загружено {len(new_cache)} символов.",
                      module_name="bybit_api")
 
-            # Возвращаем результат из локальной переменной new_cache
             if symbol:
-                instrument_data = new_cache.get(symbol)
-                if not instrument_data:
-                    log_error(self.user_id,
-                              f"КРИТИЧЕСКАЯ ОШИБКА: Символ '{symbol}' не найден даже после полной загрузки!",
-                              module_name="bybit_api")
-                return instrument_data
-
+                return new_cache.get(symbol)
             return new_cache
-    
+
     # =============================================================================
     # ПРИВАТНЫЕ МЕТОДЫ API (ТОРГОВЛЯ)
     # =============================================================================
