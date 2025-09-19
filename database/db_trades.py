@@ -214,10 +214,10 @@ class DatabaseManager:
                 dsn=self.config.url,
                 min_size=5,
                 max_size=20,
-                # Увеличиваем таймаут на установку соединения до 30 секунд
                 timeout=30,
                 command_timeout=60,
-                max_inactive_connection_lifetime=300
+                max_inactive_connection_lifetime=300,
+                ssl='require'
             )
             log_info(0, "Пул соединений успешно создан.", module_name='database')
 
