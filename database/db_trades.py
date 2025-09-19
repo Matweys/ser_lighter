@@ -11,7 +11,7 @@ import json
 from dataclasses import dataclass, asdict
 from enum import Enum
 
-from core.logger import log_info, log_error, log_warning
+from core.logger import log_info, log_error, log_warning, log_debug
 from core.settings_config import system_config
 from core.enums import OrderStatus, PositionSide, StrategyType, TradingStatus
 from core.functions import to_decimal, DecimalEncoder
