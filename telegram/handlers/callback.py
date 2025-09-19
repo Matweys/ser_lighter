@@ -169,7 +169,7 @@ async def _generate_stats_report(user_id: int, start_date: Optional[datetime] = 
 
 
 @router.callback_query(F.data.startswith("stats_period_"))
-async def callback_stats_period(callback: CallbackQuery, _: FSMContext):
+async def callback_stats_period(callback: CallbackQuery, state: FSMContext):
     """Обрабатывает выбор периода и показывает статистику."""
     user_id = callback.from_user.id
     period = callback.data.replace("stats_period_", "")
@@ -201,7 +201,7 @@ async def callback_stats_period(callback: CallbackQuery, _: FSMContext):
 
 # Настройки
 @router.callback_query(F.data == "settings")
-async def callback_settings(callback: CallbackQuery, _: FSMContext):
+async def callback_settings(callback: CallbackQuery, state: FSMContext):
     """Главное меню настроек"""
     user_id = callback.from_user.id
     
@@ -241,7 +241,7 @@ async def callback_settings(callback: CallbackQuery, _: FSMContext):
 
 
 @router.callback_query(F.data == "strategy_settings")
-async def callback_strategy_settings(callback: CallbackQuery, _: FSMContext):
+async def callback_strategy_settings(callback: CallbackQuery, state: FSMContext):
     """Настройки стратегий"""
     user_id = callback.from_user.id
 
@@ -277,7 +277,7 @@ async def callback_strategy_settings(callback: CallbackQuery, _: FSMContext):
 # ЗАМЕНИТЕ ВАШУ СТАРУЮ ФУНКЦИЮ НА ЭТУ:
 
 @router.callback_query(F.data.startswith("configure_strategy_"))
-async def callback_configure_strategy(callback: CallbackQuery, _: FSMContext,
+async def callback_configure_strategy(callback: CallbackQuery, state: FSMContext,
                                       strategy_type_override: Optional[str] = None):
     """Отображает меню настройки для конкретной стратегии."""
     user_id = callback.from_user.id
@@ -540,7 +540,7 @@ async def _show_strategy_config_menu(bot, chat_id: int, message_id: int, strateg
 
 # Статистика
 @router.callback_query(F.data == "statistics")
-async def callback_statistics(callback: CallbackQuery, _: FSMContext):
+async def callback_statistics(callback: CallbackQuery, state: FSMContext):
     """Показ статистики пользователя"""
     user_id = callback.from_user.id
 
@@ -649,7 +649,7 @@ async def callback_cancel(callback: CallbackQuery, state: FSMContext):
 # --- Обработчики кнопок из главного меню подтверждение экстренной остановки---
 
 @router.callback_query(F.data == "confirm_emergency_stop")
-async def callback_confirm_emergency_stop(callback: CallbackQuery, _: FSMContext):
+async def callback_confirm_emergency_stop(callback: CallbackQuery, state: FSMContext):
     """
     Обрабатывает подтверждение экстренной остановки.
     """
@@ -679,7 +679,7 @@ async def callback_confirm_emergency_stop(callback: CallbackQuery, _: FSMContext
 # --- Обработчики кнопок из главного меню ---
 
 @router.callback_query(F.data == "show_balance")
-async def callback_show_balance(callback: CallbackQuery, _: FSMContext):
+async def callback_show_balance(callback: CallbackQuery, state: FSMContext):
     """Обработчик кнопки 'Баланс'"""
     user_id = callback.from_user.id
     await callback.answer("Запрашиваю баланс...")
@@ -732,7 +732,7 @@ async def callback_show_balance(callback: CallbackQuery, _: FSMContext):
 
 
 @router.callback_query(F.data == "api_keys")
-async def callback_api_keys(callback: CallbackQuery, _: FSMContext):
+async def callback_api_keys(callback: CallbackQuery, state: FSMContext):
     """Обработчик кнопки 'API ключи'"""
     user_id = callback.from_user.id
     await callback.answer()
@@ -771,7 +771,7 @@ async def callback_api_keys(callback: CallbackQuery, _: FSMContext):
 
 
 @router.callback_query(F.data == "general_settings")
-async def callback_general_settings(callback: CallbackQuery, _: FSMContext):
+async def callback_general_settings(callback: CallbackQuery, state: FSMContext):
     """Обработчик кнопки 'Общие'."""
     user_id = callback.from_user.id
     await callback.answer()
@@ -790,7 +790,7 @@ async def callback_general_settings(callback: CallbackQuery, _: FSMContext):
 
 
 @router.callback_query(F.data == "reset_settings")
-async def callback_reset_settings(callback: CallbackQuery, _: FSMContext):
+async def callback_reset_settings(callback: CallbackQuery, state: FSMContext):
     """
     Обработчик кнопки 'Сбросить настройки'.
     Показывает пользователю предупреждение и клавиатуру для подтверждения.
@@ -809,7 +809,7 @@ async def callback_reset_settings(callback: CallbackQuery, _: FSMContext):
 
 
 @router.callback_query(F.data == "confirm_do_reset_settings")
-async def callback_confirm_reset_settings(callback: CallbackQuery, _: FSMContext):
+async def callback_confirm_reset_settings(callback: CallbackQuery, state: FSMContext):
     """
     Подтверждение и выполнение сброса настроек. (ИСПРАВЛЕННАЯ ВЕРСИЯ)
     """
@@ -848,7 +848,7 @@ async def callback_confirm_reset_settings(callback: CallbackQuery, _: FSMContext
 
 
 @router.callback_query(F.data == "api_settings")
-async def callback_api_settings(callback: CallbackQuery, _: FSMContext):
+async def callback_api_settings(callback: CallbackQuery, state: FSMContext):
     """Обработчик кнопки 'API ключи' в настройках"""
     user_id = callback.from_user.id
     await callback.answer()
@@ -1007,7 +1007,7 @@ async def callback_toggle_all_strategies(callback: CallbackQuery, state: FSMCont
         await callback.answer("❌ Произошла ошибка.", show_alert=True)
 
 
-async def send_or_edit_symbol_selection_menu(callback_or_message, _: FSMContext, is_edit: bool):
+async def send_or_edit_symbol_selection_menu(callback_or_message, state: FSMContext, is_edit: bool):
     """Вспомогательная функция для отображения/обновления меню выбора символов."""
     user_id = callback_or_message.from_user.id
     try:
@@ -1137,7 +1137,7 @@ async def callback_help(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data.in_({"user_guide", "faq", "support"}))
-async def callback_help_sections_stub(callback: CallbackQuery, _: FSMContext):
+async def callback_help_sections_stub(callback: CallbackQuery, state: FSMContext):
     """Обработчик-заглушка для разделов помощи."""
     section_names = {
         "user_guide": "📖 Руководство пользователя",
