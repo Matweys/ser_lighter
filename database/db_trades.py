@@ -128,54 +128,51 @@ DB_RETRY_COUNT = 5
 DB_RETRY_DELAY = 10  # секунд
 
 
-class DatabaseManager:
-    """Профессиональный менеджер базы данных"""
-    
+class _DatabaseManager:  # Класс становится "приватным"
+    """Внутренняя реализация менеджера БД."""
+
     def __init__(self):
         self.config = system_config.database
         self.pool: Optional[asyncpg.Pool] = None
         self._encryption_key: Optional[str] = None
         self._is_initialized = False
-    
+        self._lock = asyncio.Lock()
+
     async def initialize(self) -> None:
-        """Инициализация базы данных"""
-        try:
-            log_info(0, "Инициализация базы данных...", module_name='database')
+        """Инициализация единственного пула соединений."""
+        async with self._lock:
+            if self._is_initialized:
+                return
+
+            log_info(0, "Инициализация единственного пула соединений с БД...", 'database')
 
             for attempt in range(DB_RETRY_COUNT):
                 try:
-                    # Создаем пул соединений
-                    await self._create_pool()
+                    # Используем конфигурацию, максимально приближенную к вашему рабочему примеру
+                    ctx = ssl.create_default_context(cafile=None)
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
 
-                    # Если пул создан успешно, выходим из цикла
-                    log_info(0, f"Успешное подключение к БД (попытка {attempt + 1}/{DB_RETRY_COUNT})",
-                             module_name='database')
-                    break
+                    self.pool = await asyncpg.create_pool(
+                        dsn=self.config.url,
+                        min_size=5,
+                        max_size=15,
+                        timeout=30,
+                        command_timeout=60,
+                        ssl=ctx
+                    )
+
+                    log_info(0, f"Пул соединений успешно создан (попытка {attempt + 1})", 'database')
+                    self._setup_encryption()
+                    await self._create_tables()
+                    self._is_initialized = True
+                    return  # Успех, выходим
 
                 except Exception as e:
-                    log_error(0, f"Ошибка подключения к БД (попытка {attempt + 1}/{DB_RETRY_COUNT}): {e}",
-                              module_name='database')
+                    log_error(0, f"Ошибка подключения к БД (попытка {attempt + 1}/{DB_RETRY_COUNT}): {e}", 'database')
                     if attempt == DB_RETRY_COUNT - 1:
-                        # Если это последняя попытка, пробрасываем ошибку дальше
-                        raise DatabaseError(f"Не удалось подключиться к базе данных после {DB_RETRY_COUNT} попыток.")
-
-                    log_info(0, f"Следующая попытка через {DB_RETRY_DELAY} секунд...", module_name='database')
+                        raise ConnectionError(f"Не удалось подключиться к БД после {DB_RETRY_COUNT} попыток.")
                     await asyncio.sleep(DB_RETRY_DELAY)
-            
-            # Инициализируем шифрование
-            self._setup_encryption()
-            # Создаем таблицы
-            await self._create_tables()
-            # добавлять недостающие колонки
-            await self._run_migrations()
-            # Создаем индексы
-            await self._create_indexes()
-            self._is_initialized = True
-            log_info(0, "База данных успешно инициализирована", module_name='database' )
-            
-        except Exception as e:
-            log_error(0, f"Ошибка инициализации базы данных: {e}", module_name='database')
-            raise DatabaseError(f"Ошибка инициализации базы данных: {e}")
 
     async def _run_migrations(self):
         """Проверяет и применяет необходимые изменения к схеме БД."""
@@ -805,7 +802,7 @@ class DatabaseManager:
                     raise
 
 # Глобальный экземпляр менеджера базы данных
-db_manager = DatabaseManager()
+db_manager = _DatabaseManager()
 
 # Функции для обратной совместимости
 async def init_db_pool():
