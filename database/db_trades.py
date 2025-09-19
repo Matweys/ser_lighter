@@ -201,7 +201,7 @@ class DatabaseManager:
             raise
 
     async def _create_pool(self) -> None:
-        """Создание пула соединений с улучшенной отказоустойчивостью."""
+        """Создание пула соединений с увеличенным таймаутом."""
         try:
             from urllib.parse import urlparse
             parsed_url = urlparse(self.config.url)
@@ -209,25 +209,23 @@ class DatabaseManager:
                 netloc=f"{parsed_url.username}:***@{parsed_url.hostname}:{parsed_url.port}")
             log_info(0, f"Попытка подключения к БД: {masked_url.geturl()}", module_name='database')
 
-            # Увеличиваем таймауты и добавляем keepalive для стабильности
+            # Возвращаемся к более простой конфигурации, но с увеличенным таймаутом
             self.pool = await asyncpg.create_pool(
                 dsn=self.config.url,
-                min_size=self.config.pool_size,
-                max_size=self.config.max_overflow,
-                # Таймаут на получение соединения из пула
-                timeout=self.config.pool_timeout,
-                # Таймаут на выполнение одной команды
+                min_size=5,
+                max_size=20,
+                # Увеличиваем таймаут на установку соединения до 30 секунд
+                timeout=30,
                 command_timeout=60,
-                # Настройки keepalive для поддержания соединения
-                connection_class=asyncpg.Connection,
-                init=self._setup_connection,
-                server_settings={'application_name': 'trading_bot'}
+                max_inactive_connection_lifetime=300
             )
-            log_info(0, f"Пул соединений создан (min: {self.config.pool_size}, max: {self.config.max_overflow})",
-                     module_name='database')
+            log_info(0, "Пул соединений успешно создан.", module_name='database')
 
+        except (asyncio.TimeoutError, ConnectionRefusedError) as e:
+            log_error(0, f"Ошибка таймаута или отказа в соединении при создании пула: {e}", module_name='database')
+            raise DBConnectionError(f"Таймаут или отказ в соединении: {e}")
         except Exception as e:
-            log_error(0, f"Ошибка создания пула соединений: {e}", module_name='database')
+            log_error(0, f"Общая ошибка создания пула соединений: {e}", module_name='database')
             raise DBConnectionError(f"Ошибка создания пула соединений: {e}")
 
     @staticmethod

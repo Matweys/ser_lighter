@@ -13,7 +13,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 # --- 2. Корректные и единственные импорты ---
-from core.logger import log_info, log_error, log_warning
+from core.logger import log_info, log_error, log_warning, log_critical
 from core.settings_config import system_config # config теперь импортируется как system_config
 from database.db_trades import db_manager
 from cache.redis_manager import redis_manager
@@ -115,77 +115,65 @@ async def initialize_default_configs():
 
 
 # --- 5. Контекстный менеджер жизненного цикла ---
-@asynccontextmanager
-async def lifespan_context():
-    """Контекстный менеджер для управления жизненным циклом приложения"""
+async def main():
+    """Главная функция запуска бота"""
+    log_info(0, "=== ЗАПУСК FUTURES TRADING BOT v2.2 ===", module_name="main")
     bot_app = None
-    event_bus = EventBus() # Создаем единый экземпляр EventBus
     try:
-        log_info(0, "=== ЗАПУСК FUTURES TRADING BOT v2.1 ===", module_name="main")
-
-        # Последовательная и логичная инициализация
+        # --- ПОСЛЕДОВАТЕЛЬНАЯ ИНИЦИАЛИЗАЦИЯ ---
+        # Каждый шаг может выбросить исключение, которое будет поймано ниже
         await db_manager.initialize()
         await redis_manager.init_redis()
+
+        event_bus = EventBus()
+        await event_bus.start()
+
         await bot_manager.initialize(event_bus=event_bus)
 
-        # Регистрация обработчиков
+        # Регистрация роутеров и передача event_bus
         bot_manager.dp.include_router(basic.router)
         bot_manager.dp.include_router(callback.router)
         basic.set_event_bus(event_bus)
         callback.set_event_bus(event_bus)
-        log_info(0, "Обработчики Telegram (роутеры) зарегистрированы.", module_name="main")
 
-        # Настройка администратора и конфигураций
+        # Настройка админа и команд
         await setup_admin_user()
         await initialize_default_configs()
         await set_commands()
 
-        # Создание и запуск основного приложения
+        # Запуск основного приложения
         bot_app = BotApplication(bot=bot_manager.bot)
-        await bot_app.start() # BotApplication теперь получает EventBus через глобальный импорт
+        await bot_app.start()
 
-        log_info(0, "=== БОТ УСПЕШНО ЗАПУЩЕН ===", module_name=__name__)
-        yield bot_app
+        log_info(0, "=== БОТ УСПЕШНО ЗАПУЩЕН И ГОТОВ К РАБОТЕ ===", module_name="main")
 
+        # Запуск polling в основном цикле
+        await bot_manager.dp.start_polling(
+            bot_manager.bot,
+            allowed_updates=bot_manager.dp.resolve_used_update_types()
+        )
 
+    except (KeyboardInterrupt, SystemExit):
+        log_info(0, "Получен сигнал завершения (KeyboardInterrupt/SystemExit)", module_name="main")
     except Exception as e:
-        log_critical(0, f"Критическая ошибка на этапе запуска: {e}", "main")
-        # Гарантируем попытку корректного завершения работы
-        if bot_app and bot_app.is_running:  # ИСПОЛЬЗУЕМ ПУБЛИЧНОЕ СВОЙСТВО
-            await bot_app.stop()
-        raise
-
+        log_critical(0, f"Критическая ошибка на этапе запуска или работы бота: {e}", module_name="main")
     finally:
-        # Этот блок выполнится всегда при выходе из 'with'
-        log_info(0, "=== ЗАВЕРШЕНИЕ РАБОТЫ БОТА ===", module_name=__name__)
-        if bot_app and bot_app.is_running:  # ИСПОЛЬЗУЕМ ПУБЛИЧНОЕ СВОЙСТВО
+        # --- ГАРАНТИРОВАННАЯ ОЧИСТКА РЕСУРСОВ ---
+        log_info(0, "=== НАЧАЛО ПРОЦЕДУРЫ ЗАВЕРШЕНИЯ РАБОТЫ ===", module_name="main")
+        if bot_app and bot_app.is_running:
             await bot_app.stop()
-
         if redis_manager.is_connected:
             await redis_manager.close()
         if db_manager.pool:
             await db_manager.close()
         if bot_manager.is_running:
             await bot_manager.stop()
-        log_info(0, "=== БОТ ЗАВЕРШЕН ===", module_name=__name__)
+        log_info(0, "=== БОТ ПОЛНОСТЬЮ ОСТАНОВЛЕН ===", module_name="main")
 
-
-async def main():
-    """Главная функция запуска бота с использованием контекстного менеджера."""
-    try:
-        async with lifespan_context():
-            # Запускаем polling только после полной инициализации
-            await bot_manager.dp.start_polling(
-                bot_manager.bot,
-                allowed_updates=bot_manager.dp.resolve_used_update_types(),
-                drop_pending_updates=True
-            )
-    except (KeyboardInterrupt, SystemExit):
-        log_info(0, "Получен сигнал завершения (KeyboardInterrupt/SystemExit)", module_name=__name__)
-    except Exception as err:
-        log_critical(0, f"Необработанная критическая ошибка в main(): {err}", module_name=__name__)
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    # Настройка логирования
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(asctime)s | %(levelname)-8s | %(message)s")
     asyncio.run(main())
+
 
