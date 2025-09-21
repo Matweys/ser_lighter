@@ -62,33 +62,28 @@ class BybitAPI:
         self.cache_timestamp = 0
         self._cache_lock = asyncio.Lock()
 
-    
-    async def __aenter__(self):
-        """Async context manager entry"""
-        await self._ensure_session()
-        return self
-        
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit"""
-        await self.close()
+
         
     async def _ensure_session(self):
-        """Обеспечение активной HTTP сессии"""
-        if not self.session or self.session.closed:
-            # Увеличиваем общий таймаут до 60 секунд
-            timeout = aiohttp.ClientTimeout(total=60, connect=20)
-            # Убираем глобальный Content-Type, будем добавлять его только для POST запросов
+        """
+        Обеспечение активной HTTP сессии.
+        Создает сессию при первом вызове и переиспользует ее.
+        """
+        if self.session is None or self.session.closed:
+            timeout = aiohttp.ClientTimeout(total=60, connect=20 )
             self.session = aiohttp.ClientSession(
                 timeout=timeout,
-                headers={
-                    "User-Agent": "Manus-Trading-Bot/1.0"
-                }
-            )
-            
+                headers={"User-Agent": "Manus-Trading-Bot/1.0"}
+             )
+
     async def close(self):
-        """Закрытие HTTP сессии"""
+        """
+        Закрытие HTTP сессии. Этот метод теперь будет вызываться только при полной
+        остановке сессии пользователя, а не для временных API клиентов.
+        """
         if self.session and not self.session.closed:
             await self.session.close()
+            self.session = None # Явно обнуляем сессию
             
     def _generate_signature(self, params: str, timestamp: str) -> str:
         """Генерация подписи для запроса"""
@@ -114,18 +109,13 @@ class BybitAPI:
             
         self.last_request_time = time.time()
 
-    async def _make_request(
-            self,
-            method: str,
-            endpoint: str,
-            params: Dict[str, Any] = None,
-            private: bool = True,
-            return_full_response: bool = False
-    ) -> Optional[Dict[str, Any]]:
+    async def _make_request(self, method: str, endpoint: str, params: Dict[str, Any] = None, private: bool = True,
+                                        return_full_response: bool = False) -> Optional[Dict[str, Any]]:
         """Выполнение HTTP запроса к API с retry механизмом"""
         if params is None:
             params = {}
 
+        # сессия создается здесь, при первом реальном запросе
         await self._ensure_session()
 
         for attempt in range(self.max_retries + 1):
