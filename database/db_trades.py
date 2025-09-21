@@ -206,23 +206,6 @@ class _DatabaseManager:
             raise
 
 
-    @staticmethod
-    async def _setup_connection(connection):
-        """Настройка каждого нового соединения в пуле."""
-        # Добавляем кодеки для работы с Decimal и JSON
-        await connection.set_type_codec(
-            'numeric',
-            encoder=str,
-            decoder=Decimal,
-            schema='pg_catalog'
-        )
-        await connection.set_type_codec(
-            'jsonb',
-            encoder=json.dumps,
-            decoder=json.loads,
-            schema='pg_catalog'
-        )
-        log_debug(0, f"Соединение {connection} настроено с кодеками Decimal/JSONB.", 'database')
 
     def _setup_encryption(self) -> None:
         """Настройка шифрования"""
