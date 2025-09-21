@@ -130,13 +130,19 @@ DB_RETRY_DELAY = 10  # секунд
 
 
 class _DatabaseManager:
-    """Внутренняя реализация менеджера БД."""
     def __init__(self):
-        self.config = system_config.database
         self.pool: Optional[asyncpg.Pool] = None
-        self._encryption_key: Optional[str] = None
         self._is_initialized = False
         self._lock = asyncio.Lock()
+        # Ключ шифрования теперь инициализируется здесь
+        try:
+            key = system_config.encryption_key
+            if not key: raise ValueError("ENCRYPTION_KEY не найден")
+            Fernet(key.encode()) # Проверка валидности ключа
+            self._encryption_key = key
+        except Exception as e:
+            log_error(0, f"Критическая ошибка инициализации ключа шифрования: {e}", 'database')
+            raise
 
     async def initialize(self) -> None:
         """Инициализация единственного пула соединений."""
@@ -144,31 +150,27 @@ class _DatabaseManager:
             if self._is_initialized:
                 return
 
-            log_info(0, "Инициализация единственного пула соединений с БД...", 'database')
+            log_info(0, "Инициализация пула соединений с БД...", 'database')
 
+            # Используем цикл повторных попыток, как вы и просили
             for attempt in range(DB_RETRY_COUNT):
                 try:
-                    # Создаем SSL-контекст, который не проверяет сертификат.
-                    # Это необходимо для работы с некоторыми облачными провайдерами.
-                    ctx = ssl.create_default_context(cafile=None)
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
-
+                    # --- КОНФИГУРАЦИЯ СТРОГО ИЗ ВАШЕГО РАБОЧЕГО ПРИМЕРА ---
                     self.pool = await asyncpg.create_pool(
-                        dsn=self.config.url,
-                        min_size=5,
-                        max_size=15,
-                        timeout=30,
-                        command_timeout=60,
-                        ssl=ctx  # Используем созданный контекст
+                        dsn=system_config.database.url,
+                        ssl='require'
                     )
 
-                    log_info(0, f"Пул соединений успешно создан (попытка {attempt + 1})", 'database')
+                    log_info(0, f"Пул соединений с PostgreSQL успешно создан (попытка {attempt + 1}).", 'database')
+
+                    # Настройка и создание таблиц ПОСЛЕ успешного подключения
                     self._setup_encryption()
-                    # В реальном приложении здесь должны быть миграции
-                    # await self._create_tables()
+                    await self._create_tables()
+                    await self._run_migrations()
+                    await self._create_indexes()
+
                     self._is_initialized = True
-                    return  # Успех, выходим
+                    return  # Успех, выходим из функции
 
                 except Exception as e:
                     log_error(0, f"Ошибка подключения к БД (попытка {attempt + 1}/{DB_RETRY_COUNT}): {e}", 'database')
@@ -199,33 +201,6 @@ class _DatabaseManager:
             log_error(0, f"Ошибка во время выполнения миграций: {e}", 'database')
             raise
 
-    async def _create_pool(self) -> None:
-        """Создание пула соединений с увеличенным таймаутом."""
-        try:
-            from urllib.parse import urlparse
-            parsed_url = urlparse(self.config.url)
-            masked_url = parsed_url._replace(
-                netloc=f"{parsed_url.username}:***@{parsed_url.hostname}:{parsed_url.port}")
-            log_info(0, f"Попытка подключения к БД: {masked_url.geturl()}", module_name='database')
-
-            # Возвращаемся к более простой конфигурации, но с увеличенным таймаутом
-            self.pool = await asyncpg.create_pool(
-                dsn=self.config.url,
-                min_size=5,
-                max_size=20,
-                timeout=30,
-                command_timeout=60,
-                max_inactive_connection_lifetime=300,
-                ssl='require'
-            )
-            log_info(0, "Пул соединений успешно создан.", module_name='database')
-
-        except (asyncio.TimeoutError, ConnectionRefusedError) as e:
-            log_error(0, f"Ошибка таймаута или отказа в соединении при создании пула: {e}", module_name='database')
-            raise DBConnectionError(f"Таймаут или отказ в соединении: {e}")
-        except Exception as e:
-            log_error(0, f"Общая ошибка создания пула соединений: {e}", module_name='database')
-            raise DBConnectionError(f"Ошибка создания пула соединений: {e}")
 
     @staticmethod
     async def _setup_connection(connection):
