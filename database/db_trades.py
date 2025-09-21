@@ -134,23 +134,27 @@ class _DatabaseManager:
         self.pool: Optional[asyncpg.Pool] = None
         self._is_initialized = False
         self._lock = asyncio.Lock()
-        # Ключ шифрования теперь инициализируется здесь
-        try:
-            key = system_config.encryption_key
-            if not key: raise ValueError("ENCRYPTION_KEY не найден")
-            Fernet(key.encode()) # Проверка валидности ключа
-            self._encryption_key = key
-        except Exception as e:
-            log_error(0, f"Критическая ошибка инициализации ключа шифрования: {e}", 'database')
-            raise
+        self._encryption_key: Optional[str] = None
 
     async def initialize(self) -> None:
-        """Инициализация единственного пула соединений."""
+        """Инициализация единственного пула соединений и других асинхронных компонентов."""
         async with self._lock:
             if self._is_initialized:
                 return
 
-            log_info(0, "Инициализация пула соединений с БД...", 'database')
+            log_info(0, "Инициализация DatabaseManager...", 'database')
+
+            # --- 1. СНАЧАЛА НАСТРАИВАЕМ ШИФРОВАНИЕ ---
+            # Эта операция теперь выполняется асинхронно и не блокирует импорт
+            try:
+                key = system_config.encryption_key
+                if not key: raise ValueError("ENCRYPTION_KEY не найден")
+                Fernet(key.encode()) # Проверка валидности
+                self._encryption_key = key
+                log_info(0, "Ключ шифрования успешно настроен.", 'database')
+            except Exception as e:
+                log_error(0, f"Критическая ошибка инициализации ключа шифрования: {e}", 'database')
+                raise
 
             # Используем цикл повторных попыток, как вы и просили
             for attempt in range(DB_RETRY_COUNT):
