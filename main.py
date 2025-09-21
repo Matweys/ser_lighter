@@ -114,23 +114,30 @@ async def initialize_default_configs():
         log_error(0, f"Ошибка инициализации конфигураций по умолчанию: {err}", module_name=__name__)
 
 
-# --- 5. Контекстный менеджер жизненного цикла ---
-async def main():
-    """Главная функция запуска бота"""
-    log_info(0, "=== ЗАПУСК FUTURES TRADING BOT v2.2 ===", module_name="main")
-    bot_app = None
+# 1. Создаем глобальную переменную для нашего приложения
+bot_app: Optional[BotApplication] = None
+
+async def on_startup(dispatcher: Dispatcher):
+    """
+    Выполняется при старте бота. Инициализирует все наши сервисы.
+    """
+    log_info(0, "=== ЗАПУСК FUTURES TRADING BOT v2.2 (через on_startup) ===", module_name="main")
+    global bot_app
+
     try:
         # --- ПОСЛЕДОВАТЕЛЬНАЯ ИНИЦИАЛИЗАЦИЯ ---
-        # Каждый шаг может выбросить исключение, которое будет поймано ниже
         await db_manager.initialize()
         await redis_manager.init_redis()
 
+        # EventBus теперь можно не запускать отдельно, если он не имеет сложных зависимостей
+        # Но для ясности оставим
         event_bus = EventBus()
         await event_bus.start()
 
+        # Передаем event_bus в bot_manager при инициализации
         await bot_manager.initialize(event_bus=event_bus)
 
-        # Регистрация роутеров и передача event_bus
+        # Регистрация роутеров и передача event_bus в хендлеры
         bot_manager.dp.include_router(basic.router)
         bot_manager.dp.include_router(callback.router)
         basic.set_event_bus(event_bus)
@@ -147,33 +154,50 @@ async def main():
 
         log_info(0, "=== БОТ УСПЕШНО ЗАПУЩЕН И ГОТОВ К РАБОТЕ ===", module_name="main")
 
-        # Запуск polling в основном цикле
-        await bot_manager.dp.start_polling(
-            bot_manager.bot,
-            allowed_updates=bot_manager.dp.resolve_used_update_types()
-        )
-
-    except (KeyboardInterrupt, SystemExit):
-        log_info(0, "Получен сигнал завершения (KeyboardInterrupt/SystemExit)", module_name="main")
     except Exception as e:
-        log_critical(0, f"Критическая ошибка на этапе запуска или работы бота: {e}", module_name="main")
-    finally:
-        # --- ГАРАНТИРОВАННАЯ ОЧИСТКА РЕСУРСОВ ---
-        log_info(0, "=== НАЧАЛО ПРОЦЕДУРЫ ЗАВЕРШЕНИЯ РАБОТЫ ===", module_name="main")
-        if bot_app and bot_app.is_running:
-            await bot_app.stop()
-        if redis_manager.is_connected:
-            await redis_manager.close()
-        if db_manager.pool:
-            await db_manager.close()
-        if bot_manager.is_running:
-            await bot_manager.stop()
-        log_info(0, "=== БОТ ПОЛНОСТЬЮ ОСТАНОВЛЕН ===", module_name="main")
+        log_critical(0, f"Критическая ошибка на этапе запуска: {e}", module_name="main")
+        # В случае ошибки на старте, нужно остановить приложение
+        # Это сложный сценарий, пока просто логируем
+        raise
+
+async def on_shutdown(dispatcher: Dispatcher):
+    """
+    Выполняется при остановке бота (например, по Ctrl+C).
+    Корректно закрывает все наши сервисы.
+    """
+    log_info(0, "=== НАЧАЛО ПРОЦЕДУРЫ ЗАВЕРШЕНИЯ РАБОТЫ ===", module_name="main")
+    global bot_app
+
+    if bot_app and bot_app.is_running:
+        await bot_app.stop()
+    if redis_manager.is_connected:
+        await redis_manager.close()
+    if db_manager.pool:
+        await db_manager.close()
+    if bot_manager.is_running:
+        await bot_manager.stop()
+
+    log_info(0, "=== БОТ ПОЛНОСТЬЮ ОСТАНОВЛЕН ===", module_name="main")
+
+
+def main():
+    """
+    Главная синхронная функция, которая настраивает и запускает Dispatcher.
+    """
+    # Создаем Dispatcher здесь, чтобы зарегистрировать хендлеры startup/shutdown
+    # Используем storage из уже созданного bot_manager
+    dp = Dispatcher(storage=bot_manager.storage)
+
+    # Регистрируем наши функции жизненного цикла
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
+
+    # Запускаем бесконечный цикл aiogram. Он сам управляет asyncio.
+    dp.run_polling(bot_manager.bot)
 
 
 if __name__ == "__main__":
-    # Настройка логирования
     logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(asctime)s | %(levelname)-8s | %(message)s")
-    asyncio.run(main())
+    main()
 
 
