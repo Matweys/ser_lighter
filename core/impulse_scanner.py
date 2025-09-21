@@ -28,51 +28,16 @@ class ImpulseScanner:
         self.connection: Optional[websockets.WebSocketClientProtocol] = None
         self.running = False
         self._task: Optional[asyncio.Task] = None
-        self.symbols_to_scan: List[str] = []  # <-- Изначально список пуст
+        self.symbols_to_scan: List[str] = []
 
     async def start(self):
-        """Запуск сканера."""
+        """Запуск сканера. Теперь он не блокируется получением символов."""
         if self.running:
             return
         log_info(0, "Запуск глобального ImpulseScanner...", module_name=__name__)
-
-        # Динамически получаем все символы перед запуском
-        await self._fetch_all_symbols()
-        if not self.symbols_to_scan:
-            log_error(0, "Не удалось получить список символов для сканирования. ImpulseScanner не будет запущен.",
-                      module_name=__name__)
-            return
-
-
         self.running = True
+        # Просто создаем задачу, которая сама разберется с подключением и загрузкой символов.
         self._task = asyncio.create_task(self._websocket_loop())
-
-
-    async def _fetch_all_symbols(self):
-        """
-        Получает полный список активных USDT фьючерсов с биржи Bybit.
-        """
-        log_info(0, "Получение списка всех фьючерсных пар с Bybit...", module_name=__name__)
-        temp_api = None
-        try:
-            temp_api = BybitAPI(api_key="", api_secret="", user_id=0, demo=False)
-            instruments = await temp_api.get_instruments_info()
-
-            if instruments:
-                # Фильтруем только активные (Trading) бессрочные USDT контракты
-                self.symbols_to_scan = [
-                    info['symbol'] for info in instruments.values()
-                    if info.get('status') == 'Trading' and '-' not in info['symbol'] and info['symbol'].endswith('USDT')
-                ]
-                log_info(0, f"Получено {len(self.symbols_to_scan)} активных USDT контрактов для сканирования.",
-                         module_name=__name__)
-            else:
-                log_warning(0, "Не удалось получить информацию об инструментах от API.", module_name=__name__)
-        except Exception as e:
-            log_error(0, f"Критическая ошибка при получении списка символов: {e}", module_name=__name__)
-        finally:
-            if temp_api and temp_api.session:
-                await temp_api.close()
 
     async def stop(self):
         """Остановка сканера."""
@@ -86,12 +51,44 @@ class ImpulseScanner:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        if self.connection:
+        if self.connection and self.connection.open:
             await self.connection.close()
         log_info(0, "ImpulseScanner остановлен.", module_name=__name__)
 
+    async def _fetch_all_symbols(self):
+        """
+        Получает полный список активных USDT фьючерсов с биржи Bybit.
+        """
+        log_info(0, "Получение списка всех фьючерсных пар с Bybit...", module_name=__name__)
+        # Используем async with для гарантии закрытия сессии
+        async with BybitAPI(api_key="", api_secret="", user_id=0, demo=False) as temp_api:
+            try:
+                instruments = await temp_api.get_instruments_info()
+                if instruments:
+                    self.symbols_to_scan = [
+                        info['symbol'] for info in instruments.values()
+                        if info.get('status') == 'Trading' and '-' not in info['symbol'] and info['symbol'].endswith('USDT')
+                    ]
+                    log_info(0, f"Получено {len(self.symbols_to_scan)} активных USDT контрактов для сканирования.",
+                             module_name=__name__)
+                else:
+                    log_warning(0, "Не удалось получить информацию об инструментах от API.", module_name=__name__)
+            except Exception as e:
+                log_error(0, f"Критическая ошибка при получении списка символов: {e}", module_name=__name__)
+
+
     async def _websocket_loop(self):
-        """Основной цикл WebSocket-соединения."""
+        """Основной цикл WebSocket-соединения с интегрированной логикой запуска."""
+        # Сначала получаем символы. Если не получится, цикл будет повторять попытку.
+        await self._fetch_all_symbols()
+        if not self.symbols_to_scan:
+            log_error(0, "Не удалось получить список символов. Повторная попытка через 60 секунд.", module_name=__name__)
+            await asyncio.sleep(60)
+            # Перезапускаем сам loop, чтобы повторить попытку
+            if self.running:
+                self._task = asyncio.create_task(self._websocket_loop())
+            return
+
         while self.running:
             try:
                 async with websockets.connect(self.public_url) as websocket:
@@ -112,21 +109,18 @@ class ImpulseScanner:
         if not self.connection or not self.symbols_to_scan:
             return
 
-        # Bybit позволяет до 200 подписок в одном сообщении для kline
         chunk_size = 100
         log_info(0, f"ImpulseScanner: Начинаю подписку на {len(self.symbols_to_scan)} символов...",
                  module_name=__name__)
         for i in range(0, len(self.symbols_to_scan), chunk_size):
             chunk = self.symbols_to_scan[i:i + chunk_size]
-            args = [f"kline.5.{symbol}" for symbol in chunk]  # Используем минутные свечи как триггер
-            subscribe_msg = {
-                "op": "subscribe",
-                "args": args
-            }
+            # Используем 5-минутные свечи, как и было в вашем коде
+            args = [f"kline.5.{symbol}" for symbol in chunk]
+            subscribe_msg = {"op": "subscribe", "args": args}
             await self.connection.send(json.dumps(subscribe_msg))
             log_info(0, f"ImpulseScanner: отправлена подписка на {len(chunk)} символов (часть {i // chunk_size + 1}).",
                      module_name=__name__)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.5) # Небольшая задержка между пачками подписок
 
     async def _handle_message(self, message: str):
         """Обработка входящих сообщений."""
@@ -136,19 +130,17 @@ class ImpulseScanner:
 
             if topic.startswith("kline."):
                 candle_data_list = data.get("data", [])
-                if not candle_data_list:
-                    return
+                if not candle_data_list: return
 
                 candle_raw = candle_data_list[0]
-                # Нас интересуют только закрытые свечи
-                if not candle_raw.get("confirm", False):
-                    return
+                if not candle_raw.get("confirm", False): return
 
                 symbol = topic.split(".")[2]
+                interval = topic.split(".")[1] # Получаем таймфрейм из топика
 
                 candle_event_data = {
                     "symbol": symbol,
-                    "interval": "5m",  # Мы подписываемся на минутные свечи
+                    "interval": f"{interval}m" if interval.isdigit() else interval, # Форматируем интервал
                     "timestamp": int(candle_raw["start"]),
                     "open": Decimal(str(candle_raw["open"])),
                     "high": Decimal(str(candle_raw["high"])),
@@ -157,9 +149,7 @@ class ImpulseScanner:
                     "volume": Decimal(str(candle_raw["volume"]))
                 }
 
-                # Публикуем новое ГЛОБАЛЬНОЕ событие
                 event = GlobalCandleEvent(candle_data=candle_event_data)
                 await self.event_bus.publish(event)
         except Exception as e:
-            # Логируем ошибку, но не останавливаем цикл
             log_error(0, f"Ошибка обработки сообщения в ImpulseScanner: {e}", module_name=__name__)
