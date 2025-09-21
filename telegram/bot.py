@@ -19,9 +19,10 @@ from core.events import EventBus
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.fsm.storage.base import BaseEventIsolation
 
+
 class TelegramBotManager:
     """Профессиональный менеджер Telegram бота"""
-    
+
     def __init__(self):
         self.config = system_config.telegram
         self.bot: Optional[Bot] = None
@@ -48,7 +49,7 @@ class TelegramBotManager:
         except Exception as e:
             log_error(0, f"Ошибка инициализации Telegram бота: {e}", module_name='bot')
             raise
-    
+
     async def _setup_storage(self) -> None:
         """Настройка Redis storage"""
         try:
