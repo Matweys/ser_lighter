@@ -162,7 +162,12 @@ class _DatabaseManager:
                     # --- КОНФИГУРАЦИЯ СТРОГО ИЗ ВАШЕГО РАБОЧЕГО ПРИМЕРА ---
                     self.pool = await asyncpg.create_pool(
                         dsn=system_config.database.url,
-                        ssl='require'
+                        ssl='require',
+                        min_size=2,
+                        max_size=10,
+                        command_timeout=60,
+                        timeout=30,
+                        server_settings={'jit': 'off'}
                     )
 
                     log_info(0, f"Пул соединений с PostgreSQL успешно создан (попытка {attempt + 1}).", 'database')

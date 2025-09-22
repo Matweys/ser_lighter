@@ -159,14 +159,30 @@ async def main():
     finally:
         # --- ГАРАНТИРОВАННАЯ ОЧИСТКА РЕСУРСОВ ---
         log_info(0, "=== НАЧАЛО ПРОЦЕДУРЫ ЗАВЕРШЕНИЯ РАБОТЫ ===", module_name="main")
-        if bot_app and bot_app.is_running:
-            await bot_app.stop()
-        if redis_manager.is_connected:
-            await redis_manager.close()
-        if db_manager.pool:
-            await db_manager.close()
-        if bot_manager.is_running:
-            await bot_manager.stop()
+        try:
+            if bot_app and bot_app.is_running:
+                await bot_app.stop()
+        except Exception as e:
+            log_error(0, f"Ошибка остановки bot_app: {e}", module_name="main")
+
+        try:
+            if redis_manager.is_connected:
+                await redis_manager.close()
+        except Exception as e:
+            log_error(0, f"Ошибка закрытия redis_manager: {e}", module_name="main")
+
+        try:
+            if db_manager.pool:
+                await db_manager.close()
+        except Exception as e:
+            log_error(0, f"Ошибка закрытия db_manager: {e}", module_name="main")
+
+        try:
+            if bot_manager.is_running:
+                await bot_manager.stop()
+        except Exception as e:
+            log_error(0, f"Ошибка остановки bot_manager: {e}", module_name="main")
+
         log_info(0, "=== БОТ ПОЛНОСТЬЮ ОСТАНОВЛЕН ===", module_name="main")
 
 
