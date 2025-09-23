@@ -10,7 +10,6 @@ from decimal import Decimal, getcontext
 from datetime import datetime
 from core.logger import log_info, log_error, log_warning, log_debug
 from core.events import (
-    EventType,
     BaseEvent,
     SignalEvent,
     OrderFilledEvent,
@@ -24,7 +23,7 @@ from core.events import (
     EventBus
 )
 from cache.redis_manager import redis_manager, ConfigType
-from core.enums import StrategyType
+from core.enums import StrategyType, EventType
 from analysis.meta_strategist import MetaStrategist
 from analysis.market_analyzer import MarketAnalyzer
 from analysis.risk_manager import RiskManager
