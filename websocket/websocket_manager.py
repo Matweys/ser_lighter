@@ -156,7 +156,12 @@ class GlobalWebSocketManager:
                             log_error(0, f"Ошибка обработки публичного сообщения: {e}", module_name=__name__)
 
             except Exception as e:
-                log_error(0, f"Ошибка публичного WebSocket: {e}", module_name=__name__)
+                # Фильтруем обычные сетевые ошибки WebSocket
+                error_str = str(e)
+                if "no close frame" in error_str or "connection closed" in error_str:
+                    log_info(0, f"Публичный WebSocket переподключение: {e}", module_name=__name__)
+                else:
+                    log_error(0, f"Ошибка публичного WebSocket: {e}", module_name=__name__)
 
                 if self.running:
                     await asyncio.sleep(5)  # Пауза перед переподключением
@@ -459,7 +464,12 @@ class DataFeedHandler:
                             log_error(self.user_id, f"Ошибка обработки приватного сообщения: {e}", module_name=__name__)
 
             except Exception as e:
-                log_error(self.user_id, f"Ошибка приватного WebSocket: {e}", module_name=__name__)
+                # Фильтруем обычные сетевые ошибки WebSocket
+                error_str = str(e)
+                if "no close frame" in error_str or "connection closed" in error_str:
+                    log_info(self.user_id, f"WebSocket переподключение: {e}", module_name=__name__)
+                else:
+                    log_error(self.user_id, f"Ошибка приватного WebSocket: {e}", module_name=__name__)
 
                 if self.running:
                     await asyncio.sleep(5)  # Пауза перед переподключением

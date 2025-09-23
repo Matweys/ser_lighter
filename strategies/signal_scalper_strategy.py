@@ -36,10 +36,17 @@ class SignalScalperStrategy(BaseStrategy):
         self.is_waiting_for_trade = False  # Флаг для блокировки действий
         self.processed_orders: set = set()  # Отслеживание обработанных ордеров
         self.current_order_id: Optional[str] = None  # ID текущего ожидаемого ордера
+        self.intended_order_amount: Optional[Decimal] = None  # Запрошенная сумма ордера
 
         # Настраиваемые параметры
         self.min_profit_usd: Decimal = Decimal('1.0')
         self.trailing_pullback_usd: Decimal = Decimal('1.0')
+        self.max_loss_usd: Decimal = Decimal('15.0')
+
+        # Стоп-лосс управление
+        self.stop_loss_order_id: Optional[str] = None
+        self.stop_loss_price: Optional[Decimal] = None
+
 
     def _get_strategy_type(self) -> StrategyType:
         return StrategyType.SIGNAL_SCALPER
@@ -51,6 +58,7 @@ class SignalScalperStrategy(BaseStrategy):
             self.signal_analyzer = SignalAnalyzer(self.user_id, self.api, self.config)
             self.min_profit_usd = self._convert_to_decimal(self.config.get("min_profit_usd", "1.0"))
             self.trailing_pullback_usd = self._convert_to_decimal(self.config.get("trailing_pullback_usd", "1.0"))
+            self.max_loss_usd = self._convert_to_decimal(self.config.get("max_loss_usd", "15.0"))
 
     async def start(self) -> bool:
         """Запуск стратегии и подписка на события свечей."""
@@ -147,6 +155,7 @@ class SignalScalperStrategy(BaseStrategy):
         await self._set_leverage()
         order_amount = self._convert_to_decimal(self.get_config_value("order_amount", 50.0))
         leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
+        self.intended_order_amount = order_amount  # Сохраняем запрошенную сумму
         qty = await self.api.calculate_quantity_from_usdt(self.symbol, order_amount, leverage, price=signal_price)
 
         if qty <= 0:
@@ -229,7 +238,10 @@ class SignalScalperStrategy(BaseStrategy):
             self.peak_profit_usd = Decimal('0')
             self.hold_signal_counter = 0
             await self.event_bus.subscribe(EventType.PRICE_UPDATE, self._handle_price_update, user_id=self.user_id)
-            await self._send_trade_open_notification(event.side, event.price, event.qty)
+            await self._send_trade_open_notification(event.side, event.price, event.qty, self.intended_order_amount)
+
+            # Устанавливаем стоп-лосс после открытия позиции
+            await self._place_stop_loss_order(self.active_direction, self.entry_price, self.position_size)
 
         elif is_closing_order and self.position_active:
             # Ордер на закрытие позиции
@@ -239,6 +251,10 @@ class SignalScalperStrategy(BaseStrategy):
             pnl_net = pnl_gross - event.fee
 
             self.last_closed_direction = self.active_direction
+
+            # Отменяем стоп-лосс перед сбросом состояния
+            await self._cancel_stop_loss_order()
+
             # Сброс состояния
             self.position_active = False
             self.active_direction = None
@@ -251,6 +267,73 @@ class SignalScalperStrategy(BaseStrategy):
             log_warning(self.user_id, f"Неожиданное состояние при обработке ордера {event.order_id}. position_active={self.position_active}, is_closing={is_closing_order}", "SignalScalper")
 
         self.is_waiting_for_trade = False
+
+    def _calculate_stop_loss_price(self, entry_price: Decimal, direction: str, position_size: Decimal) -> Decimal:
+        """
+        Рассчитывает цену стоп-лосса на основе максимального убытка в долларах.
+
+        Формула:
+        LONG: SL = entry_price - (max_loss_usd / position_size)
+        SHORT: SL = entry_price + (max_loss_usd / position_size)
+        """
+        if position_size <= 0:
+            log_error(self.user_id, "Невозможно рассчитать стоп-лосс: размер позиции равен нулю", "SignalScalper")
+            return entry_price  # Возвращаем цену входа как fallback
+
+        price_offset = self.max_loss_usd / position_size
+
+        if direction == "LONG":
+            stop_loss_price = entry_price - price_offset
+        else:  # SHORT
+            stop_loss_price = entry_price + price_offset
+
+        log_info(self.user_id,
+                f"Рассчитан стоп-лосс для {direction}: вход=${entry_price:.4f}, SL=${stop_loss_price:.4f}, макс. убыток=${self.max_loss_usd:.2f}",
+                "SignalScalper")
+
+        return stop_loss_price
+
+    async def _place_stop_loss_order(self, direction: str, entry_price: Decimal, position_size: Decimal):
+        """Выставляет стоп-лосс ордер после открытия позиции."""
+        try:
+            # Рассчитываем цену стоп-лосса
+            stop_loss_price = self._calculate_stop_loss_price(entry_price, direction, position_size)
+
+            # Определяем сторону стоп-лосс ордера (противоположную позиции)
+            sl_side = "Sell" if direction == "LONG" else "Buy"
+
+            # Размещаем стоп-лосс ордер
+            stop_loss_order_id = await self._place_order(
+                side=sl_side,
+                order_type="StopMarket",  # Стоп-маркет ордер
+                qty=position_size,
+                price=stop_loss_price,
+                reduce_only=True
+            )
+
+            if stop_loss_order_id:
+                self.stop_loss_order_id = stop_loss_order_id
+                self.stop_loss_price = stop_loss_price
+                log_info(self.user_id,
+                        f"Стоп-лосс установлен: ID={stop_loss_order_id}, цена=${stop_loss_price:.4f}",
+                        "SignalScalper")
+            else:
+                log_error(self.user_id, "Не удалось выставить стоп-лосс ордер", "SignalScalper")
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка при установке стоп-лосса: {e}", "SignalScalper")
+
+    async def _cancel_stop_loss_order(self):
+        """Отменяет активный стоп-лосс ордер."""
+        if self.stop_loss_order_id:
+            try:
+                await self._cancel_order(self.stop_loss_order_id)
+                log_info(self.user_id, f"Стоп-лосс ордер {self.stop_loss_order_id} отменен", "SignalScalper")
+            except Exception as e:
+                log_error(self.user_id, f"Ошибка отмены стоп-лосса {self.stop_loss_order_id}: {e}", "SignalScalper")
+            finally:
+                self.stop_loss_order_id = None
+                self.stop_loss_price = None
 
     async def _execute_strategy_logic(self):
         """Пустышка, так как логика теперь управляется событиями свечей."""

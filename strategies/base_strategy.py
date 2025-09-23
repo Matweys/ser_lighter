@@ -804,7 +804,9 @@ class BaseStrategy(ABC):
 
             side_text = "LONG 🟢" if side.lower() == 'buy' else "SHORT 🔴"
             strategy_name = self.strategy_type.value.replace('_', ' ').title()
-            actual_amount = price * quantity
+            # Расчет actual_amount БЕЗ плеча (реальная стоимость позиции в USDT)
+            leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
+            actual_amount = (price * quantity) / leverage
 
             text = (
                 f"📈 {hbold('ОТКРЫТА НОВАЯ СДЕЛКА')} 📈\n\n"
