@@ -95,9 +95,7 @@ class DefaultConfigs:
             "EMA_LONG": 50,
             "RSI_PERIOD": 14,
             "RSI_NEUTRAL_MIN": 35,      # Минимум нейтральной зоны RSI
-            "RSI_NEUTRAL_MAX": 65,      # Максимум нейтральной зоны RSI
-            "VOLUME_MA_PERIOD": 20,     # Период для среднего объема
-            "VOLUME_THRESHOLD": 1.3     # Объем должен быть на 30% выше среднего
+            "RSI_NEUTRAL_MAX": 65       # Максимум нейтральной зоны RSI
         }
 
 
