@@ -108,15 +108,16 @@ class TelegramBotManager:
     async def _setup_middleware(self) -> None:
         """Настройка middleware"""
         try:
-            # Импортируем наш глобальный event_bus
-            from core.events import event_bus
+            # Используем переданный event_bus вместо глобального
+            event_bus = self.event_bus
 
             # Middleware для передачи событий в нашу систему
             @self.dp.update.outer_middleware()
             async def event_bus_middleware(handler, event, data):
                 # Просто "пробрасываем" событие в нашу шину, не ожидая ответа
                 # Это позволяет основной логике бота работать независимо
-                asyncio.create_task(event_bus.publish(event))
+                if event_bus:
+                    asyncio.create_task(event_bus.publish(event))
                 return await handler(event, data)
 
             log_info(0, "EventBus middleware зарегистрирован.", module_name='bot')
@@ -179,11 +180,12 @@ class TelegramBotManager:
             # Пропускаем накопившиеся обновления
             await self.bot.delete_webhook(drop_pending_updates=True)
             
-            # Запускаем polling
+            # Запускаем polling с пропуском старых обновлений
             await self.dp.start_polling(
                 self.bot,
                 allowed_updates=self.config.allowed_updates,
                 handle_signals=True,
+                drop_pending_updates=True,  # Дополнительная защита от старых команд
             )
             
         except Exception as e:

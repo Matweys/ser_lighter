@@ -78,26 +78,41 @@ class MetaStrategist:
     async def _handle_global_candle(self, event: GlobalCandleEvent):
         """Обработчик глобального события о новой свече от ImpulseScanner."""
         symbol = event.candle_data.get("symbol")
-        if not symbol: return
+        if not symbol:
+            log_debug(self.user_id, "GlobalCandleEvent без символа", "meta_strategist")
+            return
 
         # --- УЛУЧШЕННЫЙ ФИЛЬТР СИМВОЛОВ ---
         if '-' in symbol or not symbol.endswith("USDT"):
             return  # Немедленно выходим, если это срочный контракт или не USDT пара
 
+        log_debug(self.user_id, f"Обработка GlobalCandleEvent для {symbol}", "meta_strategist")
+
         now = datetime.now()
         last_analysis = self.last_analysis_time.get(symbol)
         if last_analysis and (now - last_analysis) < self.analysis_cooldown:
+            log_debug(self.user_id, f"Пропуск {symbol} - анализ был недавно", "meta_strategist")
             return
 
         try:
             impulse_config = await redis_manager.get_config(self.user_id, ConfigType.STRATEGY_IMPULSE_TRAILING)
-            if not impulse_config or not impulse_config.get("is_enabled", False):
+            if not impulse_config:
+                log_debug(self.user_id, "Конфигурация impulse_trailing не найдена", "meta_strategist")
+                return
+            if not impulse_config.get("is_enabled", False):
+                log_debug(self.user_id, "Стратегия impulse_trailing отключена в настройках", "meta_strategist")
                 return
 
             analysis_timeframe = impulse_config.get("analysis_timeframe", "5m")
+            log_debug(self.user_id, f"Запуск анализа для {symbol} на таймфрейме {analysis_timeframe}", "meta_strategist")
             analysis = await self.analyzer.get_market_analysis(symbol, timeframe=analysis_timeframe)
 
             self.last_analysis_time[symbol] = now
+
+            if analysis:
+                log_debug(self.user_id, f"Анализ {symbol}: panic_bar={analysis.is_panic_bar}, ema_trend={analysis.ema_trend}, consolidating={analysis.is_consolidating_now}", "meta_strategist")
+            else:
+                log_debug(self.user_id, f"Анализ для {symbol} не получен", "meta_strategist")
 
             if analysis and (analysis.is_panic_bar or (analysis.ema_trend == "UP" and analysis.is_consolidating_now)):
             # ПОСЛЕ (менее строгое условие)

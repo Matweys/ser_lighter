@@ -244,7 +244,8 @@ class EventBus:
 
     async def publish(self, event: Any):
         if not self._running:
-            log_error(0, f"Попытка публикации в остановленную EventBus: {type(event).__name__}", "EventBus")
+            # Более мягкое логирование - не каждое событие в остановленную шину является ошибкой
+            log_debug(0, f"Попытка публикации в остановленную EventBus: {type(event).__name__}", "EventBus")
             return
         try:
             await self._queue.put(event)
