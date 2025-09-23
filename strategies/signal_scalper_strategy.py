@@ -4,7 +4,7 @@ from decimal import Decimal, getcontext
 
 from api.bybit_api import BybitAPI
 from .base_strategy import BaseStrategy
-from core.enums import StrategyType
+from core.enums import StrategyType, EventType
 from core.logger import log_info, log_error, log_warning
 from core.events import EventBus, NewCandleEvent, PriceUpdateEvent, OrderFilledEvent
 from analysis.signal_analyzer import SignalAnalyzer, SignalAnalysisResult
