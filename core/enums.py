@@ -87,36 +87,45 @@ class EventType(Enum):
     PRICE_UPDATE = "price_update"
     VOLUME_UPDATE = "volume_update"
     TICKER_UPDATE = "ticker_update"
-    
+    NEW_CANDLE = "new_candle"
+    GLOBAL_CANDLE = "global_candle"
+
     # Торговые события
     ORDER_PLACED = "order_placed"
     ORDER_FILLED = "order_filled"
     ORDER_CANCELLED = "order_cancelled"
     ORDER_REJECTED = "order_rejected"
-    
+    ORDER_UPDATE = "order_update"
+
     # События позиций
     POSITION_OPENED = "position_opened"
-    POSITION_UPDATED = "position_updated"
+    POSITION_UPDATE = "position_update"
     POSITION_CLOSED = "position_closed"
-    
+
     # События стратегий
     STRATEGY_STARTED = "strategy_started"
     STRATEGY_STOPPED = "strategy_stopped"
     STRATEGY_ERROR = "strategy_error"
-    SIGNAL_GENERATED = "signal_generated"
-    
+    STRATEGY_RESTART_REQUESTED = "strategy_restart_requested"
+    SIGNAL = "signal"
+
     # События риск-менеджмента
     RISK_LIMIT_EXCEEDED = "risk_limit_exceeded"
     DRAWDOWN_WARNING = "drawdown_warning"
     EMERGENCY_STOP = "emergency_stop"
-    
+
     # Системные события
     USER_SETTINGS_CHANGED = "user_settings_changed"
+    USER_SESSION_START_REQUESTED = "user_session_start_requested"
+    USER_SESSION_STOP_REQUESTED = "user_session_stop_requested"
+    USER_SESSION_STARTED = "user_session_started"
+    USER_SESSION_STOPPED = "user_session_stopped"
     SESSION_STARTED = "session_started"
     SESSION_STOPPED = "session_stopped"
     WEBSOCKET_CONNECTED = "websocket_connected"
     WEBSOCKET_DISCONNECTED = "websocket_disconnected"
-    
+    SYSTEM_STATUS = "system_status"
+
     # События анализа
     MARKET_ANALYSIS_COMPLETED = "market_analysis_completed"
     TREND_CHANGED = "trend_changed"
