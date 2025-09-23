@@ -453,6 +453,7 @@ class UserSession:
             return False
 
     async def _initialize_components(self):
+
         """Инициализация компонентов сессии"""
         try:
             # Получаем ключи из БД и создаем API клиент

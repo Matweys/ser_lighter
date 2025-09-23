@@ -368,7 +368,11 @@ async def cmd_autotrade_start(message: Message, state: FSMContext):
         parse_mode="HTML")
 
     # Отправляем событие в шину
-    await basic_handler.event_bus.publish(UserSessionStartRequestedEvent(user_id=user_id))
+    if basic_handler.event_bus:
+        await basic_handler.event_bus.publish(UserSessionStartRequestedEvent(user_id=user_id))
+    else:
+        log_error(user_id, "EventBus не инициализирован для отправки команды запуска торговли", module_name='basic_handlers')
+        await message.answer("❌ Внутренняя ошибка системы. Попробуйте позже.")
 
 
 @router.message(Command("autotrade_stop"))
@@ -384,7 +388,12 @@ async def cmd_autotrade_stop(message: Message, state: FSMContext):
         return
 
     # Отправляем событие в шину
-    await basic_handler.event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id, reason="manual_stop_command"))
+    if basic_handler.event_bus:
+        await basic_handler.event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id, reason="manual_stop_command"))
+    else:
+        log_error(user_id, "EventBus не инициализирован для отправки команды остановки торговли", module_name='basic_handlers')
+        await message.answer("❌ Внутренняя ошибка системы. Попробуйте позже.")
+        return
 
     await message.answer(
         "🛑 <b>Останавливаю автоматическую торговлю...</b>\nСистема завершит текущие операции и сохранит статистику.",

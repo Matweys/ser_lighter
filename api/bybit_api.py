@@ -76,6 +76,17 @@ class BybitAPI:
                 headers={"User-Agent": "Manus-Trading-Bot/1.0"}
              )
 
+    async def __aenter__(self):
+        """Async context manager entry"""
+        await self._ensure_session()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit"""
+        # Не закрываем сессию при выходе из контекста,
+        # она будет переиспользована
+        pass
+
     async def close(self):
         """
         Закрытие HTTP сессии. Этот метод теперь будет вызываться только при полной
@@ -493,9 +504,9 @@ class BybitAPI:
             params = {"accountType": account_type}
             result = await self._make_request("GET", "/v5/account/wallet-balance", params)
 
-            # Если результат пустой и мы в testnet, пробуем тип CONTRACT
+            # Если результат пустой и мы в demo/testnet, пробуем тип CONTRACT
             is_empty_result = not (result and result.get("list"))
-            if is_empty_result and self.testnet:
+            if is_empty_result and self.demo:
                 log_warning(self.user_id, f"Баланс для аккаунта {account_type} не найден в testnet, пробую CONTRACT...",
                             module_name="bybit_api")
                 params = {"accountType": "CONTRACT"}

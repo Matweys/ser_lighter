@@ -27,7 +27,7 @@ def create_strategy(
     Фабричная функция для создания стратегий.
     """
     strategy_map = {
-        "grid_scalping": SignalScalperStrategy,
+        "signal_scalper": SignalScalperStrategy,
         "impulse_trailing": ImpulseTrailingStrategy,
     }
 
