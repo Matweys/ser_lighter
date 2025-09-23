@@ -494,6 +494,7 @@ class UserSession:
             log_error(self.user_id, f"Ошибка инициализации компонентов: {e}", module_name=__name__)
             raise
 
+
     async def _start_components(self):
         """Запуск компонентов сессии"""
         try:
