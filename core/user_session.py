@@ -4,6 +4,7 @@
 Объединенная версия с полной функциональностью
 """
 import asyncio
+import json
 from typing import Dict, Optional, Any, List, Set
 from decimal import Decimal, getcontext
 from datetime import datetime

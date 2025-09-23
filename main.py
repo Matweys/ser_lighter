@@ -140,8 +140,9 @@ async def main():
         await initialize_default_configs()
         await set_commands()
 
-        # Запуск основного приложения
+        # Запуск основного приложения с передачей того же EventBus
         bot_app = BotApplication(bot=bot_manager.bot)
+        bot_app.event_bus = event_bus  # Передаем тот же EventBus что и в handlers
         await bot_app.start()
 
         log_info(0, "=== БОТ УСПЕШНО ЗАПУЩЕН И ГОТОВ К РАБОТЕ ===", module_name="main")
