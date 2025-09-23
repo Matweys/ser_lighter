@@ -7,7 +7,7 @@ import json
 from abc import ABC, abstractmethod
 from decimal import Decimal, getcontext
 from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from aiogram import Bot
 from core.logger import log_info, log_error, log_warning, log_debug
 from core.enums import StrategyType, PositionSide, ConfigType, ExchangeType
@@ -260,6 +260,10 @@ class BaseStrategy(ABC):
             if self.is_running:
                 log_info(self.user_id, f"Стратегия {self.strategy_type.value} успешно запущена для {self.symbol}",
                          module_name=__name__)
+
+                # Отправляем уведомление о запуске стратегии
+                await self._send_strategy_start_notification()
+
                 return True
             else:
                 # _execute_strategy_logic вызвал self.stop(), запуск не удался
@@ -723,6 +727,52 @@ class BaseStrategy(ABC):
             return False
 
         return True
+
+    async def _send_strategy_start_notification(self):
+        """Отправляет уведомление о запуске стратегии"""
+        try:
+            if not self.bot:
+                log_warning(self.user_id, "Telegram бот не инициализирован. Уведомление о запуске стратегии не отправлено.", "base_strategy")
+                return
+
+            strategy_name = self.strategy_type.value.replace('_', ' ').title()
+
+            # Разные сообщения для разных типов стратегий
+            if self.strategy_type == StrategyType.SIGNAL_SCALPER:
+                text = (
+                    f"🚀 {hbold('СТРАТЕГИЯ ЗАПУЩЕНА')} 🚀\n\n"
+                    f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
+                    f"▫️ {hbold('Инструмент:')} {hcode(self.symbol)}\n"
+                    f"▫️ {hbold('Статус:')} Ожидает сигналы для открытия позиций\n"
+                    f"▫️ {hbold('Размер ордера:')} {hcode(f'{self.order_amount} USDT')}\n"
+                    f"▫️ {hbold('Плечо:')} {hcode(f'{self.leverage}x')}"
+                )
+            elif self.strategy_type == StrategyType.IMPULSE_TRAILING:
+                text = (
+                    f"🔍 {hbold('СТРАТЕГИЯ ЗАПУЩЕНА')} 🔍\n\n"
+                    f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
+                    f"▫️ {hbold('Инструмент:')} {hcode(self.symbol)}\n"
+                    f"▫️ {hbold('Статус:')} Активное сканирование и поиск импульсов\n"
+                    f"▫️ {hbold('Размер ордера:')} {hcode(f'{self.order_amount} USDT')}\n"
+                    f"▫️ {hbold('Плечо:')} {hcode(f'{self.leverage}x')}\n\n"
+                    f"🎯 Стратегия отслеживает рыночные импульсы и готова к работе!"
+                )
+            else:
+                # Общее сообщение для других стратегий
+                text = (
+                    f"✅ {hbold('СТРАТЕГИЯ ЗАПУЩЕНА')} ✅\n\n"
+                    f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
+                    f"▫️ {hbold('Инструмент:')} {hcode(self.symbol)}\n"
+                    f"▫️ {hbold('Статус:')} Активна и готова к работе\n"
+                    f"▫️ {hbold('Размер ордера:')} {hcode(f'{self.order_amount} USDT')}\n"
+                    f"▫️ {hbold('Плечо:')} {hcode(f'{self.leverage}x')}"
+                )
+
+            await self.bot.send_message(self.user_id, text, parse_mode="HTML")
+            log_info(self.user_id, f"Уведомление о запуске стратегии {strategy_name} отправлено", "base_strategy")
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка отправки уведомления о запуске стратегии: {e}", "base_strategy")
 
     async def _send_trade_open_notification(self, side: str, price: Decimal, quantity: Decimal,
                                             intended_amount: Optional[Decimal] = None):

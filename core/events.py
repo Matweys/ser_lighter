@@ -3,32 +3,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Dict, Any, Optional, List, Callable, Awaitable
 from datetime import datetime
-from enum import Enum
 from core.logger import log_debug, log_error, log_info
-
-
-
-# Enum EventType остается без изменений
-class EventType(Enum):
-    NEW_CANDLE = "new_candle"
-    PRICE_UPDATE = "price_update"
-    ORDER_UPDATE = "order_update"
-    ORDER_FILLED = "order_filled"
-    POSITION_UPDATE = "position_update"
-    POSITION_CLOSED = "position_closed"
-    SIGNAL = "signal"
-    STRATEGY_START = "strategy_start"
-    STRATEGY_STOP = "strategy_stop"
-    STRATEGY_RESTART_REQUESTED = "strategy_restart_requested"
-    USER_SESSION_START_REQUESTED = "user_session_start_requested"
-    USER_SESSION_STOP_REQUESTED = "user_session_stop_requested"
-    USER_SESSION_STARTED = "user_session_started"
-    USER_SESSION_STOPPED = "user_session_stopped"
-    USER_SETTINGS_CHANGED = "user_settings_changed"
-    RISK_LIMIT_EXCEEDED = "risk_limit_exceeded"
-    DRAWDOWN_WARNING = "drawdown_warning"
-    SYSTEM_STATUS = "system_status"
-    GLOBAL_CANDLE = "global_candle"
+from core.enums import EventType
 
 @dataclass
 class GlobalCandleEvent:
@@ -142,7 +118,7 @@ class StrategyStartEvent(BaseEvent):
     symbol: str
     strategy_type: str
     strategy_id: str
-    event_type: EventType = field(default=EventType.STRATEGY_START, init=False)
+    event_type: EventType = field(default=EventType.STRATEGY_STARTED, init=False)
 
 
 @dataclass
@@ -152,7 +128,7 @@ class StrategyStopEvent(BaseEvent):
     strategy_type: str
     strategy_id: str
     reason: str
-    event_type: EventType = field(default=EventType.STRATEGY_STOP, init=False)
+    event_type: EventType = field(default=EventType.STRATEGY_STOPPED, init=False)
 
 @dataclass
 class UserSessionStartRequestedEvent(BaseEvent):
