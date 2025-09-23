@@ -34,6 +34,8 @@ class SignalScalperStrategy(BaseStrategy):
         self.hold_signal_counter = 0
         self.peak_profit_usd: Decimal = Decimal('0')
         self.is_waiting_for_trade = False  # Флаг для блокировки действий
+        self.processed_orders: set = set()  # Отслеживание обработанных ордеров
+        self.current_order_id: Optional[str] = None  # ID текущего ожидаемого ордера
 
         # Настраиваемые параметры
         self.min_profit_usd: Decimal = Decimal('1.0')
@@ -156,6 +158,7 @@ class SignalScalperStrategy(BaseStrategy):
         order_id = await self._place_order(side=side, order_type="Market", qty=qty)
 
         if order_id:
+            self.current_order_id = order_id  # Сохраняем ID ожидаемого ордера
             await self._await_order_fill(order_id, side=side, qty=qty)
         else:
             self.is_waiting_for_trade = False
@@ -170,6 +173,7 @@ class SignalScalperStrategy(BaseStrategy):
         order_id = await self._place_order(side=side, order_type="Market", qty=self.position_size, reduce_only=True)
 
         if order_id:
+            self.current_order_id = order_id  # Сохраняем ID ожидаемого ордера
             await self._await_order_fill(order_id, side=side, qty=self.position_size)
         else:
             self.is_waiting_for_trade = False
@@ -190,8 +194,34 @@ class SignalScalperStrategy(BaseStrategy):
 
     async def _handle_order_filled(self, event: OrderFilledEvent):
         """Обработка исполненных ордеров."""
-        # Ордер на открытие/реверс
-        if not self.position_active:
+        # Защита от двойной обработки одного и того же ордера
+        if event.order_id in self.processed_orders:
+            log_debug(self.user_id, f"Ордер {event.order_id} уже был обработан, пропускаем.", "SignalScalper")
+            return
+
+        # Проверяем, что это ожидаемый ордер
+        if self.current_order_id and event.order_id != self.current_order_id:
+            log_warning(self.user_id, f"Получен неожиданный ордер {event.order_id}, ожидался {self.current_order_id}", "SignalScalper")
+            return
+
+        # Добавляем ордер в обработанные
+        self.processed_orders.add(event.order_id)
+        self.current_order_id = None  # Сбрасываем ожидаемый ордер
+
+        # Определяем тип ордера по reduce_only флагу
+        is_closing_order = hasattr(event, 'reduce_only') and event.reduce_only
+
+        # Или определяем по текущему состоянию позиции и направлению ордера
+        if not is_closing_order:
+            # Если позиция активна и ордер в том же направлении что и позиция - это закрытие
+            if self.position_active:
+                current_side = "Buy" if self.active_direction == "LONG" else "Sell"
+                opposite_side = "Sell" if self.active_direction == "LONG" else "Buy"
+                is_closing_order = (event.side == opposite_side)
+
+        if not is_closing_order and not self.position_active:
+            # Ордер на открытие позиции
+            log_info(self.user_id, f"Обрабатываем ордер открытия: {event.order_id}", "SignalScalper")
             self.position_active = True
             self.active_direction = "LONG" if event.side == "Buy" else "SHORT"
             self.entry_price = event.price
@@ -201,8 +231,9 @@ class SignalScalperStrategy(BaseStrategy):
             await self.event_bus.subscribe(EventType.PRICE_UPDATE, self._handle_price_update, user_id=self.user_id)
             await self._send_trade_open_notification(event.side, event.price, event.qty)
 
-        # Ордер на закрытие
-        else:
+        elif is_closing_order and self.position_active:
+            # Ордер на закрытие позиции
+            log_info(self.user_id, f"Обрабатываем ордер закрытия: {event.order_id}", "SignalScalper")
             pnl_gross = (event.price - self.entry_price) * self.position_size if self.active_direction == "LONG" else (
                                                                                                                                   self.entry_price - event.price) * self.position_size
             pnl_net = pnl_gross - event.fee
@@ -216,6 +247,8 @@ class SignalScalperStrategy(BaseStrategy):
 
             await self.event_bus.unsubscribe(self._handle_price_update)
             await self._send_trade_close_notification(pnl_net, event.fee, exit_price=event.price)
+        else:
+            log_warning(self.user_id, f"Неожиданное состояние при обработке ордера {event.order_id}. position_active={self.position_active}, is_closing={is_closing_order}", "SignalScalper")
 
         self.is_waiting_for_trade = False
 
