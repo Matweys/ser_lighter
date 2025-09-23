@@ -261,8 +261,7 @@ class BaseStrategy(ABC):
                 log_info(self.user_id, f"Стратегия {self.strategy_type.value} успешно запущена для {self.symbol}",
                          module_name=__name__)
 
-                # Отправляем уведомление о запуске стратегии
-                await self._send_strategy_start_notification()
+                # Уведомление будет отправлено из UserSession после успешного добавления в active_strategies
 
                 return True
             else:

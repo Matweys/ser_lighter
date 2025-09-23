@@ -390,6 +390,10 @@ class UserSession:
                     strategy_id=strategy.strategy_id  # <-- Добавлен обязательный параметр
                 )
                 await self.event_bus.publish(event)
+
+                # Отправка уведомления пользователю после УСПЕШНОГО запуска и добавления в active_strategies
+                await self._send_strategy_start_notification(strategy)
+
                 log_info(self.user_id, f"Стратегия {strategy_id} запущена", module_name=__name__)
                 return True
             else:
@@ -779,3 +783,27 @@ class UserSession:
         except Exception as e:
             log_error(self.user_id, f"Ошибка при отложенном запуске стратегии {event.symbol}: {e}",
                       module_name=__name__)
+
+    async def _send_strategy_start_notification(self, strategy: BaseStrategy):
+        """Отправка уведомления о запуске стратегии пользователю"""
+        try:
+            strategy_display_names = {
+                "signal_scalper": "Signal Scalper",
+                "impulse_trailing": "Impulse Trailing"
+            }
+
+            strategy_name = strategy_display_names.get(strategy.strategy_type.value, strategy.strategy_type.value)
+
+            message = f"🚀 <b>Стратегия {strategy_name} запущена!</b>\n" \
+                     f"📊 Символ: <code>{strategy.symbol}</code>\n" \
+                     f"🎯 ID стратегии: <code>{strategy.strategy_id}</code>"
+
+            if bot_manager and bot_manager.bot:
+                await bot_manager.bot.send_message(
+                    chat_id=self.user_id,
+                    text=message,
+                    parse_mode="HTML"
+                )
+                log_info(self.user_id, f"Уведомление о запуске стратегии {strategy.strategy_id} отправлено", module_name=__name__)
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка отправки уведомления о запуске стратегии: {e}", module_name=__name__)
