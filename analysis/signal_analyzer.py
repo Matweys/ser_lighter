@@ -28,12 +28,14 @@ class SignalAnalyzer:
         self.api = api
         self.config = config
 
-        # ПАРАМЕТРЫ СТРАТЕГИИ (неизменяемые, как в задании)
-        self.EMA_SHORT = 9
-        self.EMA_LONG = 21
+        # ПАРАМЕТРЫ СТРАТЕГИИ
+        self.EMA_SHORT = 21
+        self.EMA_LONG = 50
         self.RSI_PERIOD = 14
-        self.RSI_OVERBOUGHT = 70
-        self.RSI_OVERSOLD = 30
+        self.RSI_NEUTRAL_MIN = 35  # Минимум нейтральной зоны RSI
+        self.RSI_NEUTRAL_MAX = 65  # Максимум нейтральной зоны RSI
+        self.VOLUME_MA_PERIOD = 20  # Период для среднего объема
+        self.VOLUME_THRESHOLD = 1.3  # Объем должен быть на 30% выше среднего
         self.HISTORY_LIMIT = 100
 
     async def get_analysis(self, symbol: str) -> Optional[SignalAnalysisResult]:
@@ -58,21 +60,40 @@ class SignalAnalyzer:
             # 2. Подготовка данных для TA-Lib
             df = pd.DataFrame(candles)
             close_prices = df['close'].to_numpy(dtype=float)
+            volumes = df['volume'].to_numpy(dtype=float)
 
-            if len(close_prices) < self.EMA_LONG or len(close_prices) < self.RSI_PERIOD:
+            if len(close_prices) < self.EMA_LONG or len(close_prices) < self.RSI_PERIOD or len(volumes) < self.VOLUME_MA_PERIOD:
                 return None
 
             # 3. Расчет индикаторов
             ema_short = talib.EMA(close_prices, timeperiod=self.EMA_SHORT)[-1]
             ema_long = talib.EMA(close_prices, timeperiod=self.EMA_LONG)[-1]
             rsi = talib.RSI(close_prices, timeperiod=self.RSI_PERIOD)[-1]
+
+            # Объемный анализ
+            volume_ma = talib.SMA(volumes, timeperiod=self.VOLUME_MA_PERIOD)[-1]
+            current_volume = volumes[-1]
+            volume_ratio = current_volume / volume_ma if volume_ma > 0 else 0
+
             price = Decimal(str(close_prices[-1]))
 
-            # 4. Логика сигналов
+            # 4. Улучшенная логика сигналов с RSI и объемным фильтром
             direction = "HOLD"
-            if ema_short > ema_long and rsi < self.RSI_OVERBOUGHT:
+
+            # Проверяем базовые условия EMA
+            ema_long_signal = ema_short > ema_long
+            ema_short_signal = ema_short < ema_long
+
+            # Проверяем RSI в нейтральной зоне (избегаем экстремумов)
+            rsi_neutral = self.RSI_NEUTRAL_MIN < rsi < self.RSI_NEUTRAL_MAX
+
+            # Проверяем объемный фильтр
+            volume_confirmed = volume_ratio >= self.VOLUME_THRESHOLD
+
+            # Генерируем сигналы только при выполнении всех условий
+            if ema_long_signal and rsi_neutral and volume_confirmed:
                 direction = "LONG"
-            elif ema_short < ema_long and rsi > self.RSI_OVERSOLD:
+            elif ema_short_signal and rsi_neutral and volume_confirmed:
                 direction = "SHORT"
 
             return SignalAnalysisResult(
@@ -81,7 +102,10 @@ class SignalAnalyzer:
                 indicators={
                     "ema_short": ema_short,
                     "ema_long": ema_long,
-                    "rsi": rsi
+                    "rsi": rsi,
+                    "volume_ratio": volume_ratio,
+                    "volume_confirmed": volume_confirmed,
+                    "rsi_neutral": rsi_neutral
                 }
             )
 

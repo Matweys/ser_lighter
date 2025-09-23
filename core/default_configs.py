@@ -87,15 +87,17 @@ class DefaultConfigs:
             "analysis_timeframe": "5m",
 
             # --- Управление выходом ---
-            "min_profit_usd": 1.2,
+            "min_profit_usd": 1.5,
             "trailing_pullback_usd": 1.0,  # Откат от пика прибыли для закрытия
 
-            # --- Параметры ТА (неизменяемые, согласно заданию) ---
-            "EMA_SHORT": 9,
-            "EMA_LONG": 21,
+            # --- Параметры ТА ---
+            "EMA_SHORT": 21,
+            "EMA_LONG": 50,
             "RSI_PERIOD": 14,
-            "RSI_OVERBOUGHT": 70,
-            "RSI_OVERSOLD": 30
+            "RSI_NEUTRAL_MIN": 35,      # Минимум нейтральной зоны RSI
+            "RSI_NEUTRAL_MAX": 65,      # Максимум нейтральной зоны RSI
+            "VOLUME_MA_PERIOD": 20,     # Период для среднего объема
+            "VOLUME_THRESHOLD": 1.3     # Объем должен быть на 30% выше среднего
         }
 
 
