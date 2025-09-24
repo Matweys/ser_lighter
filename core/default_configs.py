@@ -67,13 +67,13 @@ class DefaultConfigs:
             "initial_sl_usdt": 20.91,  # SL при убытке в 1.5 USDT от суммы ордера
 
             # 2. Минимальная прибыль для активации трейлинга (в USDT)
-            "min_profit_activation_usdt": 5.0,  # Активация трейлинга при прибыли в +2.0 USDT
+            "min_profit_activation_usdt": 5.0,  # Активация трейлинга при прибыли в +5.0 USDT
 
             # 3. Расстояние трейлинг-стопа от пика (в USDT)
-            "trailing_distance_usdt": 15.89,  # Стоп будет отставать от пика
+            "trailing_distance_usdt": 11.77,  # Стоп будет отставать от пика
 
             # 4. Порог отката от пика для закрытия (в USDT)
-            "pullback_close_usdt": 7.87,  # Закрытие, если цена откатила от пика
+            "pullback_close_usdt": 5.87,  # Закрытие, если цена откатила от пика
         }
 
     @staticmethod

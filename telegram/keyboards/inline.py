@@ -74,8 +74,12 @@ def get_strategy_config_keyboard(strategy_type: str, config: Dict[str, Any]) -> 
         }
     elif strategy_type == StrategyType.IMPULSE_TRAILING.value:
         editable_params = {
-            "leverage": f"Кредитное плечо: x{config.get('leverage', 0)}",
-            "order_amount": f"Сумма ордера: {config.get('order_amount', 0)} USDT",
+            "leverage": f"🎚️ Плечо: x{config.get('leverage', 2)}",
+            "order_amount": f"💰 Сумма ордера: {config.get('order_amount', 50)} USDT",
+            "initial_sl_usdt": f"🛡️ Начальный SL: {config.get('initial_sl_usdt', 20.91)} USDT",
+            "min_profit_activation_usdt": f"🎯 Активация трейлинга: +{config.get('min_profit_activation_usdt', 5.0)} USDT",
+            "trailing_distance_usdt": f"📏 Расстояние трейлинга: {config.get('trailing_distance_usdt', 11.77)} USDT",
+            "pullback_close_usdt": f"📉 Откат для закрытия: {config.get('pullback_close_usdt', 5.87)} USDT",
         }
 
     for key, text in editable_params.items():

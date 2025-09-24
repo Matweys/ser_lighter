@@ -77,12 +77,30 @@ class ImpulseTrailingStrategy(BaseStrategy):
         if not await super().validate_config():
             return False
 
-        required_fields = ['long_sl_atr', 'long_tp_atr', 'short_sl_atr', 'short_tp_atr', 'trailing_sl_atr']
+        # Обязательные поля для Impulse Trailing стратегии на основе USDT
+        required_fields = [
+            'initial_sl_usdt',              # Начальный SL в USDT
+            'min_profit_activation_usdt',   # Мин. прибыль для активации трейлинга
+            'trailing_distance_usdt',       # Расстояние трейлинг-стопа от пика
+            'pullback_close_usdt',          # Порог отката от пика для закрытия
+            'long_breakout_buffer',         # Буфер для пробоя в лонг
+        ]
+
         for field in required_fields:
             if field not in self.config:
                 log_error(self.user_id, f"Отсутствует обязательное поле конфигурации для Impulse Trailing: {field}",
                           module_name=__name__)
                 return False
+
+        # Проверяем что все USDT параметры положительные
+        usdt_fields = ['initial_sl_usdt', 'min_profit_activation_usdt', 'trailing_distance_usdt', 'pullback_close_usdt']
+        for field in usdt_fields:
+            value = self.config.get(field, 0)
+            if float(value) <= 0:
+                log_error(self.user_id, f"Параметр {field} должен быть положительным: {value}",
+                          module_name=__name__)
+                return False
+
         return True
 
     def _get_strategy_type(self) -> StrategyType:
@@ -131,6 +149,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 if current_price > breakout_level:
                     log_info(self.user_id, f"Сигнал LONG для {self.symbol}. Открываю LONG.", "impulse_trailing")
                     self.position_side = "Buy"
+                    # Для LONG позиции: SL должен быть ниже цены входа
                     self.stop_loss_price = current_price - price_offset
 
                     log_info(self.user_id,
@@ -143,14 +162,15 @@ class ImpulseTrailingStrategy(BaseStrategy):
                     await self.stop("Signal skipped: No breakout")
                     return
 
-            # --- Логика для СИГНАЛА ШОРТ (открываем ЛОНГ) ---
+            # --- Логика для СИГНАЛА ШОРТ (открываем ШОРТ) ---
             if is_panic:
                 if friction_level == "HIGH":
                     await self.stop("Signal skipped: High friction")
                     return
                 log_info(self.user_id, f"Сигнал SHORT для {self.symbol}. Открываю SHORT.", "impulse_trailing")
                 self.position_side = "Sell"
-                sself.stop_loss_price = current_price + price_offset
+                # Для SHORT позиции: SL должен быть выше цены входа
+                self.stop_loss_price = current_price + price_offset
 
                 log_info(self.user_id,f"Расчет SL для SHORT: Цена={current_price:.4f} + "
                   f"(Убыток {initial_sl_usdt} USDT / Кол-во {qty}) = {self.stop_loss_price:.4f}","impulse_trailing")
@@ -192,7 +212,12 @@ class ImpulseTrailingStrategy(BaseStrategy):
             filled = await self._await_order_fill(order_id, side=self.position_side, qty=qty)
             if filled:
                 # Устанавливаем SL через отдельный API вызов
-                sl_result = await self.api.set_trading_stop(symbol=self.symbol, stop_loss=self.stop_loss_price)
+                # Важно: используем правильные параметры для stop_loss
+                sl_result = await self.api.set_trading_stop(
+                    symbol=self.symbol,
+                    stop_loss=str(self.stop_loss_price),
+                    position_idx=0  # Для hedge mode - укажите правильный индекс если нужно
+                )
                 if sl_result:
                     log_info(self.user_id, f"✅ Начальный SL установлен: {self.stop_loss_price}", "impulse_trailing")
                 else:
@@ -296,16 +321,32 @@ class ImpulseTrailingStrategy(BaseStrategy):
                     trailing_distance_usdt = self._convert_to_decimal(
                         self.get_config_value('trailing_distance_usdt', 2.0))
                     price_offset = trailing_distance_usdt / self.position_size
-                    new_stop_price = self.peak_price - price_offset if self.position_side == "Buy" else self.peak_price + price_offset
 
-                    should_update_sl = (self.position_side == "Buy" and new_stop_price > self.stop_loss_price) or \
-                                       (self.position_side == "Sell" and new_stop_price < self.stop_loss_price)
+                    # Правильный расчет нового SL в зависимости от направления позиции
+                    if self.position_side == "Buy":
+                        new_stop_price = self.peak_price - price_offset
+                    else:  # Sell position
+                        new_stop_price = self.peak_price + price_offset
+
+                    # Проверяем, нужно ли обновлять SL (только в лучшую сторону)
+                    should_update_sl = False
+                    if self.position_side == "Buy" and new_stop_price > self.stop_loss_price:
+                        should_update_sl = True
+                    elif self.position_side == "Sell" and new_stop_price < self.stop_loss_price:
+                        should_update_sl = True
 
                     if should_update_sl:
                         log_info(self.user_id,
                                  f"[{self.symbol}] ПОДТЯГИВАНИЕ SL: {self.stop_loss_price:.4f} -> {new_stop_price:.4f}",
                                  "impulse_trailing")
-                        if await self.api.set_trading_stop(symbol=self.symbol, stop_loss=new_stop_price):
+
+                        sl_result = await self.api.set_trading_stop(
+                            symbol=self.symbol,
+                            stop_loss=str(new_stop_price),
+                            position_idx=0
+                        )
+
+                        if sl_result:
                             self.stop_loss_price = new_stop_price
                             log_info(self.user_id, f"[{self.symbol}] SL успешно обновлен на бирже.", "impulse_trailing")
                         else:
@@ -315,14 +356,18 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 # 3.3 ВАЖНО: Проверка на откат от пика для закрытия по рынку
                 pullback_close_usdt = self._convert_to_decimal(self.get_config_value('pullback_close_usdt', 3.0))
 
-                # Рассчитываем, какую прибыль мы имели на пике цены
-                peak_profit_usdt = (self.peak_price - self.entry_price) * self.position_size if self.position_side == "Buy" else (
-                        ( self.entry_price - self.peak_price) * self.position_size)
+                # Правильный расчет прибыли на пике цены
+                if self.position_side == "Buy":
+                    peak_profit_usdt = (self.peak_price - self.entry_price) * self.position_size
+                    pullback_amount = (self.peak_price - current_price) * self.position_size
+                else:  # Sell position
+                    peak_profit_usdt = (self.entry_price - self.peak_price) * self.position_size
+                    pullback_amount = (current_price - self.peak_price) * self.position_size
 
-                # Если разница между пиковой и текущей прибылью превысила порог отката
-                if (peak_profit_usdt - current_profit_usdt) >= pullback_close_usdt:
+                # Проверяем, что откат от пика превысил порог
+                if pullback_amount >= pullback_close_usdt:
                     log_warning(self.user_id,
-                                f"[{self.symbol}] ЗАКРЫТИЕ ПО ОТКАТУ: Профит упал с пика {peak_profit_usdt:.2f} до {current_profit_usdt:.2f} (откат > {pullback_close_usdt} USDT)",
+                                f"[{self.symbol}] ЗАКРЫТИЕ ПО ОТКАТУ: Откат от пика {pullback_amount:.2f} USDT >= порога {pullback_close_usdt} USDT. Пик: {self.peak_price:.4f}, Текущая: {current_price:.4f}",
                                 "impulse_trailing")
                     await self._close_position_market("Pullback from peak exceeded")
                     # Важно! После отправки рыночного ордера на закрытие выходим из функции
