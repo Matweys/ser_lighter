@@ -69,10 +69,8 @@ def get_strategy_config_keyboard(strategy_type: str, config: Dict[str, Any]) -> 
     if strategy_type == StrategyType.SIGNAL_SCALPER.value:
         editable_params = {
             "leverage": f"Кредитное плечо: x{config.get('leverage', 2)}",
-            "order_amount": f"Сумма ордера: {config.get('order_amount', 0)} USDT",
-            "max_averaging_orders": f"Макс. усреднений: {config.get('max_averaging_orders', 0)}",
-            "profit_percent": f"Процент прибыли: {config.get('profit_percent', 0)}%",
-            "stop_loss_percent": f"Стоп-лосс: {config.get('stop_loss_percent', 0)}%",
+            "order_amount": f"Сумма ордера: {config.get('order_amount', 50)} USDT",
+            "max_loss_usd": f"Стоп-лосс: {config.get('max_loss_usd', 15.0)} USDT",
         }
     elif strategy_type == StrategyType.IMPULSE_TRAILING.value:
         editable_params = {

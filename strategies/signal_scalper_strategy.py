@@ -48,6 +48,14 @@ class SignalScalperStrategy(BaseStrategy):
         self.stop_loss_order_id: Optional[str] = None
         self.stop_loss_price: Optional[Decimal] = None
 
+        # Система подтверждения сигналов и кулдауна
+        self.last_signal: Optional[str] = None  # Последний полученный сигнал
+        self.signal_confirmation_count = 0  # Счетчик одинаковых сигналов подряд
+        self.required_confirmations = 2  # Требуемое количество подтверждений
+        self.last_trade_close_time: Optional[float] = None  # Время закрытия последней сделки
+        self.cooldown_seconds = 60  # Кулдаун в секундах (1 минута)
+        self.last_trade_was_loss = False  # Была ли последняя сделка убыточной
+
 
     def _get_strategy_type(self) -> StrategyType:
         return StrategyType.SIGNAL_SCALPER
@@ -116,6 +124,14 @@ class SignalScalperStrategy(BaseStrategy):
         else:
             # Правило 1: Вход в новую сделку
             if signal in ["LONG", "SHORT"]:
+                # Проверка кулдауна
+                if self._is_cooldown_active():
+                    return
+
+                # Проверка подтверждения сигнала
+                if not self._is_signal_confirmed(signal):
+                    return
+
                 # Правило 1.1: Пропуск сигнала для "успокоения" рынка
                 if signal == self.last_closed_direction:
                     log_info(self.user_id,
@@ -124,6 +140,10 @@ class SignalScalperStrategy(BaseStrategy):
                     self.last_closed_direction = None  # Сбрасываем, чтобы следующий сигнал вошел
                 else:
                     await self._enter_position(direction=signal, signal_price=price)
+            else:
+                # При сигнале HOLD сбрасываем счетчик подтверждений
+                self.signal_confirmation_count = 0
+                self.last_signal = None
 
     async def _handle_price_update(self, event: PriceUpdateEvent):
         """Обработка тиков цены для динамического тейк-профита."""
@@ -134,15 +154,11 @@ class SignalScalperStrategy(BaseStrategy):
 
         # Защита от неправильных цен
         if current_price <= 0:
-            log_warning(self.user_id, f"Получена неправильная цена {current_price} для {self.symbol}", "SignalScalper")
             return
 
         # Проверка на адекватность изменения цены (не больше 50% от цены входа)
         price_change_percent = abs((current_price - self.entry_price) / self.entry_price * 100)
         if price_change_percent > 50:
-            log_warning(self.user_id,
-                       f"Подозрительное изменение цены для {self.symbol}: {price_change_percent:.2f}%. Вход: ${self.entry_price:.4f}, Текущая: ${current_price:.4f}",
-                       "SignalScalper")
             return
 
         pnl = (current_price - self.entry_price) * self.position_size if self.active_direction == "LONG" else (
@@ -267,6 +283,17 @@ class SignalScalperStrategy(BaseStrategy):
 
             self.last_closed_direction = self.active_direction
 
+            # Фиксируем время закрытия и результат сделки
+            self.last_trade_close_time = time.time()
+            self.last_trade_was_loss = pnl_net < 0
+
+            if self.last_trade_was_loss:
+                log_warning(self.user_id, f"Убыточная сделка! Следующему сигналу потребуется 3 подтверждения.", "SignalScalper")
+
+            # Сбрасываем счетчики подтверждения после закрытия сделки
+            self.signal_confirmation_count = 0
+            self.last_signal = None
+
             # Отменяем стоп-лосс перед сбросом состояния
             await self._cancel_stop_loss_order()
 
@@ -356,6 +383,53 @@ class SignalScalperStrategy(BaseStrategy):
             finally:
                 self.stop_loss_order_id = None
                 self.stop_loss_price = None
+
+    def _is_signal_confirmed(self, signal: str) -> bool:
+        """
+        Проверяет, подтвержден ли сигнал достаточным количеством повторений.
+        После убыточной сделки требует больше подтверждений.
+        """
+        if signal == self.last_signal:
+            self.signal_confirmation_count += 1
+        else:
+            # Новый сигнал - сбрасываем счетчик
+            self.last_signal = signal
+            self.signal_confirmation_count = 1
+
+        # После убыточной сделки требуем больше подтверждений
+        required = self.required_confirmations
+        if self.last_trade_was_loss:
+            required = 3  # После убытка требуем 3 подтверждения
+
+        confirmed = self.signal_confirmation_count >= required
+
+        if confirmed:
+            log_info(self.user_id,
+                    f"Сигнал {signal} подтвержден! ({self.signal_confirmation_count}/{required})",
+                    "SignalScalper")
+        else:
+            log_info(self.user_id,
+                    f"Сигнал {signal} ожидает подтверждения ({self.signal_confirmation_count}/{required})",
+                    "SignalScalper")
+
+        return confirmed
+
+    def _is_cooldown_active(self) -> bool:
+        """Проверяет, активен ли кулдаун после закрытия последней сделки."""
+        if self.last_trade_close_time is None:
+            return False
+
+        current_time = time.time()
+        time_since_close = current_time - self.last_trade_close_time
+        cooldown_active = time_since_close < self.cooldown_seconds
+
+        if cooldown_active:
+            remaining_time = self.cooldown_seconds - time_since_close
+            log_info(self.user_id,
+                    f"Кулдаун активен. Осталось {remaining_time:.0f} сек до следующего входа",
+                    "SignalScalper")
+
+        return cooldown_active
 
     async def _execute_strategy_logic(self):
         """Пустышка, так как логика теперь управляется событиями свечей."""
