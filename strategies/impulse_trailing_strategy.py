@@ -145,7 +145,6 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 return
 
             initial_sl_usdt = self._convert_to_decimal(self.get_config_value("initial_sl_usdt", 1.5))
-            price_offset = initial_sl_usdt / qty
 
             # --- УЛУЧШЕННАЯ ЛОГИКА ДЛЯ LONG СИГНАЛОВ (ранний вход в импульсы) ---
             long_signal_triggered = False
@@ -163,9 +162,10 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 # Проверяем наличие импульсных сигналов
                 volume_spike = analysis.get('volume_spike', False)
                 price_momentum = analysis.get('price_momentum', 0)
+                momentum_threshold = self._convert_to_decimal(self.get_config_value('momentum_threshold', 1.0))
 
-                # Если есть всплеск объема или сильный моментум вверх
-                if volume_spike or price_momentum > 1.5:
+                # Если есть всплеск объема или сильный моментум вверх (более чувствительный)
+                if volume_spike or price_momentum > momentum_threshold:
                     long_signal_triggered = True
                     long_signal_reason = "Импульс вверх при восходящем тренде"
 
@@ -174,8 +174,9 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 support_level = analysis.get('support_level')
                 if support_level:
                     support_distance = (current_price - self._convert_to_decimal(support_level)) / current_price
-                    # Если цена близко к поддержке (в пределах 0.5%) и отскакивает
-                    if 0 < support_distance < 0.005:
+                    support_distance_percent = self._convert_to_decimal(self.get_config_value('support_distance_percent', 0.008))
+                    # Если цена близко к поддержке (более широкий диапазон) и отскакивает
+                    if 0 < support_distance < support_distance_percent:
                         long_signal_triggered = True
                         long_signal_reason = "Отскок от поддержки"
 
@@ -186,11 +187,11 @@ class ImpulseTrailingStrategy(BaseStrategy):
 
                 log_info(self.user_id, f"LONG сигнал для {self.symbol}: {long_signal_reason}", "impulse_trailing")
                 self.position_side = "Buy"
-                # Для LONG позиции: SL должен быть ниже цены входа
-                self.stop_loss_price = current_price - price_offset
+                # Для LONG позиции: SL должен быть ниже цены входа - используем точный расчет
+                self.stop_loss_price = self._calculate_precise_stop_loss(current_price, qty, initial_sl_usdt, True)
 
                 log_info(self.user_id,
-                         f"Расчет SL для LONG: Цена={current_price:.4f} - (Убыток {initial_sl_usdt} USDT / Кол-во {qty}) = {self.stop_loss_price:.4f}",
+                         f"Точный расчет SL для LONG: Цена={current_price:.4f}, SL={self.stop_loss_price:.4f}, убыток={initial_sl_usdt} USDT",
                          "impulse_trailing")
 
                 await self._enter_position(qty=qty)
@@ -242,11 +243,11 @@ class ImpulseTrailingStrategy(BaseStrategy):
 
                 log_info(self.user_id, f"SHORT сигнал для {self.symbol}: {short_signal_reason}", "impulse_trailing")
                 self.position_side = "Sell"
-                # Для SHORT позиции: SL должен быть выше цены входа
-                self.stop_loss_price = current_price + price_offset
+                # Для SHORT позиции: SL должен быть выше цены входа - используем точный расчет
+                self.stop_loss_price = self._calculate_precise_stop_loss(current_price, qty, initial_sl_usdt, False)
 
-                log_info(self.user_id,f"Расчет SL для SHORT: Цена={current_price:.4f} + "
-                  f"(Убыток {initial_sl_usdt} USDT / Кол-во {qty}) = {self.stop_loss_price:.4f}","impulse_trailing")
+                log_info(self.user_id,f"Точный расчет SL для SHORT: Цена={current_price:.4f}, SL={self.stop_loss_price:.4f}, убыток={initial_sl_usdt} USDT",
+                         "impulse_trailing")
 
                 await self._enter_position(qty=qty)
                 return

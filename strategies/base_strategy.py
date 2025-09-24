@@ -109,6 +109,41 @@ class BaseStrategy(ABC):
         except (ValueError, TypeError):
             return Decimal('0')
 
+    def _calculate_precise_stop_loss(self, entry_price: Decimal, qty: Decimal, sl_usdt: Decimal, is_long: bool) -> Decimal:
+        """
+        Более точный расчет стоп-лосса с учетом комиссий и буфера.
+
+        Args:
+            entry_price: Цена входа
+            qty: Количество
+            sl_usdt: Желаемый убыток в USDT
+            is_long: True для LONG позиций, False для SHORT
+
+        Returns:
+            Цена стоп-лосса с учетом комиссий
+        """
+        # Комиссия тейкера (обычно 0.055% на Bybit)
+        taker_fee_rate = Decimal('0.0006')  # 0.06% с небольшим буфером
+
+        # Расчет комиссии при закрытии позиции
+        estimated_close_fee = entry_price * qty * taker_fee_rate
+
+        # Добавляем 5% буфер для точности
+        buffer = Decimal('1.05')
+
+        # Корректируем желаемый убыток с учетом комиссии
+        adjusted_sl_usdt = (sl_usdt + estimated_close_fee) * buffer
+
+        # Рассчитываем цену стопа
+        price_offset = adjusted_sl_usdt / qty
+
+        if is_long:
+            stop_price = entry_price - price_offset
+        else:
+            stop_price = entry_price + price_offset
+
+        return stop_price
+
     async def _set_leverage(self):
         """Устанавливает кредитное плечо для торгуемого символа."""
         try:

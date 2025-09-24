@@ -46,7 +46,11 @@ class DefaultConfigs:
             "long_bb_len": 20,
             "long_bb_width_thresh": 0.02,
             "long_consol_bars": 10,
-            "long_breakout_buffer": 0.001,
+            "long_breakout_buffer": 0.0005,  # Снижено для более раннего входа
+
+            # --- НОВЫЕ ПАРАМЕТРЫ ДЛЯ РАННЕГО ВХОДА ---
+            "momentum_threshold": 1.0,  # Снижено с 1.5 для более чувствительного входа
+            "support_distance_percent": 0.008,  # Увеличено с 0.005 для более широкого захвата отскоков
 
             # --- Параметры для ШОРТА (паническая свеча) ---
             "short_ret_lookback": 50,
@@ -90,6 +94,12 @@ class DefaultConfigs:
             "min_profit_usd": 1.5,
             "trailing_pullback_usd": 1.0,  # Откат от пика прибыли для закрытия
             "max_loss_usd": 15.0,  # Максимальный убыток в долларах (стоп-лосс)
+
+            # --- НОВАЯ СИСТЕМА УСРЕДНЕНИЯ ---
+            "enable_averaging": True,          # Включить усреднение позиции
+            "averaging_trigger_percent": 1.0,  # При каком проценте убытка усредняться (1%)
+            "max_averaging_count": 3,          # Максимальное количество усреднений
+            "averaging_multiplier": 1.0,       # Множитель для размера усредняющего ордера (1.0 = тот же размер)
 
             # --- Параметры ТА ---
             "EMA_SHORT": 21,
