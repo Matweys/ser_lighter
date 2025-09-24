@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Dict, Any, Optional
 from decimal import Decimal, getcontext
 
@@ -130,6 +131,20 @@ class SignalScalperStrategy(BaseStrategy):
             return
 
         current_price = event.price
+
+        # Защита от неправильных цен
+        if current_price <= 0:
+            log_warning(self.user_id, f"Получена неправильная цена {current_price} для {self.symbol}", "SignalScalper")
+            return
+
+        # Проверка на адекватность изменения цены (не больше 50% от цены входа)
+        price_change_percent = abs((current_price - self.entry_price) / self.entry_price * 100)
+        if price_change_percent > 50:
+            log_warning(self.user_id,
+                       f"Подозрительное изменение цены для {self.symbol}: {price_change_percent:.2f}%. Вход: ${self.entry_price:.4f}, Текущая: ${current_price:.4f}",
+                       "SignalScalper")
+            return
+
         pnl = (current_price - self.entry_price) * self.position_size if self.active_direction == "LONG" else (
                                                                                                                           self.entry_price - current_price) * self.position_size
 
@@ -302,23 +317,23 @@ class SignalScalperStrategy(BaseStrategy):
             # Определяем сторону стоп-лосс ордера (противоположную позиции)
             sl_side = "Sell" if direction == "LONG" else "Buy"
 
-            # Размещаем стоп-лосс ордер
-            stop_loss_order_id = await self._place_order(
-                side=sl_side,
-                order_type="Stop",  # Стоп-маркет ордер
-                qty=position_size,
-                price=stop_loss_price,
-                reduce_only=True
+            # Размещаем стоп-лосс ордер через установку торговых стопов
+            # Используем API для установки стоп-лосса на позицию вместо ордера
+            success = await self.api.set_trading_stop(
+                symbol=self.symbol,
+                stop_loss=stop_loss_price
             )
 
-            if stop_loss_order_id:
-                self.stop_loss_order_id = stop_loss_order_id
+            if success:
+                # Сохраняем информацию о стоп-лоссе
                 self.stop_loss_price = stop_loss_price
+                stop_loss_order_id = f"trading_stop_{self.symbol}_{int(time.time())}"
+                self.stop_loss_order_id = stop_loss_order_id
                 log_info(self.user_id,
                         f"Стоп-лосс установлен: ID={stop_loss_order_id}, цена=${stop_loss_price:.4f}",
                         "SignalScalper")
             else:
-                log_error(self.user_id, "Не удалось выставить стоп-лосс ордер", "SignalScalper")
+                log_error(self.user_id, "Не удалось выставить стоп-лосс через торговые стопы", "SignalScalper")
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка при установке стоп-лосса: {e}", "SignalScalper")
@@ -327,8 +342,15 @@ class SignalScalperStrategy(BaseStrategy):
         """Отменяет активный стоп-лосс ордер."""
         if self.stop_loss_order_id:
             try:
-                await self._cancel_order(self.stop_loss_order_id)
-                log_info(self.user_id, f"Стоп-лосс ордер {self.stop_loss_order_id} отменен", "SignalScalper")
+                # Отменяем торговый стоп через установку пустого значения
+                success = await self.api.set_trading_stop(
+                    symbol=self.symbol,
+                    stop_loss=None  # Убираем стоп-лосс
+                )
+                if success:
+                    log_info(self.user_id, f"Стоп-лосс {self.stop_loss_order_id} отменен", "SignalScalper")
+                else:
+                    log_warning(self.user_id, f"Не удалось отменить стоп-лосс {self.stop_loss_order_id}", "SignalScalper")
             except Exception as e:
                 log_error(self.user_id, f"Ошибка отмены стоп-лосса {self.stop_loss_order_id}: {e}", "SignalScalper")
             finally:

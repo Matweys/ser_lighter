@@ -568,8 +568,13 @@ class BybitAPI:
                 "timeInForce": time_in_force
             }
 
-            if price is not None:
-                params["price"] = str(price)
+            # Для стоп-ордеров используем triggerPrice вместо price
+            if order_type in ["Stop", "StopLimit"]:
+                if price is not None:
+                    params["triggerPrice"] = str(price)
+            else:
+                if price is not None:
+                    params["price"] = str(price)
             if reduce_only:
                 params["reduceOnly"] = True
             if close_on_trigger:
