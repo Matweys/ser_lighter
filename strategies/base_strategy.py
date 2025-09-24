@@ -387,6 +387,11 @@ class BaseStrategy(ABC):
         if datetime.now() - self.last_config_update > self.config_cache_duration:
             await self._load_strategy_config()
 
+    async def _force_config_reload(self):
+        """Принудительная перезагрузка конфигурации перед каждым входом в сделку"""
+        log_info(self.user_id, f"Принудительная перезагрузка конфигурации для стратегии {self.strategy_type.value}", module_name=__name__)
+        await self._load_strategy_config()
+
             
     async def _handle_price_update_wrapper(self, event: PriceUpdateEvent):
         """Обертка для обработки обновления цены"""

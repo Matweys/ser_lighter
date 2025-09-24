@@ -43,6 +43,9 @@ class ImpulseTrailingStrategy(BaseStrategy):
         # Ключ для блокировки в Redis, уникальный для каждого пользователя
         self.redis_lock_key = f"user:{self.user_id}:impulse_trailing_lock"
 
+        # Запрошенная сумма ордера для уведомлений
+        self.intended_order_amount: Optional[Decimal] = None
+
     async def start(self) -> bool:
         """Переопределяем start для добавления логики блокировки."""
         if await redis_manager.get_cached_data(self.redis_lock_key):
@@ -110,6 +113,9 @@ class ImpulseTrailingStrategy(BaseStrategy):
     async def _execute_strategy_logic(self):
         """Анализ сигнала и принятие решения о входе с обязательной остановкой, если вход не выполнен."""
         try:
+            # Принудительная перезагрузка конфигурации перед каждым входом в сделку
+            await self._force_config_reload()
+
             analysis = self.signal_data
             if not analysis or 'atr' not in analysis:
                 log_error(self.user_id, f"Отсутствуют данные анализа для {self.symbol}. Проверьте market_analyzer.",
@@ -130,6 +136,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
             # --- ОБЩИЙ БЛОК РАСЧЕТА QTY И SL ---
             order_size_usdt = self._convert_to_decimal(self.get_config_value("order_amount", 50.0))
             leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
+            self.intended_order_amount = order_size_usdt  # Сохраняем запрошенную сумму
             qty = await self.api.calculate_quantity_from_usdt(self.symbol, order_size_usdt, leverage,
                                                               price=current_price)
 
@@ -140,34 +147,100 @@ class ImpulseTrailingStrategy(BaseStrategy):
             initial_sl_usdt = self._convert_to_decimal(self.get_config_value("initial_sl_usdt", 1.5))
             price_offset = initial_sl_usdt / qty
 
-            # --- Логика для СИГНАЛА ЛОНГ (открываем ЛОНГ) ---
+            # --- УЛУЧШЕННАЯ ЛОГИКА ДЛЯ LONG СИГНАЛОВ (ранний вход в импульсы) ---
+            long_signal_triggered = False
+            long_signal_reason = ""
+
+            # 1. Классический пробой консолидации (оригинальная логика)
             if ema_trend == "UP" and is_consolidating:
-                if friction_level == "HIGH":
-                    await self.stop("Signal skipped: High friction")
-                    return
                 breakout_level = self._convert_to_decimal(analysis['consolidation_high']) * (1 + long_breakout_buffer)
                 if current_price > breakout_level:
-                    log_info(self.user_id, f"Сигнал LONG для {self.symbol}. Открываю LONG.", "impulse_trailing")
-                    self.position_side = "Buy"
-                    # Для LONG позиции: SL должен быть ниже цены входа
-                    self.stop_loss_price = current_price - price_offset
+                    long_signal_triggered = True
+                    long_signal_reason = "Пробой консолидации"
 
-                    log_info(self.user_id,
-                             f"Расчет SL для LONG: Цена={current_price:.4f} - (Убыток {initial_sl_usdt} USDT / Кол-во {qty}) = {self.stop_loss_price:.4f}",
-                             "impulse_trailing")
+            # 2. НОВЫЙ: Импульс вверх при восходящем тренде (БЕЗ консолидации)
+            elif ema_trend == "UP" and not is_consolidating:
+                # Проверяем наличие импульсных сигналов
+                volume_spike = analysis.get('volume_spike', False)
+                price_momentum = analysis.get('price_momentum', 0)
 
-                    await self._enter_position(qty=qty)
-                    return
-                else:
-                    await self.stop("Signal skipped: No breakout")
-                    return
+                # Если есть всплеск объема или сильный моментум вверх
+                if volume_spike or price_momentum > 1.5:
+                    long_signal_triggered = True
+                    long_signal_reason = "Импульс вверх при восходящем тренде"
 
-            # --- Логика для СИГНАЛА ШОРТ (открываем ШОРТ) ---
-            if is_panic:
+            # 3. НОВЫЙ: Отскок от поддержки при восходящем тренде
+            elif ema_trend == "UP":
+                support_level = analysis.get('support_level')
+                if support_level:
+                    support_distance = (current_price - self._convert_to_decimal(support_level)) / current_price
+                    # Если цена близко к поддержке (в пределах 0.5%) и отскакивает
+                    if 0 < support_distance < 0.005:
+                        long_signal_triggered = True
+                        long_signal_reason = "Отскок от поддержки"
+
+            if long_signal_triggered:
                 if friction_level == "HIGH":
                     await self.stop("Signal skipped: High friction")
                     return
-                log_info(self.user_id, f"Сигнал SHORT для {self.symbol}. Открываю SHORT.", "impulse_trailing")
+
+                log_info(self.user_id, f"LONG сигнал для {self.symbol}: {long_signal_reason}", "impulse_trailing")
+                self.position_side = "Buy"
+                # Для LONG позиции: SL должен быть ниже цены входа
+                self.stop_loss_price = current_price - price_offset
+
+                log_info(self.user_id,
+                         f"Расчет SL для LONG: Цена={current_price:.4f} - (Убыток {initial_sl_usdt} USDT / Кол-во {qty}) = {self.stop_loss_price:.4f}",
+                         "impulse_trailing")
+
+                await self._enter_position(qty=qty)
+                return
+
+            # --- УЛУЧШЕННАЯ ЛОГИКА ДЛЯ SHORT СИГНАЛОВ (ранний вход в импульсы) ---
+            short_signal_triggered = False
+            short_signal_reason = ""
+
+            # 1. Классические панические бары (оригинальная логика)
+            if is_panic:
+                short_signal_triggered = True
+                short_signal_reason = "Панический бар"
+
+            # 2. НОВЫЙ: Импульс вниз при нисходящем тренде
+            elif ema_trend == "DOWN":
+                # Проверяем наличие импульсных сигналов вниз
+                volume_spike = analysis.get('volume_spike', False)
+                price_momentum = analysis.get('price_momentum', 0)
+
+                # Если есть всплеск объема или сильный моментум вниз
+                if volume_spike or price_momentum < -1.5:
+                    short_signal_triggered = True
+                    short_signal_reason = "Импульс вниз при нисходящем тренде"
+
+            # 3. НОВЫЙ: Пробой консолидации вниз
+            elif is_consolidating and ema_trend != "UP":
+                consolidation_low = analysis.get('consolidation_low')
+                if consolidation_low:
+                    breakdown_level = self._convert_to_decimal(consolidation_low) * (1 - long_breakout_buffer)
+                    if current_price < breakdown_level:
+                        short_signal_triggered = True
+                        short_signal_reason = "Пробой консолидации вниз"
+
+            # 4. НОВЫЙ: Отскок от сопротивления при нисходящем тренде
+            elif ema_trend == "DOWN":
+                resistance_level = analysis.get('resistance_level')
+                if resistance_level:
+                    resistance_distance = (self._convert_to_decimal(resistance_level) - current_price) / current_price
+                    # Если цена близко к сопротивлению (в пределах 0.5%) и отскакивает вниз
+                    if 0 < resistance_distance < 0.005:
+                        short_signal_triggered = True
+                        short_signal_reason = "Отскок от сопротивления"
+
+            if short_signal_triggered:
+                if friction_level == "HIGH":
+                    await self.stop("Signal skipped: High friction")
+                    return
+
+                log_info(self.user_id, f"SHORT сигнал для {self.symbol}: {short_signal_reason}", "impulse_trailing")
                 self.position_side = "Sell"
                 # Для SHORT позиции: SL должен быть выше цены входа
                 self.stop_loss_price = current_price + price_offset
@@ -262,7 +335,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
             except Exception as e:
                 log_error(self.user_id, f"Не удалось обновить данные блокировки в Redis: {e}", "impulse_trailing")
 
-            await self._send_trade_open_notification(event.side, event.price, event.qty)
+            await self._send_trade_open_notification(event.side, event.price, event.qty, self.intended_order_amount)
             return
 
         # --- Сценарий: Закрытие позиции ---

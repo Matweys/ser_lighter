@@ -87,6 +87,9 @@ class SignalScalperStrategy(BaseStrategy):
         if event.symbol != self.symbol or self.is_waiting_for_trade:
             return
 
+        # Принудительная перезагрузка конфигурации перед анализом сигнала
+        await self._force_config_reload()
+
         log_debug(self.user_id, f"SignalScalper ({self.symbol}) получил новую свечу.", "SignalScalper")
         analysis_result = await self.signal_analyzer.get_analysis(self.symbol)
 
