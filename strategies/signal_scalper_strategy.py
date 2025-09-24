@@ -305,7 +305,7 @@ class SignalScalperStrategy(BaseStrategy):
             # Размещаем стоп-лосс ордер
             stop_loss_order_id = await self._place_order(
                 side=sl_side,
-                order_type="StopMarket",  # Стоп-маркет ордер
+                order_type="Stop",  # Стоп-маркет ордер
                 qty=position_size,
                 price=stop_loss_price,
                 reduce_only=True
