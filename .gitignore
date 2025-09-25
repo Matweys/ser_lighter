@@ -24,3 +24,5 @@ backtest_data/
 simulation/
 data/
 CLAUDE.md
+
+utils/

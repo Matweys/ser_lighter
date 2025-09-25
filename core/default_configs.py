@@ -114,8 +114,8 @@ class DefaultConfigs:
             "EMA_SHORT": 21,
             "EMA_LONG": 50,
             "RSI_PERIOD": 14,
-            "RSI_NEUTRAL_MIN": 35,      # Минимум нейтральной зоны RSI
-            "RSI_NEUTRAL_MAX": 65       # Максимум нейтральной зоны RSI
+            "RSI_NEUTRAL_MIN": 30,      # Минимум нейтральной зоны RSI (расширено)
+            "RSI_NEUTRAL_MAX": 70       # Максимум нейтральной зоны RSI (расширено)
         }
 
 
