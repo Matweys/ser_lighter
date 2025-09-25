@@ -747,10 +747,10 @@ class SignalScalperStrategy(BaseStrategy):
             levels[level] = notional_value * percentage
 
         # Логируем рассчитанные уровни для пользователя
-        log_info(self.user_id,
-                f"💎 Динамические уровни трейлинга (${order_amount} × {leverage}x = ${notional_value}): "
-                f"Ур1=${levels[1]:.2f} | Ур2=${levels[2]:.2f} | Ур3=${levels[3]:.2f} | Ур4=${levels[4]:.2f}",
-                "SignalScalper")
+        # log_info(self.user_id,
+        #         f"💎 Динамические уровни трейлинга (${order_amount} × {leverage}x = ${notional_value}): "
+        #         f"Ур1=${levels[1]:.2f} | Ур2=${levels[2]:.2f} | Ур3=${levels[3]:.2f} | Ур4=${levels[4]:.2f}",
+        #         "SignalScalper")
 
         return levels
 
