@@ -109,7 +109,9 @@ class BaseStrategy(ABC):
         except (ValueError, TypeError):
             return Decimal('0')
 
-    def _calculate_precise_stop_loss(self, entry_price: Decimal, qty: Decimal, sl_usdt: Decimal, is_long: bool) -> Decimal:
+
+    @staticmethod
+    def _calculate_precise_stop_loss(entry_price: Decimal, qty: Decimal, sl_usdt: Decimal, is_long: bool) -> Decimal:
         """
         Более точный расчет стоп-лосса с учетом комиссий и буфера.
 
@@ -143,6 +145,30 @@ class BaseStrategy(ABC):
             stop_price = entry_price + price_offset
 
         return stop_price
+
+    def _get_stop_loss_info(self, side: str, price: Decimal, quantity: Decimal) -> tuple[Decimal, Decimal]:
+        """
+        Рассчитывает цену SL и потенциальный убыток для уведомлений.
+
+        Returns:
+            tuple[Decimal, Decimal]: (цена_SL, ожидаемый_убыток_USDT)
+        """
+        try:
+            # Получаем максимальный убыток из конфигурации стратегии
+            max_loss_usd = self._convert_to_decimal(self.get_config_value("max_loss_usd", 15.0))
+
+            # Определяем направление позиции
+            is_long = side.lower() == 'buy'
+
+            # Рассчитываем цену стоп-лосса
+            sl_price = self._calculate_precise_stop_loss(price, quantity, max_loss_usd, is_long)
+
+            return sl_price, max_loss_usd
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка расчета информации SL: {e}", "base_strategy")
+            # Возвращаем безопасные значения по умолчанию
+            return price, Decimal('15.0')
 
     async def _set_leverage(self):
         """Устанавливает кредитное плечо для торгуемого символа."""
@@ -781,7 +807,7 @@ class BaseStrategy(ABC):
                 text = (
                     f"🚀 {hbold('СТРАТЕГИЯ ЗАПУЩЕНА')} 🚀\n\n"
                     f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
-                    f"▫️ {hbold('Инструмент:')} {hcode(self.symbol)}\n"
+                    f"▫️ {hbold('Символ:')} {hcode(self.symbol)}\n"
                     f"▫️ {hbold('Статус:')} Ожидает сигналы для открытия позиций\n"
                     f"▫️ {hbold('Размер ордера:')} {hcode(f'{self.order_amount} USDT')}\n"
                     f"▫️ {hbold('Плечо:')} {hcode(f'{self.leverage}x')}"
@@ -790,7 +816,7 @@ class BaseStrategy(ABC):
                 text = (
                     f"🔍 {hbold('СТРАТЕГИЯ ЗАПУЩЕНА')} 🔍\n\n"
                     f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
-                    f"▫️ {hbold('Инструмент:')} {hcode(self.symbol)}\n"
+                    f"▫️ {hbold('Символ:')} {hcode(self.symbol)}\n"
                     f"▫️ {hbold('Статус:')} Активное сканирование и поиск импульсов\n"
                     f"▫️ {hbold('Размер ордера:')} {hcode(f'{self.order_amount} USDT')}\n"
                     f"▫️ {hbold('Плечо:')} {hcode(f'{self.leverage}x')}\n\n"
@@ -801,7 +827,7 @@ class BaseStrategy(ABC):
                 text = (
                     f"✅ {hbold('СТРАТЕГИЯ ЗАПУЩЕНА')} ✅\n\n"
                     f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
-                    f"▫️ {hbold('Инструмент:')} {hcode(self.symbol)}\n"
+                    f"▫️ {hbold('Символ:')} {hcode(self.symbol)}\n"
                     f"▫️ {hbold('Статус:')} Активна и готова к работе\n"
                     f"▫️ {hbold('Размер ордера:')} {hcode(f'{self.order_amount} USDT')}\n"
                     f"▫️ {hbold('Плечо:')} {hcode(f'{self.leverage}x')}"
@@ -848,6 +874,9 @@ class BaseStrategy(ABC):
             leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
             actual_amount = (price * quantity) / leverage
 
+            # Получаем информацию о SL
+            sl_price, sl_loss = self._get_stop_loss_info(side, price, quantity)
+
             text = (
                 f"📈 {hbold('ОТКРЫТА НОВАЯ СДЕЛКА')} 📈\n\n"
                 f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
@@ -855,16 +884,29 @@ class BaseStrategy(ABC):
                 f"▫️ {hbold('Направление:')} {side_text}\n"
                 f"▫️ {hbold('Цена входа:')} {hcode(f'{price:.4f} USDT')}\n"
                 f"▫️ {hbold('Объем:')} {hcode(str(quantity))}\n"
-                f"▫️ {hbold('Стоимость позиции:')} {hcode(f'{actual_amount:.2f} USDT')}"
+                f"▫️ {hbold('Стоимость позиции:')} {hcode(f'{actual_amount:.2f} USDT')}\n\n"
+                f"🛡️ {hbold('Stop Loss:')}\n"
+                f"▫️ {hbold('SL цена:')} {hcode(f'{sl_price:.4f} USDT')}\n"
+                f"▫️ {hbold('Ожидаемый убыток:')} {hcode(f'-{sl_loss:.2f} USDT')}"
             )
 
             # Добавляем предупреждение, если фактическая сумма отличается от запрошенной
-            if intended_amount and abs(intended_amount - actual_amount) / intended_amount > Decimal('0.01'): # Расхождение более 1%
-                text += (
-                    f"\n\n⚠️ {hbold('Внимание:')}\n"
-                    f"Запрошенная сумма ордера ({hcode(f'{intended_amount:.2f} USDT')}) была скорректирована "
-                    f"биржей до {hcode(f'{actual_amount:.2f} USDT')} из-за требований к минимальному размеру лота."
-                )
+            if intended_amount:
+                difference = abs(intended_amount - actual_amount)
+                # Показываем предупреждение если:
+                # 1. Разница больше 0.10 USDT (абсолютная разница)
+                # 2. ИЛИ разница больше 0.5% от запрошенной суммы (относительная разница)
+                absolute_threshold = Decimal('0.10')
+                relative_threshold = intended_amount * Decimal('0.005')  # 0.5%
+
+                if difference >= absolute_threshold or difference >= relative_threshold:
+                    difference_percent = (difference / intended_amount) * 100
+                    text += (
+                        f"\n\n⚠️ {hbold('Внимание:')}\n"
+                        f"Запрошенная сумма ордера ({hcode(f'{intended_amount:.2f} USDT')}) была скорректирована "
+                        f"биржей до {hcode(f'{actual_amount:.2f} USDT')} из-за требований к минимальному размеру лота.\n"
+                        f"Разница: {hcode(f'{difference:.2f} USDT')} ({hcode(f'{difference_percent:.1f}%')})"
+                    )
 
                 # Финальная диагностика
                 log_info(self.user_id,
@@ -879,7 +921,7 @@ class BaseStrategy(ABC):
             log_error(self.user_id, f"Состояние бота: {'инициализирован' if self.bot else 'не инициализирован'}", "base_strategy")
 
     async def _send_averaging_notification(self, price: Decimal, quantity: Decimal, new_avg_price: Decimal,
-                                           new_total_size: Decimal):
+                                           new_total_size: Decimal, side: Optional[str] = None):
         """Отправляет уведомление об усреднении позиции."""
         try:
             # Проверяем, что бот инициализирован
@@ -888,6 +930,14 @@ class BaseStrategy(ABC):
                 return
 
             strategy_name = self.strategy_type.value.replace('_', ' ').title()
+
+            # Получаем информацию о SL для новой позиции
+            if side:
+                sl_price, sl_loss = self._get_stop_loss_info(side, new_avg_price, new_total_size)
+            else:
+                # Если side не передан, используем значения по умолчанию
+                sl_price, sl_loss = new_avg_price, Decimal('15.0')
+
             text = (
                 f"🔄 {hbold('ПОЗИЦИЯ УСРЕДНЕНА')} 🔄\n\n"
                 f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
@@ -896,7 +946,10 @@ class BaseStrategy(ABC):
                 f"▫️ {hbold('Добавленный объем:')} {hcode(str(quantity))}\n\n"
                 f"ℹ️ {hbold('Новые параметры позиции:')}\n"
                 f"▫️ {hbold('Новая ср. цена:')} {hcode(f'{new_avg_price:.4f} USDT')}\n"
-                f"▫️ {hbold('Новый общий объем:')} {hcode(str(new_total_size))}"
+                f"▫️ {hbold('Новый общий объем:')} {hcode(str(new_total_size))}\n\n"
+                f"🛡️ {hbold('Обновленный Stop Loss:')}\n"
+                f"▫️ {hbold('SL цена:')} {hcode(f'{sl_price:.4f} USDT')}\n"
+                f"▫️ {hbold('Ожидаемый убыток:')} {hcode(f'-{sl_loss:.2f} USDT')}"
             )
             # Финальная диагностика
             log_info(self.user_id,
@@ -960,7 +1013,7 @@ class BaseStrategy(ABC):
             text = (
                 f"{icon} {hbold('СДЕЛКА ЗАКРЫТА')} {icon}\n\n"
                 f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
-                f"▫️ {hbold('Инструмент:')} {hcode(self.symbol)}\n"
+                f"▫️ {hbold('Символ:')} {hcode(self.symbol)}\n"
                 f"▫️ {hbold('Результат:')} {result_text}\n"
                 f"▫️ {hbold('Чистый PnL:')} {hcode(pnl_text)}\n"
                 f"▫️ {hbold('Комиссия:')} {hcode(f'~{commission:.2f} USDT')}\n"

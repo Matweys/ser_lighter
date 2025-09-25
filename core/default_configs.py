@@ -101,6 +101,15 @@ class DefaultConfigs:
             "max_averaging_count": 3,          # Максимальное количество усреднений
             "averaging_multiplier": 1.0,       # Множитель для размера усредняющего ордера (1.0 = тот же размер)
 
+            # --- ПРОГРЕССИВНОЕ УСРЕДНЕНИЕ ---
+            "averaging_mode": "progressive",            # "fixed" или "progressive"
+            "progressive_multiplier": 1.5,             # Множитель роста (1.5 = +50% каждый раз)
+
+            # --- ТЕХНИЧЕСКИЕ ФИЛЬТРЫ ДЛЯ УСРЕДНЕНИЯ ---
+            "averaging_rsi_filter": True,              # Использовать RSI фильтр
+            "averaging_rsi_oversold": 25,              # RSI для LONG усреднения (перепроданность)
+            "averaging_rsi_overbought": 75,            # RSI для SHORT усреднения (перекупленность)
+
             # --- Параметры ТА ---
             "EMA_SHORT": 21,
             "EMA_LONG": 50,

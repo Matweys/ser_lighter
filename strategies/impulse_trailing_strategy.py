@@ -188,7 +188,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 log_info(self.user_id, f"LONG сигнал для {self.symbol}: {long_signal_reason}", "impulse_trailing")
                 self.position_side = "Buy"
                 # Для LONG позиции: SL должен быть ниже цены входа - используем точный расчет
-                self.stop_loss_price = self._calculate_precise_stop_loss(current_price, qty, initial_sl_usdt, True)
+                self.stop_loss_price = BaseStrategy._calculate_precise_stop_loss(current_price, qty, initial_sl_usdt, True)
 
                 log_info(self.user_id,
                          f"Точный расчет SL для LONG: Цена={current_price:.4f}, SL={self.stop_loss_price:.4f}, убыток={initial_sl_usdt} USDT",
@@ -244,7 +244,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 log_info(self.user_id, f"SHORT сигнал для {self.symbol}: {short_signal_reason}", "impulse_trailing")
                 self.position_side = "Sell"
                 # Для SHORT позиции: SL должен быть выше цены входа - используем точный расчет
-                self.stop_loss_price = self._calculate_precise_stop_loss(current_price, qty, initial_sl_usdt, False)
+                self.stop_loss_price = BaseStrategy._calculate_precise_stop_loss(current_price, qty, initial_sl_usdt, False)
 
                 log_info(self.user_id,f"Точный расчет SL для SHORT: Цена={current_price:.4f}, SL={self.stop_loss_price:.4f}, убыток={initial_sl_usdt} USDT",
                          "impulse_trailing")
@@ -430,12 +430,10 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 # 3.3 ВАЖНО: Проверка на откат от пика для закрытия по рынку
                 pullback_close_usdt = self._convert_to_decimal(self.get_config_value('pullback_close_usdt', 3.0))
 
-                # Правильный расчет прибыли на пике цены
+                # Расчет размера отката от пика
                 if self.position_side == "Buy":
-                    peak_profit_usdt = (self.peak_price - self.entry_price) * self.position_size
                     pullback_amount = (self.peak_price - current_price) * self.position_size
                 else:  # Sell position
-                    peak_profit_usdt = (self.entry_price - self.peak_price) * self.position_size
                     pullback_amount = (current_price - self.peak_price) * self.position_size
 
                 # Проверяем, что откат от пика превысил порог

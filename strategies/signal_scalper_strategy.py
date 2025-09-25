@@ -85,6 +85,15 @@ class SignalScalperStrategy(BaseStrategy):
             self.max_averaging_count = int(self.config.get("max_averaging_count", 3))
             self.averaging_multiplier = self._convert_to_decimal(self.config.get("averaging_multiplier", "1.0"))
 
+            # НОВЫЕ параметры прогрессивного усреднения
+            self.averaging_mode = self.config.get("averaging_mode", "fixed")  # "fixed" или "progressive"
+            self.progressive_multiplier = self._convert_to_decimal(self.config.get("progressive_multiplier", "1.5"))
+
+            # Параметры технических фильтров
+            self.averaging_rsi_filter = self.config.get("averaging_rsi_filter", True)
+            self.averaging_rsi_oversold = float(self.config.get("averaging_rsi_oversold", 25))
+            self.averaging_rsi_overbought = float(self.config.get("averaging_rsi_overbought", 75))
+
     async def start(self) -> bool:
         """Запуск стратегии и подписка на события свечей."""
         is_started = await super().start()
@@ -193,34 +202,59 @@ class SignalScalperStrategy(BaseStrategy):
             loss_percent = ((current_price - entry_price_to_use) / entry_price_to_use * 100) if current_price > entry_price_to_use else 0
 
         # НОВАЯ ЛОГИКА УСРЕДНЕНИЯ
-        if (self.averaging_enabled and
-            pnl < 0 and  # Позиция в убытке
-            self.averaging_count < self.max_averaging_count):
+        if self.averaging_enabled:
+            # Детальное логирование для диагностики
+            log_debug(self.user_id, f"Усреднение: enabled={self.averaging_enabled}, pnl={pnl:.2f}, loss%={loss_percent:.2f}, count={self.averaging_count}/{self.max_averaging_count}", "SignalScalper")
 
-            # Проверяем, достиг ли убыток нового порога для усреднения
-            next_trigger_percent = self.averaging_trigger_percent * (self.averaging_count + 1)
+            if (pnl < 0 and  # Позиция в убытке
+                self.averaging_count < self.max_averaging_count):
 
-            if loss_percent >= next_trigger_percent and loss_percent > self.last_averaging_percent:
-                log_info(self.user_id,
-                        f"Триггер усреднения: убыток {loss_percent:.2f}% >= {next_trigger_percent:.1f}%",
-                        "SignalScalper")
-                await self._execute_averaging(current_price)
+                # Проверяем, достиг ли убыток нового порога для усреднения
+                next_trigger_percent = self.averaging_trigger_percent * (self.averaging_count + 1)
+
+                log_debug(self.user_id, f"Проверка триггера: loss={loss_percent:.2f}% >= trigger={next_trigger_percent:.1f}%, last={self.last_averaging_percent:.2f}%", "SignalScalper")
+
+                if loss_percent >= next_trigger_percent and loss_percent > self.last_averaging_percent:
+                    # Проверяем технические фильтры перед усреднением
+                    if await self._check_averaging_filters():
+                        log_info(self.user_id,
+                                f"🎯 ТРИГГЕР УСРЕДНЕНИЯ: убыток {loss_percent:.2f}% >= {next_trigger_percent:.1f}%",
+                                "SignalScalper")
+                        await self._execute_averaging(current_price)
+                    else:
+                        log_debug(self.user_id, f"Усреднение пропущено: не прошел технические фильтры", "SignalScalper")
+                else:
+                    log_debug(self.user_id, f"Триггер НЕ сработал: условие {loss_percent:.2f} >= {next_trigger_percent:.1f} and {loss_percent:.2f} > {self.last_averaging_percent:.2f}", "SignalScalper")
+            else:
+                if pnl >= 0:
+                    log_debug(self.user_id, f"Усреднение пропущено: позиция в плюсе ({pnl:.2f})", "SignalScalper")
+                if self.averaging_count >= self.max_averaging_count:
+                    log_debug(self.user_id, f"Усреднение пропущено: достигнут лимит ({self.averaging_count}/{self.max_averaging_count})", "SignalScalper")
 
         # Обновляем пиковую прибыль
         if pnl > self.peak_profit_usd:
             self.peak_profit_usd = pnl
 
-        # Правило 2: Закрытие по минимальной прибыли (только когда в плюсе)
-        if pnl >= self.min_profit_usd:
-            # Продвинутая логика трейлинга
-            if pnl < (self.peak_profit_usd - self.trailing_pullback_usd):
+        # НОВАЯ СИСТЕМА: Поэтапный трейлинг с фиксированными порогами и 20% откатом
+        current_trailing_level = SignalScalperStrategy._get_trailing_level(pnl)
+
+        if current_trailing_level > 0:  # Если достигли хотя бы начального уровня
+            # Фиксированный 20% откат от пика на всех уровнях
+            trailing_distance = self.peak_profit_usd * Decimal('0.20')
+
+            # Проверяем условие закрытия: откат от пика >= 20%
+            if pnl < (self.peak_profit_usd - trailing_distance):
+                level_name = SignalScalperStrategy._get_level_name(current_trailing_level)
                 log_info(self.user_id,
-                         f"Трейлинг-профит! Закрытие {self.symbol}. Пик: ${self.peak_profit_usd:.2f}, Текущий PnL: ${pnl:.2f}",
+                         f"💎 ЗАКРЫТИЕ НА {level_name}! Пик: ${self.peak_profit_usd:.2f}, PnL: ${pnl:.2f}, откат: ${trailing_distance:.2f} (20%)",
                          "SignalScalper")
-                await self._close_position("trailing_profit_stop")
+                await self._close_position("level_trailing_profit")
             else:
-                # Просто ждем дальше, если откат небольшой
-                pass
+                # Логируем текущий статус трейлинга
+                level_name = SignalScalperStrategy._get_level_name(current_trailing_level)
+                log_debug(self.user_id,
+                         f"Трейлинг {level_name}: пик=${self.peak_profit_usd:.2f}, PnL=${pnl:.2f}, откат допустим=${trailing_distance:.2f}",
+                         "SignalScalper")
 
     async def _enter_position(self, direction: str, signal_price: Decimal):
         """Логика входа в позицию."""
@@ -245,11 +279,13 @@ class SignalScalperStrategy(BaseStrategy):
         else:
             self.is_waiting_for_trade = False
 
+
     async def _close_position(self, reason: str):
         """Логика закрытия текущей позиции."""
         if not self.position_active:
             return
 
+        log_info(self.user_id, f"Закрытие позиции {self.symbol}. Причина: {reason}", "SignalScalper")
         self.is_waiting_for_trade = True
         side = "Sell" if self.active_direction == "LONG" else "Buy"
 
@@ -299,9 +335,8 @@ class SignalScalperStrategy(BaseStrategy):
 
         # Или определяем по текущему состоянию позиции и направлению ордера
         if not is_closing_order:
-            # Если позиция активна и ордер в том же направлении что и позиция - это закрытие
+            # Если позиция активна и ордер в противоположном направлении - это закрытие
             if self.position_active:
-                current_side = "Buy" if self.active_direction == "LONG" else "Sell"
                 opposite_side = "Sell" if self.active_direction == "LONG" else "Buy"
                 is_closing_order = (event.side == opposite_side)
 
@@ -323,9 +358,8 @@ class SignalScalperStrategy(BaseStrategy):
             self.total_position_size = Decimal('0')
             self.average_entry_price = Decimal('0')
 
-            # НЕ устанавливаем стоп-лосс при усреднении - позволяем стратегии усредняться
-            if not self.averaging_enabled:
-                await self._place_stop_loss_order(self.active_direction, self.entry_price, self.position_size)
+            # ВСЕГДА устанавливаем стоп-лосс для защиты (даже при усреднении)
+            await self._place_stop_loss_order(self.active_direction, self.entry_price, self.position_size)
 
         elif is_closing_order and self.position_active:
             # Ордер на закрытие позиции
@@ -388,7 +422,7 @@ class SignalScalperStrategy(BaseStrategy):
 
         # Используем новый точный метод расчета
         is_long = (direction == "LONG")
-        stop_loss_price = self._calculate_precise_stop_loss(entry_price, position_size, self.max_loss_usd, is_long)
+        stop_loss_price = BaseStrategy._calculate_precise_stop_loss(entry_price, position_size, self.max_loss_usd, is_long)
 
         log_info(self.user_id,
                 f"Точный расчет стоп-лосса для {direction}: вход=${entry_price:.4f}, SL=${stop_loss_price:.4f}, макс. убыток=${self.max_loss_usd:.2f}",
@@ -402,10 +436,7 @@ class SignalScalperStrategy(BaseStrategy):
             # Рассчитываем цену стоп-лосса
             stop_loss_price = self._calculate_stop_loss_price(entry_price, direction, position_size)
 
-            # Определяем сторону стоп-лосс ордера (противоположную позиции)
-            sl_side = "Sell" if direction == "LONG" else "Buy"
-
-            # Размещаем стоп-лосс ордер через установку торговых стопов
+            # Размещаем стоп-лосс через установку торговых стопов
             # Используем API для установки стоп-лосса на позицию вместо ордера
             success = await self.api.set_trading_stop(
                 symbol=self.symbol,
@@ -500,9 +531,18 @@ class SignalScalperStrategy(BaseStrategy):
         try:
             self.is_waiting_for_trade = True
 
-            # Рассчитываем размер усредняющего ордера
+            # Рассчитываем размер усредняющего ордера (ПРОГРЕССИВНОЕ УСРЕДНЕНИЕ)
             order_amount = self._convert_to_decimal(self.get_config_value("order_amount", 50.0))
-            averaging_amount = order_amount * self.averaging_multiplier
+
+            if self.averaging_mode == "progressive":
+                # Прогрессивное усреднение: каждый ордер больше предыдущего
+                progressive_factor = self.progressive_multiplier ** self.averaging_count  # 1.5^1, 1.5^2, 1.5^3
+                averaging_amount = order_amount * progressive_factor
+                log_info(self.user_id, f"Прогрессивное усреднение #{self.averaging_count + 1}: {order_amount} × {progressive_factor:.2f} = {averaging_amount:.2f} USDT", "SignalScalper")
+            else:
+                # Фиксированное усреднение
+                averaging_amount = order_amount * self.averaging_multiplier
+
             leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
 
             qty = await self.api.calculate_quantity_from_usdt(self.symbol, averaging_amount, leverage, price=current_price)
@@ -547,9 +587,13 @@ class SignalScalperStrategy(BaseStrategy):
                             f"Усреднение #{self.averaging_count} выполнено. Новая средняя цена: {self.average_entry_price:.4f}, размер: {self.total_position_size}",
                             "SignalScalper")
 
+                    # ДИНАМИЧЕСКАЯ КОРРЕКТИРОВКА СТОП-ЛОССА после усреднения
+                    await self._update_stop_loss_after_averaging()
+
                     # Отправляем уведомление об усреднении
                     await self._send_averaging_notification(
-                        current_price, qty, self.average_entry_price, self.total_position_size
+                        current_price, qty, self.average_entry_price, self.total_position_size,
+                        side="Buy" if self.active_direction == "LONG" else "Sell"
                     )
 
             self.is_waiting_for_trade = False
@@ -557,6 +601,141 @@ class SignalScalperStrategy(BaseStrategy):
         except Exception as e:
             log_error(self.user_id, f"Ошибка при усреднении: {e}", "SignalScalper")
             self.is_waiting_for_trade = False
+
+    def _calculate_dynamic_min_profit(self) -> Decimal:
+        """
+        Рассчитывает персонализированный минимальный профит на основе:
+        - Размера ордера пользователя (0.5% базовый)
+        - Количества усреднений (+0.3% за каждое)
+        """
+        try:
+            # Получаем свежие данные из конфигурации
+            order_amount = self._convert_to_decimal(self.get_config_value("order_amount", 50.0))
+
+            # Настройки для расчета (реалистичные проценты)
+            base_profit_percent = Decimal('0.005')      # 0.5% от суммы ордера
+            averaging_bonus_percent = Decimal('0.003')   # 0.3% за каждое усреднение
+
+            # Базовый минимальный профит
+            base_profit = order_amount * base_profit_percent
+
+            # Бонус за усреднения
+            averaging_bonus = (order_amount * averaging_bonus_percent) * self.averaging_count
+
+            # Итоговый минимальный профит
+            dynamic_min_profit = base_profit + averaging_bonus
+
+            log_info(self.user_id,
+                     f"💰 Динамический профит: {dynamic_min_profit:.2f}$ (базовый {base_profit:.2f}$ + усреднения {averaging_bonus:.2f}$)",
+                     "SignalScalper")
+
+            return dynamic_min_profit
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка расчета динамического профита: {e}", "SignalScalper")
+            # Возвращаем фиксированное значение как fallback
+            return self.min_profit_usd
+
+    async def _check_averaging_filters(self) -> bool:
+        """Проверяет технические фильтры для усреднения."""
+        if not self.averaging_rsi_filter:
+            # Если фильтры отключены - разрешаем усреднение
+            return True
+
+        try:
+            # Получаем анализ для проверки RSI
+            analysis_result = await self.signal_analyzer.get_analysis(self.symbol)
+            if not analysis_result or not analysis_result.indicators:
+                log_debug(self.user_id, "Не удалось получить индикаторы для фильтров усреднения", "SignalScalper")
+                return True  # Если нет данных - разрешаем усреднение
+
+            current_rsi = analysis_result.indicators.get('rsi', 50.0)
+
+            # Применяем RSI фильтры в зависимости от направления позиции
+            if self.active_direction == "LONG":
+                # Для LONG: усредняемся только в зоне перепроданности (RSI < 25)
+                rsi_ok = current_rsi <= self.averaging_rsi_oversold
+                log_debug(self.user_id, f"RSI фильтр LONG: RSI={current_rsi:.1f} <= {self.averaging_rsi_oversold} = {rsi_ok}", "SignalScalper")
+                return rsi_ok
+            else:  # SHORT
+                # Для SHORT: усредняемся только в зоне перекупленности (RSI > 75)
+                rsi_ok = current_rsi >= self.averaging_rsi_overbought
+                log_debug(self.user_id, f"RSI фильтр SHORT: RSI={current_rsi:.1f} >= {self.averaging_rsi_overbought} = {rsi_ok}", "SignalScalper")
+                return rsi_ok
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка в фильтрах усреднения: {e}", "SignalScalper")
+            return True  # В случае ошибки разрешаем усреднение
+
+    async def _update_stop_loss_after_averaging(self):
+        """
+        Обновляет стоп-лосс после усреднения позиции.
+        Пересчитывает стоп-лосс на основе новой средней цены входа.
+        """
+        try:
+            if not self.position_active or self.average_entry_price <= 0:
+                log_warning(self.user_id, "Не удалось обновить стоп-лосс: позиция неактивна или нет средней цены", "SignalScalper")
+                return
+
+            # Рассчитываем новую цену стоп-лосса на основе средней цены входа
+            new_stop_loss_price = self._calculate_stop_loss_price(
+                self.average_entry_price,
+                self.active_direction,
+                self.total_position_size
+            )
+
+            # Обновляем стоп-лосс через API
+            success = await self.api.set_trading_stop(
+                symbol=self.symbol,
+                stop_loss=new_stop_loss_price
+            )
+
+            if success:
+                old_stop_loss = self.stop_loss_price
+                self.stop_loss_price = new_stop_loss_price
+                log_info(self.user_id,
+                        f"✅ Стоп-лосс обновлен после усреднения: {old_stop_loss:.4f} → {new_stop_loss_price:.4f}",
+                        "SignalScalper")
+            else:
+                log_error(self.user_id, "Не удалось обновить стоп-лосс после усреднения", "SignalScalper")
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка при обновлении стоп-лосса после усреднения: {e}", "SignalScalper")
+
+    @staticmethod
+    def _get_trailing_level(current_pnl: Decimal) -> int:
+        """
+        Определяет текущий уровень трейлинга на основе прибыли.
+
+        Возвращает:
+        0 - Начальный (до 1.5$)
+        1 - 1-й уровень (1.5$ - 3.2$)
+        2 - 2-й уровень (3.2$ - 6.2$)
+        3 - 3-й уровень (6.2$ - 8.5$)
+        4 - Максимальный уровень (8.5$+)
+        """
+        if current_pnl < Decimal('1.5'):
+            return 0  # Не достигли минимального порога
+        elif current_pnl < Decimal('3.2'):
+            return 1  # Начальный уровень
+        elif current_pnl < Decimal('6.2'):
+            return 2  # 1-й уровень
+        elif current_pnl < Decimal('8.5'):
+            return 3  # 2-й уровень
+        else:
+            return 4  # 3-й уровень (максимальный)
+
+    @staticmethod
+    def _get_level_name(level: int) -> str:
+        """Возвращает человекочитаемое название уровня."""
+        level_names = {
+            0: "ОЖИДАНИЕ",
+            1: "НАЧАЛЬНЫЙ УРОВЕНЬ (1.5$+)",
+            2: "1-Й УРОВЕНЬ (3.2$+)",
+            3: "2-Й УРОВЕНЬ (6.2$+)",
+            4: "3-Й УРОВЕНЬ (8.5$+)"
+        }
+        return level_names.get(level, "НЕИЗВЕСТНЫЙ УРОВЕНЬ")
 
     async def _execute_strategy_logic(self):
         """Пустышка, так как логика теперь управляется событиями свечей."""
