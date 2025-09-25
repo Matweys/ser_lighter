@@ -69,6 +69,9 @@ class ImpulseScanner:
                 log_warning(0, "Не удалось получить информацию об инструментах от API.", module_name=__name__)
         except Exception as e:
             log_error(0, f"Критическая ошибка при получении списка символов: {e}", module_name=__name__)
+        finally:
+            # ВАЖНО: закрываем HTTP соединение временного API
+            await temp_api.close()
 
     async def stop(self):
         """Остановка сканера."""

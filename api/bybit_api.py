@@ -83,9 +83,8 @@ class BybitAPI:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit"""
-        # Не закрываем сессию при выходе из контекста,
-        # она будет переиспользована
-        pass
+        # ИСПРАВЛЕНИЕ: Закрываем сессию при выходе из контекста для временных API клиентов
+        await self.close()
 
     async def close(self):
         """
