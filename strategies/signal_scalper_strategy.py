@@ -245,8 +245,8 @@ class SignalScalperStrategy(BaseStrategy):
         if pnl > self.peak_profit_usd:
             self.peak_profit_usd = pnl
 
-        # НОВАЯ СИСТЕМА: Поэтапный трейлинг с фиксированными порогами и 20% откатом
-        current_trailing_level = SignalScalperStrategy._get_trailing_level(pnl)
+        # НОВАЯ СИСТЕМА: Поэтапный трейлинг с динамическими порогами и 20% откатом
+        current_trailing_level = self._get_trailing_level(pnl)
 
         if current_trailing_level > 0:  # Если достигли хотя бы начального уровня
             # Фиксированный 20% откат от пика на всех уровнях
@@ -254,14 +254,14 @@ class SignalScalperStrategy(BaseStrategy):
 
             # Проверяем условие закрытия: откат от пика >= 20%
             if pnl < (self.peak_profit_usd - trailing_distance):
-                level_name = SignalScalperStrategy._get_level_name(current_trailing_level)
+                level_name = self._get_level_name(current_trailing_level)
                 log_info(self.user_id,
                          f"💎 ЗАКРЫТИЕ НА {level_name}! Пик: ${self.peak_profit_usd:.2f}, PnL: ${pnl:.2f}, откат: ${trailing_distance:.2f} (20%)",
                          "SignalScalper")
                 await self._close_position("level_trailing_profit")
             else:
                 # Логируем текущий статус трейлинга
-                level_name = SignalScalperStrategy._get_level_name(current_trailing_level)
+                level_name = self._get_level_name(current_trailing_level)
                 log_debug(self.user_id,
                          f"Трейлинг {level_name}: пик=${self.peak_profit_usd:.2f}, PnL=${pnl:.2f}, откат допустим=${trailing_distance:.2f}",
                          "SignalScalper")
@@ -712,38 +712,83 @@ class SignalScalperStrategy(BaseStrategy):
         except Exception as e:
             log_error(self.user_id, f"Ошибка при обновлении стоп-лосса после усреднения: {e}", "SignalScalper")
 
-    @staticmethod
-    def _get_trailing_level(current_pnl: Decimal) -> int:
+    def _calculate_dynamic_levels(self) -> Dict[int, Decimal]:
         """
-        Определяет текущий уровень трейлинга на основе прибыли.
+        Рассчитывает динамические уровни трейлинга на основе параметров пользователя.
 
-        Возвращает:
-        0 - Начальный (до 1.5$)
-        1 - 1-й уровень (1.5$ - 3.2$)
-        2 - 2-й уровень (3.2$ - 6.2$)
-        3 - 3-й уровень (6.2$ - 8.5$)
-        4 - Максимальный уровень (8.5$+)
+        Базовая логика:
+        - Номинальная стоимость = order_amount × leverage
+        - Уровни рассчитываются как проценты от номинальной стоимости
+
+        Returns:
+            Dict[int, Decimal]: Словарь с уровнями {уровень: минимальная_прибыль_USDT}
         """
-        if current_pnl < Decimal('1.5'):
+        # Получаем параметры пользователя
+        order_amount = max(self._convert_to_decimal(self.get_config_value("order_amount", 50.0)), Decimal('50.0'))
+        leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
+
+        # Номинальная стоимость позиции
+        notional_value = order_amount * leverage
+
+        # Проценты для каждого уровня от номинальной стоимости
+        level_percentages = {
+            1: Decimal('0.0025'),   # 0.25% - НАЧАЛЬНЫЙ УРОВЕНЬ
+            2: Decimal('0.0053'),   # 0.53% - 1-Й УРОВЕНЬ
+            3: Decimal('0.0103'),   # 1.03% - 2-Й УРОВЕНЬ
+            4: Decimal('0.0142')    # 1.42% - 3-Й УРОВЕНЬ (максимальный)
+        }
+
+        # Рассчитываем пороги в USDT
+        levels = {
+            0: Decimal('0')  # Уровень 0 - трейлинг неактивен
+        }
+
+        for level, percentage in level_percentages.items():
+            levels[level] = notional_value * percentage
+
+        # Логируем рассчитанные уровни для пользователя
+        log_info(self.user_id,
+                f"💎 Динамические уровни трейлинга (${order_amount} × {leverage}x = ${notional_value}): "
+                f"Ур1=${levels[1]:.2f} | Ур2=${levels[2]:.2f} | Ур3=${levels[3]:.2f} | Ур4=${levels[4]:.2f}",
+                "SignalScalper")
+
+        return levels
+
+    def _get_trailing_level(self, current_pnl: Decimal) -> int:
+        """
+        Определяет текущий уровень трейлинга на основе динамически рассчитанной прибыли.
+
+        Args:
+            current_pnl: Текущая прибыль в USDT
+
+        Returns:
+            int: Уровень трейлинга (0-4)
+        """
+        levels = self._calculate_dynamic_levels()
+
+        if current_pnl < levels[1]:
             return 0  # Не достигли минимального порога
-        elif current_pnl < Decimal('3.2'):
+        elif current_pnl < levels[2]:
             return 1  # Начальный уровень
-        elif current_pnl < Decimal('6.2'):
+        elif current_pnl < levels[3]:
             return 2  # 1-й уровень
-        elif current_pnl < Decimal('8.5'):
+        elif current_pnl < levels[4]:
             return 3  # 2-й уровень
         else:
             return 4  # 3-й уровень (максимальный)
 
-    @staticmethod
-    def _get_level_name(level: int) -> str:
-        """Возвращает человекочитаемое название уровня."""
+    def _get_level_name(self, level: int) -> str:
+        """Возвращает человекочитаемое название уровня с динамическими значениями."""
+        if level == 0:
+            return "ОЖИДАНИЕ"
+
+        levels = self._calculate_dynamic_levels()
+
         level_names = {
-            0: "ОЖИДАНИЕ",
-            1: "НАЧАЛЬНЫЙ УРОВЕНЬ (1.5$+)",
-            2: "1-Й УРОВЕНЬ (3.2$+)",
-            3: "2-Й УРОВЕНЬ (6.2$+)",
-            4: "3-Й УРОВЕНЬ (8.5$+)"
+            1: f"НАЧАЛЬНЫЙ УРОВЕНЬ (${levels[1]:.2f}+)",
+            2: f"1-Й УРОВЕНЬ (${levels[2]:.2f}+)",
+            3: f"2-Й УРОВЕНЬ (${levels[3]:.2f}+)",
+            4: f"3-Й УРОВЕНЬ (${levels[4]:.2f}+)"
         }
         return level_names.get(level, "НЕИЗВЕСТНЫЙ УРОВЕНЬ")
 

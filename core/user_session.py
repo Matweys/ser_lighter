@@ -541,6 +541,11 @@ class UserSession:
             if self.data_feed_handler:
                 await self.data_feed_handler.stop()
 
+            # Закрытие API соединения
+            if self.api:
+                await self.api.close()
+                log_info(self.user_id, "API соединение закрыто", module_name=__name__)
+
             log_info(self.user_id, "Компоненты сессии остановлены", module_name=__name__)
 
         except Exception as e:
