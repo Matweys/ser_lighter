@@ -106,9 +106,9 @@ class DefaultConfigs:
             "progressive_multiplier": 1.5,             # Множитель роста (1.5 = +50% каждый раз)
 
             # --- ТЕХНИЧЕСКИЕ ФИЛЬТРЫ ДЛЯ УСРЕДНЕНИЯ ---
-            "averaging_rsi_filter": True,              # Использовать RSI фильтр
-            "averaging_rsi_oversold": 36,              # RSI для LONG усреднения (перепроданность)
-            "averaging_rsi_overbought": 59,            # RSI для SHORT усреднения (перекупленность)
+            "averaging_rsi_filter": True,             # Отключить RSI фильтр (для тестирования)
+            "averaging_rsi_oversold": 65,              # RSI для LONG усреднения (расширено до 55)
+            "averaging_rsi_overbought": 35,            # RSI для SHORT усреднения (расширено до 45)А
 
             # --- Параметры ТА ---
             "EMA_SHORT": 21,

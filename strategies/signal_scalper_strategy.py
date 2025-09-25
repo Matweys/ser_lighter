@@ -213,8 +213,9 @@ class SignalScalperStrategy(BaseStrategy):
 
         # НОВАЯ ЛОГИКА УСРЕДНЕНИЯ
         if self.averaging_enabled:
-            # Детальное логирование для диагностики
-            log_debug(self.user_id, f"Усреднение: enabled={self.averaging_enabled}, pnl={pnl:.2f}, loss%={loss_percent:.2f}, count={self.averaging_count}/{self.max_averaging_count}", "SignalScalper")
+            # Детальное логирование для диагностики с ценами
+            entry_price_display = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
+            log_info(self.user_id, f"📊 Усреднение: pnl=${pnl:.2f}, loss%={loss_percent:.2f}, вход=${entry_price_display:.4f}, текущая=${current_price:.4f}, count={self.averaging_count}/{self.max_averaging_count}", "SignalScalper")
 
             if (pnl < 0 and  # Позиция в убытке
                 self.averaging_count < self.max_averaging_count):
@@ -222,24 +223,26 @@ class SignalScalperStrategy(BaseStrategy):
                 # Проверяем, достиг ли убыток нового порога для усреднения
                 next_trigger_percent = self.averaging_trigger_percent * (self.averaging_count + 1)
 
-                log_debug(self.user_id, f"Проверка триггера: loss={loss_percent:.2f}% >= trigger={next_trigger_percent:.1f}%, last={self.last_averaging_percent:.2f}%", "SignalScalper")
+                log_info(self.user_id, f"🔍 Проверка триггера: loss={loss_percent:.2f}% >= trigger={next_trigger_percent:.1f}%, last={self.last_averaging_percent:.2f}%", "SignalScalper")
 
                 if loss_percent >= next_trigger_percent and loss_percent > self.last_averaging_percent:
                     # Проверяем технические фильтры перед усреднением
-                    if await self._check_averaging_filters():
+                    filter_result = await self._check_averaging_filters()
+
+                    if filter_result:
                         log_info(self.user_id,
                                 f"🎯 ТРИГГЕР УСРЕДНЕНИЯ: убыток {loss_percent:.2f}% >= {next_trigger_percent:.1f}%",
                                 "SignalScalper")
                         await self._execute_averaging(current_price)
                     else:
-                        log_debug(self.user_id, f"Усреднение пропущено: не прошел технические фильтры", "SignalScalper")
+                        log_info(self.user_id, f"❌ Усреднение пропущено: не прошел технические фильтры", "SignalScalper")
                 else:
-                    log_debug(self.user_id, f"Триггер НЕ сработал: условие {loss_percent:.2f} >= {next_trigger_percent:.1f} and {loss_percent:.2f} > {self.last_averaging_percent:.2f}", "SignalScalper")
+                    log_info(self.user_id, f"⏸️ Триггер НЕ сработал: условие {loss_percent:.2f} >= {next_trigger_percent:.1f} and {loss_percent:.2f} > {self.last_averaging_percent:.2f}", "SignalScalper")
             else:
                 if pnl >= 0:
-                    log_debug(self.user_id, f"Усреднение пропущено: позиция в плюсе ({pnl:.2f})", "SignalScalper")
+                    log_info(self.user_id, f"✅ Усреднение пропущено: позиция в плюсе (${pnl:.2f})", "SignalScalper")
                 if self.averaging_count >= self.max_averaging_count:
-                    log_debug(self.user_id, f"Усреднение пропущено: достигнут лимит ({self.averaging_count}/{self.max_averaging_count})", "SignalScalper")
+                    log_info(self.user_id, f"🚫 Усреднение пропущено: достигнут лимит ({self.averaging_count}/{self.max_averaging_count})", "SignalScalper")
 
         # Обновляем пиковую прибыль
         if pnl > self.peak_profit_usd:
@@ -663,14 +666,14 @@ class SignalScalperStrategy(BaseStrategy):
 
             # Применяем RSI фильтры в зависимости от направления позиции
             if self.active_direction == "LONG":
-                # Для LONG: усредняемся только в зоне перепроданности (RSI < 25)
+                # Для LONG: усредняемся только в зоне перепроданности (RSI <= oversold)
                 rsi_ok = current_rsi <= self.averaging_rsi_oversold
-                log_debug(self.user_id, f"RSI фильтр LONG: RSI={current_rsi:.1f} <= {self.averaging_rsi_oversold} = {rsi_ok}", "SignalScalper")
+                log_info(self.user_id, f"🔍 RSI фильтр LONG: RSI={current_rsi:.1f} <= {self.averaging_rsi_oversold} = {rsi_ok}", "SignalScalper")
                 return rsi_ok
             else:  # SHORT
-                # Для SHORT: усредняемся только в зоне перекупленности (RSI > 75)
+                # Для SHORT: усредняемся только в зоне перекупленности (RSI >= overbought)
                 rsi_ok = current_rsi >= self.averaging_rsi_overbought
-                log_debug(self.user_id, f"RSI фильтр SHORT: RSI={current_rsi:.1f} >= {self.averaging_rsi_overbought} = {rsi_ok}", "SignalScalper")
+                log_info(self.user_id, f"🔍 RSI фильтр SHORT: RSI={current_rsi:.1f} >= {self.averaging_rsi_overbought} = {rsi_ok}", "SignalScalper")
                 return rsi_ok
 
         except Exception as e:
