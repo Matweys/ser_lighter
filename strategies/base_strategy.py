@@ -880,7 +880,7 @@ class BaseStrategy(ABC):
             text = (
                 f"📈 {hbold('ОТКРЫТА НОВАЯ СДЕЛКА')} 📈\n\n"
                 f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
-                f"▫️ {hbold('Инструмент:')} {hcode(self.symbol)}\n"
+                f"▫️ {hbold('Символ:')} {hcode(self.symbol)}\n"
                 f"▫️ {hbold('Направление:')} {side_text}\n"
                 f"▫️ {hbold('Цена входа:')} {hcode(f'{price:.4f} USDT')}\n"
                 f"▫️ {hbold('Объем:')} {hcode(str(quantity))}\n"
@@ -941,7 +941,7 @@ class BaseStrategy(ABC):
             text = (
                 f"🔄 {hbold('ПОЗИЦИЯ УСРЕДНЕНА')} 🔄\n\n"
                 f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
-                f"▫️ {hbold('Инструмент:')} {hcode(self.symbol)}\n"
+                f"▫️ {hbold('Символ:')} {hcode(self.symbol)}\n"
                 f"▫️ {hbold('Цена усреднения:')} {hcode(f'{price:.4f} USDT')}\n"
                 f"▫️ {hbold('Добавленный объем:')} {hcode(str(quantity))}\n\n"
                 f"ℹ️ {hbold('Новые параметры позиции:')}\n"

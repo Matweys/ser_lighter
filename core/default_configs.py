@@ -86,7 +86,7 @@ class DefaultConfigs:
         return {
             # --- Основные ---
             "is_enabled": True,
-            "order_amount": 50.0,
+            "order_amount": 100.0,
             "leverage": 2,
             "analysis_timeframe": "5m",
 
@@ -107,8 +107,8 @@ class DefaultConfigs:
 
             # --- ТЕХНИЧЕСКИЕ ФИЛЬТРЫ ДЛЯ УСРЕДНЕНИЯ ---
             "averaging_rsi_filter": True,              # Использовать RSI фильтр
-            "averaging_rsi_oversold": 25,              # RSI для LONG усреднения (перепроданность)
-            "averaging_rsi_overbought": 75,            # RSI для SHORT усреднения (перекупленность)
+            "averaging_rsi_oversold": 36,              # RSI для LONG усреднения (перепроданность)
+            "averaging_rsi_overbought": 59,            # RSI для SHORT усреднения (перекупленность)
 
             # --- Параметры ТА ---
             "EMA_SHORT": 21,

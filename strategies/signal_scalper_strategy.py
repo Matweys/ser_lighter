@@ -137,14 +137,24 @@ class SignalScalperStrategy(BaseStrategy):
                             "SignalScalper")
                 await self._reverse_position(new_direction=signal)
 
-            # Правило 5: Закрытие при двух "HOLD" подряд
+            # Правило 5: Закрытие при двух "HOLD" подряд (только при положительном PnL)
             elif signal == "HOLD":
                 self.hold_signal_counter += 1
                 if self.hold_signal_counter >= 2:
-                    log_warning(self.user_id,
-                                f"Два сигнала 'HOLD' подряд. Закрытие позиции {self.symbol} по безубытку.",
+                    # Получаем текущий PnL для проверки
+                    current_pnl = await self._calculate_current_pnl(price)
+
+                    if current_pnl >= 0:
+                        log_warning(self.user_id,
+                                    f"Два сигнала 'HOLD' подряд. Закрытие позиции {self.symbol} с прибылью {current_pnl:.2f} USDT.",
+                                    "SignalScalper")
+                        await self._close_position("double_hold_signal")
+                    else:
+                        log_info(self.user_id,
+                                f"Два сигнала 'HOLD' подряд, но позиция в убытке {current_pnl:.2f} USDT. Ожидаем улучшения.",
                                 "SignalScalper")
-                    await self._close_position("double_hold_signal")
+                        # Сбрасываем счетчик, чтобы дать позиции еще один шанс
+                        self.hold_signal_counter = 0
 
             # Сбрасываем счетчик HOLD, если сигнал изменился
             else:
@@ -736,6 +746,31 @@ class SignalScalperStrategy(BaseStrategy):
             4: "3-Й УРОВЕНЬ (8.5$+)"
         }
         return level_names.get(level, "НЕИЗВЕСТНЫЙ УРОВЕНЬ")
+
+    async def _calculate_current_pnl(self, current_price: Decimal) -> Decimal:
+        """
+        Рассчитывает текущий PnL позиции для принятия решений.
+
+        Args:
+            current_price: Текущая цена актива
+
+        Returns:
+            Decimal: Текущий PnL в USDT
+        """
+        if not self.position_active or not self.entry_price:
+            return Decimal('0')
+
+        # Используем среднюю цену входа если есть усреднения
+        entry_price_to_use = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
+        position_size_to_use = self.total_position_size if self.total_position_size > 0 else self.position_size
+
+        # Рассчитываем PnL в зависимости от направления позиции
+        if self.active_direction == "LONG":
+            pnl = (current_price - entry_price_to_use) * position_size_to_use
+        else:  # SHORT
+            pnl = (entry_price_to_use - current_price) * position_size_to_use
+
+        return pnl
 
     async def _execute_strategy_logic(self):
         """Пустышка, так как логика теперь управляется событиями свечей."""
