@@ -107,8 +107,14 @@ class DefaultConfigs:
 
             # --- ТЕХНИЧЕСКИЕ ФИЛЬТРЫ ДЛЯ УСРЕДНЕНИЯ ---
             "averaging_rsi_filter": True,             # Отключить RSI фильтр (для тестирования)
-            "averaging_rsi_oversold": 65,              # RSI для LONG усреднения (расширено до 55)
-            "averaging_rsi_overbought": 35,            # RSI для SHORT усреднения (расширено до 45)А
+
+            # - При RSI <= 65 покупаем еще (усредняемся), потому что "дешево"
+            "averaging_rsi_oversold": 60,        # RSI для LONG усреднения
+
+            # - При RSI >= 35 продаем еще(усредняемся), потому что цена "дорогая"
+            "averaging_rsi_overbought": 40,         # RSI для SHORT усреднения
+
+
 
             # --- Параметры ТА ---
             "EMA_SHORT": 21,

@@ -129,13 +129,19 @@ class SignalScalperStrategy(BaseStrategy):
 
         # --- Конечный автомат логики ---
         if self.position_active:
-            # Правило 4: Реверс позиции при смене сигнала
+            # Правило 4: Реверс позиции при смене сигнала (ТОЛЬКО при прибыли >= 0)
             if (signal == "LONG" and self.active_direction == "SHORT") or \
                     (signal == "SHORT" and self.active_direction == "LONG"):
-                log_warning(self.user_id,
-                            f"СМЕНА СИГНАЛА! Реверс позиции по {self.symbol} с {self.active_direction} на {signal}.",
+                current_pnl = await self._calculate_current_pnl(price)
+                if current_pnl >= 0:
+                    log_warning(self.user_id,
+                                f"СМЕНА СИГНАЛА! Реверс позиции по {self.symbol} с {self.active_direction} на {signal} при PnL={current_pnl:.2f}$.",
+                                "SignalScalper")
+                    await self._reverse_position(new_direction=signal)
+                else:
+                    log_info(self.user_id,
+                            f"Смена сигнала на {signal}, но позиция в убытке {current_pnl:.2f}$. Ждем восстановления или SL.",
                             "SignalScalper")
-                await self._reverse_position(new_direction=signal)
 
             # Правило 5: Закрытие при двух "HOLD" подряд (только при положительном PnL)
             elif signal == "HOLD":
@@ -653,25 +659,26 @@ class SignalScalperStrategy(BaseStrategy):
         """Проверяет технические фильтры для усреднения."""
         if not self.averaging_rsi_filter:
             # Если фильтры отключены - разрешаем усреднение
+            log_info(self.user_id, f"✅ RSI фильтры отключены - усреднение разрешено", "SignalScalper")
             return True
 
         try:
             # Получаем анализ для проверки RSI
             analysis_result = await self.signal_analyzer.get_analysis(self.symbol)
             if not analysis_result or not analysis_result.indicators:
-                log_debug(self.user_id, "Не удалось получить индикаторы для фильтров усреднения", "SignalScalper")
+                log_info(self.user_id, "✅ Не удалось получить RSI - усреднение разрешено", "SignalScalper")
                 return True  # Если нет данных - разрешаем усреднение
 
             current_rsi = analysis_result.indicators.get('rsi', 50.0)
 
-            # Применяем RSI фильтры в зависимости от направления позиции
+            # Используем пороги из конфигурации пользователя
             if self.active_direction == "LONG":
-                # Для LONG: усредняемся только в зоне перепроданности (RSI <= oversold)
+                # Для LONG: усредняемся если RSI <= oversold (цена упала, можно покупать)
                 rsi_ok = current_rsi <= self.averaging_rsi_oversold
                 log_info(self.user_id, f"🔍 RSI фильтр LONG: RSI={current_rsi:.1f} <= {self.averaging_rsi_oversold} = {rsi_ok}", "SignalScalper")
                 return rsi_ok
             else:  # SHORT
-                # Для SHORT: усредняемся только в зоне перекупленности (RSI >= overbought)
+                # Для SHORT: усредняемся если RSI >= overbought (цена выросла, можно продавать)
                 rsi_ok = current_rsi >= self.averaging_rsi_overbought
                 log_info(self.user_id, f"🔍 RSI фильтр SHORT: RSI={current_rsi:.1f} >= {self.averaging_rsi_overbought} = {rsi_ok}", "SignalScalper")
                 return rsi_ok
@@ -748,14 +755,8 @@ class SignalScalperStrategy(BaseStrategy):
 
         for level, percentage in level_percentages.items():
             levels[level] = notional_value * percentage
-
-        # Логируем рассчитанные уровни для пользователя
-        # log_info(self.user_id,
-        #         f"💎 Динамические уровни трейлинга (${order_amount} × {leverage}x = ${notional_value}): "
-        #         f"Ур1=${levels[1]:.2f} | Ур2=${levels[2]:.2f} | Ур3=${levels[3]:.2f} | Ур4=${levels[4]:.2f}",
-        #         "SignalScalper")
-
         return levels
+
 
     def _get_trailing_level(self, current_pnl: Decimal) -> int:
         """
