@@ -214,7 +214,7 @@ class _DatabaseManager:
                 for field_name, field_definition in fields_to_add:
                     check_field_query = """
                     SELECT 1 FROM information_schema.columns
-                    WHERE table_name='trades' AND column_name=%s
+                    WHERE table_name='trades' AND column_name=$1
                     """
                     field_exists = await conn.fetchval(check_field_query, field_name)
                     if not field_exists:
