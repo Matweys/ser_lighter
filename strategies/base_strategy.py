@@ -417,6 +417,20 @@ class BaseStrategy(ABC):
                 log_error(self.user_id, "Глобальная конфигурация не найдена", module_name=__name__)
                 return
 
+            # Проверка версии конфигурации и автоматическое обновление
+            from core.default_configs import DefaultConfigs
+            current_version = DefaultConfigs.get_global_config().get("config_version", "1.0.0")
+            stored_version = global_config.get("config_version", "1.0.0")
+
+            if current_version != stored_version:
+                log_info(self.user_id,
+                        f"Обнаружено обновление конфигурации: {stored_version} -> {current_version}. Обновляю...",
+                        module_name=__name__)
+                # Автоматически обновляем конфигурации из default_configs.py
+                await DefaultConfigs.create_default_user_config(self.user_id)
+                # Перезагружаем конфигурацию
+                global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
+
             # Загрузка конфигурации конкретной стратегии
             strategy_config_enum = ConfigType[f"STRATEGY_{self.strategy_type.value.upper()}"]
             strategy_config = await redis_manager.get_config(self.user_id, strategy_config_enum)
@@ -424,6 +438,18 @@ class BaseStrategy(ABC):
             if not strategy_config:
                 log_error(self.user_id,f"Конфигурация стратегии {self.strategy_type.value} не найдена", module_name=__name__)
                 return
+
+            # Проверяем версию конфигурации стратегии тоже
+            default_strategy_config = DefaultConfigs.get_all_default_configs()["strategy_configs"].get(self.strategy_type.value.lower(), {})
+            current_strategy_version = default_strategy_config.get("config_version", current_version)
+            stored_strategy_version = strategy_config.get("config_version", stored_version)
+
+            if current_strategy_version != stored_strategy_version:
+                log_info(self.user_id,
+                        f"Обнаружено обновление конфигурации стратегии {self.strategy_type.value}: {stored_strategy_version} -> {current_strategy_version}",
+                        module_name=__name__)
+                # Перезагружаем конфигурацию стратегии
+                strategy_config = await redis_manager.get_config(self.user_id, strategy_config_enum)
 
             # Объединение конфигураций
             self.config = {

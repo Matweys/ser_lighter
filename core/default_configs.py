@@ -14,13 +14,19 @@ class DefaultConfigs:
             "enable_notifications": True,
             "notify_on_trade_open": True,
             "notify_on_trade_close": True,
-            "config_version": "2.1.0" # Обновляем версию
+            "config_version": "2.2.0" # Обновляем версию
         }
 
 
     @staticmethod
     async def create_default_user_config(user_id: int):
         """Создание конфигураций по умолчанию для пользователя."""
+        from cache.redis_manager import redis_manager
+        from core.enums import ConfigType
+
+        # Получаем все конфигурации
+        all_configs = DefaultConfigs.get_all_default_configs()
+
         # Сохраняем глобальную конфигурацию
         await redis_manager.save_config(user_id, ConfigType.GLOBAL, all_configs["global_config"])
 
@@ -112,7 +118,7 @@ class DefaultConfigs:
             "averaging_rsi_oversold": 60,        # RSI для LONG усреднения
 
             # - При RSI >= 35 продаем еще(усредняемся), потому что цена "дорогая"
-            "averaging_rsi_overbought": 40,         # RSI для SHORT усреднения
+            "averaging_rsi_overbought": 35,         # RSI для SHORT усреднения
 
 
 

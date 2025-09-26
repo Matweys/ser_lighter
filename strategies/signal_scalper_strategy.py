@@ -91,8 +91,8 @@ class SignalScalperStrategy(BaseStrategy):
 
             # Параметры технических фильтров
             self.averaging_rsi_filter = self.config.get("averaging_rsi_filter", True)
-            self.averaging_rsi_oversold = float(self.config.get("averaging_rsi_oversold", 25))
-            self.averaging_rsi_overbought = float(self.config.get("averaging_rsi_overbought", 75))
+            self.averaging_rsi_oversold = float(self.config.get("averaging_rsi_oversold", 60))
+            self.averaging_rsi_overbought = float(self.config.get("averaging_rsi_overbought", 35))
 
     async def start(self) -> bool:
         """Запуск стратегии и подписка на события свечей."""
