@@ -6,7 +6,7 @@
 import logging
 import logging.handlers
 import sys
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, Any, Optional
 import time
@@ -14,7 +14,7 @@ import time
 class SimpleLogFormatter(logging.Formatter):
     """
     Простой форматтер для вывода логов в одну строку.
-    Формат: [TIMESTAMP] | LEVEL | User:USER_ID | MODULE | MESSAGE
+    Формат: [TIMESTAMP_MSK] | LEVEL | User:USER_ID | MODULE | MESSAGE
     """
 
     def format(self, record):
@@ -22,9 +22,13 @@ class SimpleLogFormatter(logging.Formatter):
         user_id = getattr(record, 'user_id', 0)
         module_name = getattr(record, 'module_name', 'Unknown')
 
+        # Конвертируем время в московское (UTC+3)
+        moscow_tz = timezone(timedelta(hours=3))
+        moscow_time = datetime.fromtimestamp(record.created, tz=moscow_tz)
+
         # Используем выравнивание для красивого вывода
         log_format = (
-            f"{datetime.fromtimestamp(record.created).isoformat()} | "
+            f"{moscow_time.strftime('%Y-%m-%d %H:%M:%S')} MSK | "
             f"{record.levelname:<8} | "
             f"User:{str(user_id):<10} | "
             f"{module_name:<20} | "
@@ -58,11 +62,10 @@ class TradingLogger:
         if logger.hasHandlers():
             logger.handlers.clear()
 
-        # Обработчик для записи в единый файл с ротацией
-        file_handler = logging.handlers.RotatingFileHandler(
+        # Обработчик для записи в единый файл БЕЗ ротации
+        file_handler = logging.FileHandler(
             filename=self.log_dir / self.log_file,
-            maxBytes=20 * 1024 * 1024,  # 20MB
-            backupCount=5,
+            mode='a',  # Режим добавления
             encoding='utf-8'
         )
         file_handler.setFormatter(SimpleLogFormatter())
@@ -99,19 +102,20 @@ class TradingLogger:
         self.logger.log(log_level, message, extra=extra)
 
     def cleanup_old_logs(self, days: int):
-        """Удаляет лог-файлы из директории логов, которые старше указанного количества дней."""
+        """Удаляет старые ротированные лог-файлы (trading_bot.log.1, trading_bot.log.2 и т.д.)."""
         try:
             cutoff = time.time() - (days * 86400)  # 86400 секунд в дне
             files_deleted_count = 0
 
-            for file_path in self.log_dir.glob(f"{self.log_file}*"):
-                if file_path.is_file():
+            # Ищем только ротированные файлы (с номерами), НЕ трогаем основной trading_bot.log
+            for file_path in self.log_dir.glob(f"{self.log_file}.*"):
+                if file_path.is_file() and file_path.name != self.log_file:
                     if file_path.stat().st_mtime < cutoff:
                         file_path.unlink()
                         files_deleted_count += 1
 
             if files_deleted_count > 0:
-                self.log("INFO", 0, f"Удалено {files_deleted_count} старых лог-файлов (старше {days} дней).",
+                self.log("INFO", 0, f"Удалено {files_deleted_count} старых ротированных лог-файлов (старше {days} дней).",
                          "LogManager")
 
         except Exception as e:

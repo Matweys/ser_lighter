@@ -418,29 +418,183 @@ async def cmd_autotrade_stop(message: Message, state: FSMContext):
 
 @router.message(Command("autotrade_status"))
 async def cmd_autotrade_status(message: Message, state: FSMContext):
-    """Обработчик команды /autotrade_status"""
+    """Расширенный обработчик команды /autotrade_status с детальной информацией"""
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "autotrade_status")
 
-    session_status = await redis_manager.get_user_session(user_id)
-    if not session_status:
-        await message.answer("🔴 <b>Статус: Неактивен</b>\nТорговля не запущена.", parse_mode="HTML")
-        return
+    try:
+        # Получаем сессию пользователя
+        session_status = await redis_manager.get_user_session(user_id)
+        if not session_status:
+            await message.answer("🔴 <b>Статус: Неактивен</b>\nТорговля не запущена.", parse_mode="HTML")
+            return
 
-    is_active = session_status.get('autotrade_enabled', False)
-    active_strategies = session_status.get('active_strategies', [])
+        is_active = session_status.get('autotrade_enabled', False)
+        active_strategies = session_status.get('active_strategies', [])
 
-    status_text = f"<b>Статус торговли:</b> {'🟢 Активен' if is_active else '🔴 Неактивен'}\n\n"
-    if active_strategies:
-        status_text += f"<b>Активные стратегии ({len(active_strategies)}):</b>\n"
-        for strategy in active_strategies:
-            s_type = strategy.get('strategy_type', 'N/A').replace('_', ' ').title()
-            s_symbol = strategy.get('symbol', 'N/A')
-            status_text += f"  - <code>{s_symbol}</code> ({s_type})\n"
-    else:
-        status_text += "Нет активных стратегий."
+        # Начинаем формировать статус
+        status_text = "📊 <b>СТАТУС АВТОТОРГОВЛИ</b>\n"
+        status_text += "═" * 25 + "\n\n"
 
-    await message.answer(status_text, parse_mode="HTML")
+        # Общий статус
+        status_icon = "🟢" if is_active else "🔴"
+        status_text += f"🔘 <b>Автоторговля:</b> {status_icon} {'Активна' if is_active else 'Неактивна'}\n\n"
+
+        if not is_active:
+            status_text += "ℹ️ Для запуска торговли используйте /autotrade_start"
+            await message.answer(status_text, parse_mode="HTML")
+            return
+
+        if not active_strategies:
+            status_text += "⚠️ <b>Активных стратегий нет</b>\n"
+            status_text += "Проверьте настройки символов в /settings"
+            await message.answer(status_text, parse_mode="HTML")
+            return
+
+        # Получаем настройки пользователя для сравнения с активными стратегиями
+        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+        configured_symbols = set()
+        inactive_strategies = {}
+
+        if user_config:
+            # Получаем список символов из настроек пользователя
+            watchlist = user_config.get('watchlist', [])
+            for symbol in watchlist:
+                configured_symbols.add(symbol)
+
+            # Проверяем, какие стратегии должны быть активны, но не запущены
+            strategy_configs = [
+                (ConfigType.STRATEGY_SIGNAL_SCALPER, "SIGNAL_SCALPER"),
+                (ConfigType.STRATEGY_IMPULSE_TRAILING, "IMPULSE_TRAILING")
+            ]
+
+            for config_type, strategy_name in strategy_configs:
+                strategy_config = await redis_manager.get_config(user_id, config_type)
+                if strategy_config and strategy_config.get('enabled', False):
+                    # Стратегия включена в настройках, проверяем какие символы не активны
+                    for symbol in watchlist:
+                        strategy_id = f"{strategy_name}_{symbol}"
+                        if strategy_id not in active_strategies:
+                            if strategy_name not in inactive_strategies:
+                                inactive_strategies[strategy_name] = []
+                            inactive_strategies[strategy_name].append(symbol)
+
+        # Получаем API для проверки позиций
+        api_keys = await db_manager.get_api_keys(user_id, "bybit")
+        api = None
+        positions_data = {}
+
+        if api_keys:
+            try:
+                api = BybitAPI(api_keys.api_key, api_keys.secret_key, testnet=False)
+                # Получаем все позиции пользователя
+                all_positions = await api.get_positions()
+                if all_positions:
+                    for pos in all_positions:
+                        symbol = pos.get('symbol', '')
+                        size = float(pos.get('size', 0))
+                        if size > 0:  # Только активные позиции
+                            positions_data[symbol] = {
+                                'side': pos.get('side', ''),
+                                'size': size,
+                                'unrealizedPnl': float(pos.get('unrealizedPnl', 0)),
+                                'avgPrice': float(pos.get('avgPrice', 0)),
+                                'markPrice': float(pos.get('markPrice', 0))
+                            }
+            except Exception as e:
+                log_warning(user_id, f"Не удалось получить данные позиций: {e}", "autotrade_status")
+
+        # Группируем стратегии по типам
+        strategies_by_type = {}
+        for strategy_id in active_strategies:
+            try:
+                # Парсим strategy_id: "SIGNAL_SCALPER_SOLUSDT" -> ("SIGNAL_SCALPER", "SOLUSDT")
+                parts = strategy_id.split('_')
+                if len(parts) >= 3:
+                    strategy_type = '_'.join(parts[:-1])  # SIGNAL_SCALPER
+                    symbol = parts[-1]  # SOLUSDT
+
+                    if strategy_type not in strategies_by_type:
+                        strategies_by_type[strategy_type] = []
+                    strategies_by_type[strategy_type].append(symbol)
+            except Exception as e:
+                log_warning(user_id, f"Ошибка парсинга strategy_id {strategy_id}: {e}", "autotrade_status")
+
+        # Отображаем информацию по стратегиям
+        for strategy_type, symbols in strategies_by_type.items():
+            # Переводим название стратегии
+            if strategy_type == "SIGNAL_SCALPER":
+                display_name = "📈 Signal Scalper"
+            elif strategy_type == "IMPULSE_TRAILING":
+                display_name = "⚡ Impulse Trailing"
+            else:
+                display_name = f"🔧 {strategy_type.replace('_', ' ').title()}"
+
+            status_text += f"<b>{display_name}</b>\n"
+
+            for symbol in symbols:
+                symbol_short = symbol.replace('USDT', '')  # SOLUSDT -> SOL
+                status_text += f"  ▫️ <b>{symbol_short}:</b> "
+
+                # Проверяем состояние позиции
+                if symbol in positions_data:
+                    pos = positions_data[symbol]
+                    pnl = pos['unrealizedPnl']
+
+                    if pnl > 0:
+                        status_text += f"🟢 В прибыли +${pnl:.2f}"
+                    elif pnl < 0:
+                        status_text += f"🔴 В убытке ${pnl:.2f}"
+                    else:
+                        status_text += f"⚪ Без изменений (${pnl:.2f})"
+
+                    # Добавляем информацию о позиции
+                    side_icon = "📈" if pos['side'] == 'Buy' else "📉"
+                    status_text += f"\n     {side_icon} {pos['side']} {pos['size']}, "
+                    status_text += f"вход: ${pos['avgPrice']:.4f}"
+
+                else:
+                    status_text += "⏳ В ожидании сигнала"
+
+                status_text += "\n"
+
+            status_text += "\n"
+
+        # Добавляем информацию о неактивных (отключенных) стратегиях
+        if inactive_strategies:
+            status_text += "⚫ <b>ОТКЛЮЧЕННЫЕ СТРАТЕГИИ</b>\n"
+            status_text += "─" * 20 + "\n"
+
+            for strategy_type, symbols in inactive_strategies.items():
+                # Переводим название стратегии
+                if strategy_type == "SIGNAL_SCALPER":
+                    display_name = "📈 Signal Scalper"
+                elif strategy_type == "IMPULSE_TRAILING":
+                    display_name = "⚡ Impulse Trailing"
+                else:
+                    display_name = f"🔧 {strategy_type.replace('_', ' ').title()}"
+
+                status_text += f"<b>{display_name}</b>\n"
+
+                for symbol in symbols:
+                    symbol_short = symbol.replace('USDT', '')  # SOLUSDT -> SOL
+                    status_text += f"  ▫️ <b>{symbol_short}:</b> 🔴 Отключена пользователем\n"
+
+                status_text += "\n"
+
+            status_text += "ℹ️ <i>Для включения перейдите в /settings</i>\n\n"
+
+        # Добавляем информацию о времени обновления
+        from datetime import datetime, timezone, timedelta
+        moscow_tz = timezone(timedelta(hours=3))
+        current_time = datetime.now(moscow_tz).strftime('%H:%M:%S')
+        status_text += f"🕐 Обновлено: {current_time} МСК"
+
+        await message.answer(status_text, parse_mode="HTML")
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка в команде /autotrade_status: {e}", "autotrade_status")
+        await message.answer("❌ Произошла ошибка при получении статуса торговли.", parse_mode="HTML")
 
 
 

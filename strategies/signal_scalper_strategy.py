@@ -66,6 +66,11 @@ class SignalScalperStrategy(BaseStrategy):
         self.total_position_size = Decimal('0')  # Общий размер позиции после усреднений
         self.average_entry_price = Decimal('0')  # Средняя цена входа после усреднений
 
+        # ИНТЕЛЛЕКТУАЛЬНАЯ СИСТЕМА УПРАВЛЕНИЯ SL ПРИ УСРЕДНЕНИИ
+        self.original_max_loss_usd = None  # Будет инициализирован из конфигурации
+        self.sl_extended = False  # Флаг: был ли SL расширен для усреднения
+        self.sl_extension_notified = False  # Флаг: было ли отправлено уведомление о расширении SL
+
 
     def _get_strategy_type(self) -> StrategyType:
         return StrategyType.SIGNAL_SCALPER
@@ -78,6 +83,9 @@ class SignalScalperStrategy(BaseStrategy):
             self.min_profit_usd = self._convert_to_decimal(self.config.get("min_profit_usd", "1.0"))
             self.trailing_pullback_usd = self._convert_to_decimal(self.config.get("trailing_pullback_usd", "1.0"))
             self.max_loss_usd = self._convert_to_decimal(self.config.get("max_loss_usd", "15.0"))
+
+            # Сохраняем изначальный лимит убытка для интеллектуального SL
+            self.original_max_loss_usd = self.max_loss_usd
 
             # Загружаем параметры усреднения
             self.averaging_enabled = self.config.get("enable_averaging", True)
@@ -420,6 +428,10 @@ class SignalScalperStrategy(BaseStrategy):
             self.total_position_size = Decimal('0')
             self.average_entry_price = Decimal('0')
 
+            # СБРОС ФЛАГОВ ИНТЕЛЛЕКТУАЛЬНОГО SL
+            self.sl_extended = False
+            self.sl_extension_notified = False
+
             await self.event_bus.unsubscribe(self._handle_price_update)
             await self._send_trade_close_notification(pnl_net, event.fee, exit_price=event.price)
         else:
@@ -687,40 +699,6 @@ class SignalScalperStrategy(BaseStrategy):
             log_error(self.user_id, f"Ошибка в фильтрах усреднения: {e}", "SignalScalper")
             return True  # В случае ошибки разрешаем усреднение
 
-    async def _update_stop_loss_after_averaging(self):
-        """
-        Обновляет стоп-лосс после усреднения позиции.
-        Пересчитывает стоп-лосс на основе новой средней цены входа.
-        """
-        try:
-            if not self.position_active or self.average_entry_price <= 0:
-                log_warning(self.user_id, "Не удалось обновить стоп-лосс: позиция неактивна или нет средней цены", "SignalScalper")
-                return
-
-            # Рассчитываем новую цену стоп-лосса на основе средней цены входа
-            new_stop_loss_price = self._calculate_stop_loss_price(
-                self.average_entry_price,
-                self.active_direction,
-                self.total_position_size
-            )
-
-            # Обновляем стоп-лосс через API
-            success = await self.api.set_trading_stop(
-                symbol=self.symbol,
-                stop_loss=new_stop_loss_price
-            )
-
-            if success:
-                old_stop_loss = self.stop_loss_price
-                self.stop_loss_price = new_stop_loss_price
-                log_info(self.user_id,
-                        f"✅ Стоп-лосс обновлен после усреднения: {old_stop_loss:.4f} → {new_stop_loss_price:.4f}",
-                        "SignalScalper")
-            else:
-                log_error(self.user_id, "Не удалось обновить стоп-лосс после усреднения", "SignalScalper")
-
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка при обновлении стоп-лосса после усреднения: {e}", "SignalScalper")
 
     def _calculate_dynamic_levels(self) -> Dict[int, Decimal]:
         """
@@ -820,6 +798,204 @@ class SignalScalperStrategy(BaseStrategy):
             pnl = (entry_price_to_use - current_price) * position_size_to_use
 
         return pnl
+
+    def _calculate_required_space_for_averaging(self, current_price: Decimal) -> Decimal:
+        """
+        Рассчитывает необходимое пространство до SL для выполнения всех оставшихся усреднений.
+
+        Returns:
+            Decimal: Минимальная цена, до которой должен дойти актив для всех усреднений
+        """
+        if not self.averaging_enabled or self.averaging_count >= self.max_averaging_count:
+            return current_price
+
+        remaining_averagings = self.max_averaging_count - self.averaging_count
+        if remaining_averagings <= 0:
+            return current_price
+
+        # Рассчитываем максимальный процент падения для оставшихся усреднений
+        max_loss_percent = Decimal('0')
+        for i in range(1, remaining_averagings + 1):
+            next_averaging_level = self.averaging_count + i
+            trigger_percent = self.averaging_trigger_percent * next_averaging_level
+            max_loss_percent = max(max_loss_percent, trigger_percent)
+
+        # Добавляем буфер 20% для безопасности
+        max_loss_percent_with_buffer = max_loss_percent * Decimal('1.2')
+
+        # Рассчитываем минимальную цену для всех усреднений
+        entry_price_for_calc = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
+
+        if self.active_direction == "LONG":
+            # Для LONG: цена может упасть на max_loss_percent_with_buffer%
+            min_price_for_averaging = entry_price_for_calc * (Decimal('100') - max_loss_percent_with_buffer) / Decimal('100')
+        else:  # SHORT
+            # Для SHORT: цена может вырасти на max_loss_percent_with_buffer%
+            min_price_for_averaging = entry_price_for_calc * (Decimal('100') + max_loss_percent_with_buffer) / Decimal('100')
+
+        log_debug(self.user_id,
+                f"Расчет пространства для усреднения: осталось {remaining_averagings} усреднений, "
+                f"макс. падение {max_loss_percent_with_buffer:.1f}%, мин. цена {min_price_for_averaging:.4f}",
+                "SignalScalper")
+
+        return min_price_for_averaging
+
+    def _calculate_smart_stop_loss(self, entry_price: Decimal, direction: str, position_size: Decimal, current_price: Decimal) -> tuple[Decimal, bool, str]:
+        """
+        Интеллектуальный расчет стоп-лосса с учетом будущих усреднений.
+
+        Returns:
+            tuple: (новая_цена_SL, был_ли_расширен_SL, причина_изменения)
+        """
+        # Стандартный расчет SL
+        standard_sl = BaseStrategy._calculate_precise_stop_loss(entry_price, position_size, self.original_max_loss_usd, direction == "LONG")
+
+        # Если усреднение отключено или достигнут лимит усреднений, используем стандартный SL
+        if not self.averaging_enabled or self.averaging_count >= self.max_averaging_count:
+            return standard_sl, False, "standard_calculation"
+
+        # Проверяем, нужно ли расширение SL только начиная со 2-го усреднения
+        if self.averaging_count < 1:
+            return standard_sl, False, "first_position_no_extension_needed"
+
+        # Рассчитываем минимальную цену для всех оставшихся усреднений
+        min_price_for_averaging = self._calculate_required_space_for_averaging(current_price)
+
+        # Проверяем, находится ли стандартный SL слишком близко к зоне усреднения
+        sl_threatens_averaging = False
+        threat_reason = ""
+
+        if direction == "LONG":
+            # Для LONG: SL должен быть ниже минимальной цены усреднения
+            if standard_sl > min_price_for_averaging:
+                sl_threatens_averaging = True
+                threat_reason = f"SL {standard_sl:.4f} выше мин. цены усреднения {min_price_for_averaging:.4f}"
+        else:  # SHORT
+            # Для SHORT: SL должен быть выше максимальной цены усреднения
+            if standard_sl < min_price_for_averaging:
+                sl_threatens_averaging = True
+                threat_reason = f"SL {standard_sl:.4f} ниже макс. цены усреднения {min_price_for_averaging:.4f}"
+
+        if not sl_threatens_averaging:
+            return standard_sl, False, "sufficient_space_for_averaging"
+
+        # Расширяем SL для обеспечения места под усреднения
+        if direction == "LONG":
+            # Для LONG: опускаем SL ниже зоны усреднения с буфером
+            buffer = min_price_for_averaging * Decimal('0.01')  # 1% буфер
+            extended_sl = min_price_for_averaging - buffer
+        else:  # SHORT
+            # Для SHORT: поднимаем SL выше зоны усреднения с буфером
+            buffer = min_price_for_averaging * Decimal('0.01')  # 1% буфер
+            extended_sl = min_price_for_averaging + buffer
+
+        # Рассчитываем новый максимальный убыток
+        position_size_for_calc = self.total_position_size if self.total_position_size > 0 else position_size
+
+        if direction == "LONG":
+            new_max_loss = (entry_price - extended_sl) * position_size_for_calc
+        else:  # SHORT
+            new_max_loss = (extended_sl - entry_price) * position_size_for_calc
+
+        extension_reason = f"SL расширен для усреднения: {threat_reason}, новый макс. убыток ${new_max_loss:.2f}"
+
+        log_info(self.user_id,
+                f"🧠 УМНЫЙ SL: {extension_reason}",
+                "SignalScalper")
+
+        return extended_sl, True, extension_reason
+
+    async def _update_stop_loss_after_averaging(self):
+        """
+        УСОВЕРШЕНСТВОВАННАЯ версия: Обновляет стоп-лосс после усреднения позиции
+        с интеллектуальным управлением для будущих усреднений.
+        """
+        try:
+            if not self.position_active or self.average_entry_price <= 0:
+                log_warning(self.user_id, "Не удалось обновить стоп-лосс: позиция неактивна или нет средней цены", "SignalScalper")
+                return
+
+            # Получаем текущую цену для анализа
+            current_price = await self.api.get_current_price(self.symbol)
+            if not current_price:
+                log_warning(self.user_id, "Не удалось получить текущую цену для умного SL", "SignalScalper")
+                # Fallback к старой логике
+                new_stop_loss_price = self._calculate_stop_loss_price(
+                    self.average_entry_price,
+                    self.active_direction,
+                    self.total_position_size
+                )
+                was_extended = False
+            else:
+                # Используем интеллектуальный расчет SL
+                new_stop_loss_price, was_extended, extension_reason = self._calculate_smart_stop_loss(
+                    self.average_entry_price,
+                    self.active_direction,
+                    self.total_position_size,
+                    current_price
+                )
+
+            # Обновляем SL через API
+            success = await self.api.set_trading_stop(
+                symbol=self.symbol,
+                stop_loss=new_stop_loss_price
+            )
+
+            if success:
+                old_stop_loss = self.stop_loss_price
+                self.stop_loss_price = new_stop_loss_price
+
+                # Отправляем уведомление о расширении SL (если было расширение)
+                if was_extended and not self.sl_extension_notified:
+                    await self._send_sl_extension_notification(old_stop_loss, new_stop_loss_price)
+                    self.sl_extended = True
+                    self.sl_extension_notified = True
+
+                log_info(self.user_id,
+                        f"✅ Стоп-лосс обновлен после усреднения: {old_stop_loss:.4f} → {new_stop_loss_price:.4f} "
+                        f"({'РАСШИРЕН' if was_extended else 'стандартный'})",
+                        "SignalScalper")
+            else:
+                log_error(self.user_id, "Не удалось обновить стоп-лосс после усреднения", "SignalScalper")
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка при обновлении стоп-лосса после усреднения: {e}", "SignalScalper")
+
+    async def _send_sl_extension_notification(self, old_sl: Decimal, new_sl: Decimal):
+        """Отправляет уведомление пользователю о расширении SL."""
+        try:
+            # Рассчитываем новый максимальный убыток
+            position_size_for_calc = self.total_position_size if self.total_position_size > 0 else self.position_size
+            entry_price_for_calc = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
+
+            if self.active_direction == "LONG":
+                new_max_loss = (entry_price_for_calc - new_sl) * position_size_for_calc
+            else:  # SHORT
+                new_max_loss = (new_sl - entry_price_for_calc) * position_size_for_calc
+
+            extension_percent = abs(new_max_loss - self.original_max_loss_usd) / self.original_max_loss_usd * 100
+
+            notification_text = (
+                f"⚠️ <b>АВТОКОРРЕКЦИЯ STOP LOSS</b> ⚠️\n\n"
+                f"▫️ Стратегия: Signal Scalper\n"
+                f"▫️ Символ: {self.symbol}\n"
+                f"▫️ Усреднение: #{self.averaging_count}/{self.max_averaging_count}\n\n"
+                f"🔄 <b>Изменения SL:</b>\n"
+                f"▫️ Старый SL: {old_sl:.4f} USDT\n"
+                f"▫️ Новый SL: {new_sl:.4f} USDT\n"
+                f"▫️ Макс. убыток: <b>{new_max_loss:.2f} USDT</b> "
+                f"(+{extension_percent:.1f}% от лимита)\n\n"
+                f"📋 <b>Причина:</b>\n"
+                f"Система автоматически расширила SL, чтобы обеспечить место для оставшихся усреднений. "
+                f"Это защищает от преждевременного срабатывания SL и позволяет завершить стратегию усреднения.\n\n"
+                f"✅ SL будет восстановлен к изначальному лимиту после завершения всех усреднений."
+            )
+
+            if self.bot:
+                await self.bot.send_message(self.user_id, notification_text, parse_mode="HTML")
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка отправки уведомления о расширении SL: {e}", "SignalScalper")
 
     async def _execute_strategy_logic(self):
         """Пустышка, так как логика теперь управляется событиями свечей."""

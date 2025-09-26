@@ -194,7 +194,7 @@ class _DatabaseManager:
             async with self.get_connection() as conn:
                 # Миграция 1: Добавление колонки winning_trades в таблицу users
                 check_col_query = """
-                SELECT 1 FROM information_schema.columns 
+                SELECT 1 FROM information_schema.columns
                 WHERE table_name='users' AND column_name='winning_trades'
                 """
                 column_exists = await conn.fetchval(check_col_query)
@@ -203,7 +203,35 @@ class _DatabaseManager:
                     await conn.execute("ALTER TABLE users ADD COLUMN winning_trades INTEGER DEFAULT 0;")
                     log_info(0, "Колонка 'winning_trades' успешно добавлена.", 'database')
 
-                # Сюда можно добавлять другие проверки и миграции в будущем
+                # Миграция 2: Добавление полей для отслеживания усреднений в таблицу trades
+                fields_to_add = [
+                    ("averaging_count", "INTEGER DEFAULT 0"),
+                    ("is_averaging_trade", "BOOLEAN DEFAULT FALSE"),
+                    ("total_position_size", "DECIMAL(20,8) DEFAULT 0"),
+                    ("average_entry_price", "DECIMAL(20,8) DEFAULT 0")
+                ]
+
+                for field_name, field_definition in fields_to_add:
+                    check_field_query = """
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='trades' AND column_name=%s
+                    """
+                    field_exists = await conn.fetchval(check_field_query, field_name)
+                    if not field_exists:
+                        log_warning(0, f"Колонка '{field_name}' отсутствует в таблице 'trades'. Добавляю...", 'database')
+                        await conn.execute(f"ALTER TABLE trades ADD COLUMN {field_name} {field_definition};")
+                        log_info(0, f"Колонка '{field_name}' успешно добавлена.", 'database')
+
+                # Миграция 3: Добавление индекса для быстрого поиска по order_id
+                index_exists_query = """
+                SELECT 1 FROM pg_indexes
+                WHERE tablename='trades' AND indexname='idx_trades_order_id'
+                """
+                index_exists = await conn.fetchval(index_exists_query)
+                if not index_exists:
+                    log_warning(0, "Индекс 'idx_trades_order_id' отсутствует. Добавляю...", 'database')
+                    await conn.execute("CREATE INDEX idx_trades_order_id ON trades(order_id);")
+                    log_info(0, "Индекс 'idx_trades_order_id' успешно добавлен.", 'database')
 
             log_info(0, "Миграции базы данных завершены.", 'database')
         except Exception as e:
@@ -599,26 +627,43 @@ class _DatabaseManager:
             return None
 
     async def save_trade(self, trade: TradeRecord) -> Optional[int]:
-        """Сохранение сделки"""
+        """Сохранение сделки с московским временем"""
         try:
+            # Преобразуем время в московское (UTC+3)
+            moscow_tz = timezone(timedelta(hours=3))
+
+            # Если время не указано, используем текущее московское время
+            entry_time_msk = trade.entry_time
+            if entry_time_msk and entry_time_msk.tzinfo is None:
+                # Если время naive, считаем его UTC и конвертируем в московское
+                entry_time_msk = entry_time_msk.replace(tzinfo=timezone.utc).astimezone(moscow_tz)
+            elif entry_time_msk is None:
+                entry_time_msk = datetime.now(moscow_tz)
+
+            exit_time_msk = trade.exit_time
+            if exit_time_msk and exit_time_msk.tzinfo is None:
+                exit_time_msk = exit_time_msk.replace(tzinfo=timezone.utc).astimezone(moscow_tz)
+
             query = """
                 INSERT INTO trades (
                     user_id, symbol, side, entry_price, exit_price, quantity, leverage,
                     profit, commission, status, strategy_type, order_id, position_idx,
-                    entry_time, exit_time, metadata
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                    entry_time, exit_time, metadata, created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17)
                 RETURNING id
             """
+
+            current_moscow_time = datetime.now(moscow_tz)
 
             result = await self._execute_query(query, (
                 trade.user_id, trade.symbol, trade.side, trade.entry_price, trade.exit_price,
                 trade.quantity, trade.leverage, trade.profit, trade.commission, trade.status,
-                trade.strategy_type, trade.order_id, trade.position_idx, trade.entry_time,
-                trade.exit_time, json.dumps(trade.metadata or {}, cls=DecimalEncoder)
+                trade.strategy_type, trade.order_id, trade.position_idx, entry_time_msk,
+                exit_time_msk, json.dumps(trade.metadata or {}, cls=DecimalEncoder), current_moscow_time
             ), fetch_one=True)
 
             trade_id = result['id'] if result else None
-            log_info(trade.user_id, f"Сделка сохранена с ID: {trade_id}", module_name='database')
+            log_info(trade.user_id, f"Сделка сохранена с ID: {trade_id}, время: {current_moscow_time.strftime('%Y-%m-%d %H:%M:%S')} МСК", module_name='database')
             return trade_id
 
         except Exception as e:
@@ -627,21 +672,33 @@ class _DatabaseManager:
 
     async def update_trade_on_close(self, trade_id: int, exit_price: Decimal, pnl: Decimal, commission: Decimal,
                                     exit_time: datetime) -> bool:
-        """Обновление записи о сделке при ее закрытии."""
+        """Обновление записи о сделке при ее закрытии с московским временем."""
         try:
+            # Преобразуем время в московское (UTC+3)
+            moscow_tz = timezone(timedelta(hours=3))
+
+            # Конвертируем время выхода в московское
+            exit_time_msk = exit_time
+            if exit_time_msk and exit_time_msk.tzinfo is None:
+                exit_time_msk = exit_time_msk.replace(tzinfo=timezone.utc).astimezone(moscow_tz)
+            elif exit_time_msk is None:
+                exit_time_msk = datetime.now(moscow_tz)
+
+            current_moscow_time = datetime.now(moscow_tz)
+
             query = """
                 UPDATE trades
-                SET 
+                SET
                     exit_price = $1,
                     profit = $2,
                     commission = $3,
                     exit_time = $4,
                     status = 'CLOSED',
-                    updated_at = NOW()
+                    updated_at = $6
                 WHERE id = $5
             """
-            await self._execute_query(query, (exit_price, pnl, commission, exit_time, trade_id))
-            log_info(0, f"Сделка с ID {trade_id} успешно обновлена и закрыта в БД.", module_name='database')
+            await self._execute_query(query, (exit_price, pnl, commission, exit_time_msk, trade_id, current_moscow_time))
+            log_info(0, f"Сделка с ID {trade_id} закрыта в БД. Выход: {exit_time_msk.strftime('%Y-%m-%d %H:%M:%S')} МСК, PnL: {pnl:.2f}$", module_name='database')
             return True
         except Exception as e:
             log_error(0, f"Ошибка обновления сделки {trade_id} в БД: {e}", module_name='database')
@@ -760,7 +817,7 @@ class _DatabaseManager:
                             new_total_trades)) * 100 if new_total_trades > 0 else Decimal('0')
 
                         await conn.execute("""
-                            UPDATE users 
+                            UPDATE users
                             SET total_profit = $1, total_trades = $2, winning_trades = $3, win_rate = $4, updated_at = NOW()
                             WHERE user_id = $5
                         """, new_total_profit, new_total_trades, new_winning_trades, new_win_rate, user_id)
@@ -769,6 +826,82 @@ class _DatabaseManager:
                     log_error(user_id, f"Ошибка обновления общей статистики пользователя: {e}", "db_manager")
                     # Транзакция будет автоматически отменена
                     raise
+
+    async def analyze_database_usage(self) -> Dict[str, Any]:
+        """
+        Анализирует использование таблиц базы данных.
+        Возвращает информацию о количестве записей в каждой таблице.
+        """
+        try:
+            tables_info = {}
+
+            # Список основных таблиц для анализа
+            tables_to_check = [
+                'users', 'user_api_keys', 'trades', 'positions',
+                'orders', 'user_strategies', 'user_strategy_stats', 'notifications'
+            ]
+
+            async with self.get_connection() as conn:
+                for table_name in tables_to_check:
+                    try:
+                        # Получаем количество записей
+                        count_query = f"SELECT COUNT(*) as count FROM {table_name}"
+                        result = await conn.fetchrow(count_query)
+                        record_count = result['count'] if result else 0
+
+                        # Получаем размер таблицы
+                        size_query = f"SELECT pg_size_pretty(pg_total_relation_size('{table_name}')) as size"
+                        size_result = await conn.fetchrow(size_query)
+                        table_size = size_result['size'] if size_result else 'Unknown'
+
+                        # Получаем дату последнего изменения (если есть поля created_at/updated_at)
+                        last_activity = None
+                        try:
+                            if table_name in ['trades', 'positions', 'orders', 'user_strategies', 'notifications']:
+                                activity_query = f"SELECT MAX(created_at) as last_activity FROM {table_name}"
+                                activity_result = await conn.fetchrow(activity_query)
+                                last_activity = activity_result['last_activity'] if activity_result else None
+                        except:
+                            pass  # Ignore if column doesn't exist
+
+                        tables_info[table_name] = {
+                            'records': record_count,
+                            'size': table_size,
+                            'last_activity': last_activity,
+                            'status': 'active' if record_count > 0 else 'empty'
+                        }
+
+                    except Exception as e:
+                        tables_info[table_name] = {
+                            'records': 0,
+                            'size': 'Error',
+                            'last_activity': None,
+                            'status': f'error: {str(e)}'
+                        }
+
+            # Добавляем общую статистику
+            total_records = sum(info['records'] for info in tables_info.values() if isinstance(info['records'], int))
+            empty_tables = [name for name, info in tables_info.items() if info['status'] == 'empty']
+
+            summary = {
+                'total_tables': len(tables_to_check),
+                'total_records': total_records,
+                'empty_tables': empty_tables,
+                'empty_count': len(empty_tables),
+                'analysis_time': datetime.now(timezone(timedelta(hours=3))).strftime('%Y-%m-%d %H:%M:%S MSK')
+            }
+
+            return {
+                'summary': summary,
+                'tables': tables_info
+            }
+
+        except Exception as e:
+            log_error(0, f"Ошибка анализа использования БД: {e}", module_name='database')
+            return {
+                'summary': {'error': str(e)},
+                'tables': {}
+            }
 
 # Глобальный экземпляр менеджера базы данных
 db_manager = _DatabaseManager()

@@ -1071,6 +1071,15 @@ async def callback_toggle_symbol(callback: CallbackQuery, state: FSMContext):
         user_config["watchlist_symbols"] = list(selected_symbols)
         await redis_manager.save_config(user_id, ConfigType.GLOBAL, user_config)
 
+        # ИСПРАВЛЕНИЕ: Публикуем событие об изменении настроек для hot-reload
+        if callback_handler.event_bus:
+            settings_event = UserSettingsChangedEvent(
+                user_id=user_id,
+                changed_settings=["watchlist_symbols"],
+                config_type="global"
+            )
+            await callback_handler.event_bus.publish(settings_event)
+
         # Обновляем клавиатуру, чтобы показать изменение
         await send_or_edit_symbol_selection_menu(callback, state, is_edit=True)
         await callback.answer()  # Ответ, чтобы убрать "часики" с кнопки
@@ -1083,6 +1092,17 @@ async def callback_toggle_symbol(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "save_symbol_selection")
 async def callback_save_symbol_selection(callback: CallbackQuery, state: FSMContext):
     """Сохраняет выбор и возвращает в меню настроек."""
+    user_id = callback.from_user.id
+
+    # ИСПРАВЛЕНИЕ: Публикуем финальное событие об изменении настроек для полного hot-reload
+    if callback_handler.event_bus:
+        settings_event = UserSettingsChangedEvent(
+            user_id=user_id,
+            changed_settings=["watchlist_symbols"],
+            config_type="global"
+        )
+        await callback_handler.event_bus.publish(settings_event)
+
     await callback.answer("✅ Список торговых пар сохранен!", show_alert=True)
     await callback_settings(callback, state)  # Возвращаемся в главное меню настроек
 
