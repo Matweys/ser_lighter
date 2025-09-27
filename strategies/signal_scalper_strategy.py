@@ -208,6 +208,10 @@ class SignalScalperStrategy(BaseStrategy):
                 self.signal_confirmation_count = 0
                 self.last_signal = None
 
+    async def _handle_price_update(self, event: PriceUpdateEvent):
+        """Внутренний метод обработки обновления цены (вызывается из BaseStrategy)"""
+        await self.handle_price_update(event)
+
     async def handle_price_update(self, event: PriceUpdateEvent):
         """Обработка тиков цены для усреднения и динамического тейк-профита."""
         if not self.position_active or not self.entry_price or self.is_waiting_for_trade:

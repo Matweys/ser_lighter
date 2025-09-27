@@ -1272,7 +1272,7 @@ class BaseStrategy(ABC):
             }
 
             # Сохраняем состояние в Redis с TTL 7 дней
-            await redis_manager.client.setex(
+            await redis_manager.redis_client.setex(
                 state_key,
                 604800,  # 7 дней в секундах
                 json.dumps(strategy_state, default=str)
@@ -1292,7 +1292,7 @@ class BaseStrategy(ABC):
         try:
             state_key = f"strategy_state:{user_id}:{symbol}:{strategy_type.value}"
 
-            saved_state = await redis_manager.client.get(state_key)
+            saved_state = await redis_manager.redis_client.get(state_key)
             if not saved_state:
                 return None
 
@@ -1522,7 +1522,7 @@ class BaseStrategy(ABC):
         """Очищает сохранённое состояние стратегии из Redis при штатном завершении"""
         try:
             state_key = f"strategy_state:{self.user_id}:{self.symbol}:{self.strategy_type.value}"
-            await redis_manager.client.delete(state_key)
+            await redis_manager.redis_client.delete(state_key)
             log_debug(self.user_id, f"Состояние стратегии {self.symbol} очищено из Redis", "BaseStrategy")
         except Exception as e:
             log_error(self.user_id, f"Ошибка очистки состояния стратегии {self.symbol}: {e}", "BaseStrategy")
