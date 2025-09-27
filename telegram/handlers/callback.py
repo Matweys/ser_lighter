@@ -132,39 +132,72 @@ async def callback_main_menu(callback: CallbackQuery, state: FSMContext):
 # >>> НАЧАЛО НОВОГО БЛОКА: ОБРАБОТЧИКИ СТАТИСТИКИ <<<
 
 async def _generate_stats_report(user_id: int, start_date: Optional[datetime] = None,
-                                 end_date: Optional[datetime] = None) -> str:
-    """Вспомогательная функция для генерации текста отчета по статистике."""
-    # !!! ВАЖНО: Здесь должна быть ваша логика получения статистики из БД для заданного периода.
-    # Сейчас она будет использовать общую статистику для примера.
-    # В будущем нужно будет дописать функции в db_manager.py для фильтрации по датам.
+                                 end_date: Optional[datetime] = None, period_name: str = "за всё время") -> str:
+    """Вспомогательная функция для генерации текста отчета по статистике за указанный период."""
 
-    user_profile = await db_manager.get_user(user_id)
-    strategy_stats = await db_manager.get_strategy_stats(user_id)  # Эта функция тоже должна будет принимать даты
+    # Получаем статистику за указанный период
+    user_stats = await db_manager.get_user_stats_by_period(user_id, start_date, end_date)
+    strategy_stats = await db_manager.get_strategy_stats_by_period(user_id, start_date, end_date)
 
-    if not user_profile:
-        return "❌ Профиль пользователя не найден."
+    if not user_stats or user_stats.get('total_trades', 0) == 0:
+        return f"📊 <b>Статистика {period_name}</b>\n\n❌ Нет данных за указанный период."
+
+    # Общая статистика
+    total_trades = user_stats['total_trades']
+    winning_trades = user_stats['winning_trades']
+    net_profit = user_stats['net_profit']
+    win_rate = user_stats['win_rate']
+    profit_percentage = user_stats['profit_percentage']
+
+    profit_emoji = "🟢" if net_profit >= 0 else "🔴"
+    profit_sign = "+" if net_profit >= 0 else ""
 
     stats_text = (
-        f"📊 {hbold('Общая статистика торговли')}\n\n"
-        f"💰 {hbold('Общая прибыль:')} {format_currency(user_profile.total_profit)}\n"
-        f"📈 {hbold('Всего сделок:')} {user_profile.total_trades}\n"
-        f"🎯 {hbold('Общий Win Rate:')} {format_percentage(user_profile.win_rate)}\n"
+        f"📊 <b>Статистика {period_name}</b>\n"
+        f"═" * 30 + "\n\n"
+        f"💰 <b>Чистая прибыль:</b> {profit_emoji} {profit_sign}{format_currency(net_profit)}\n"
+        f"📈 <b>Всего сделок:</b> {total_trades}\n"
+        f"🎯 <b>Успешных сделок:</b> {winning_trades}\n"
+        f"🏆 <b>Win Rate:</b> {format_percentage(win_rate)}\n"
+        f"📊 <b>Доходность к депозиту:</b> {profit_emoji} {profit_sign}{format_percentage(profit_percentage)}\n"
     )
 
     if strategy_stats:
-        stats_text += f"\n───────────────\n\n🏆 {hbold('Статистика по стратегиям:')}\n"
+        stats_text += f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        stats_text += f"🏆 <b>Статистика по стратегиям:</b>\n\n"
+
         for stat in strategy_stats:
             strategy_name = stat['strategy_type'].replace('_', ' ').title()
-            pnl = to_decimal(stat['total_pnl'])
+
+            # Переводим названия стратегий на русский
+            if strategy_name == 'Signal Scalper':
+                strategy_name = 'Signal Scalper'
+            elif strategy_name == 'Impulse Trailing':
+                strategy_name = 'Impulse Trailing'
+
+            net_pnl = stat['net_pnl']
             trades = stat['total_trades']
             wins = stat['winning_trades']
-            win_rate = (Decimal(wins) / Decimal(trades) * 100) if trades > 0 else 0
-            pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+            strategy_win_rate = stat['win_rate']
+            strategy_profit_percentage = stat['profit_percentage']
+
+            pnl_emoji = "🟢" if net_pnl >= 0 else "🔴"
+            pnl_sign = "+" if net_pnl >= 0 else ""
+            percent_sign = "+" if strategy_profit_percentage >= 0 else ""
+
             stats_text += (
-                f"\n🔹 {hbold(strategy_name)}\n"
-                f"   {pnl_emoji} {hbold('PnL:')} {format_currency(pnl)}\n"
-                f"   {hbold('Сделок:')} {trades} | {hbold('Win Rate:')} {format_percentage(win_rate)}"
+                f"🔹 <b>{strategy_name}</b>\n"
+                f"   {pnl_emoji} <b>Прибыль:</b> {pnl_sign}{format_currency(net_pnl)}\n"
+                f"   📊 <b>Доходность:</b> {pnl_emoji} {percent_sign}{format_percentage(strategy_profit_percentage)}\n"
+                f"   📈 <b>Сделок:</b> {trades} | <b>Win Rate:</b> {format_percentage(strategy_win_rate)}\n\n"
             )
+    else:
+        stats_text += f"\n⚠️ Нет данных по стратегиям за указанный период."
+
+    # Добавляем общую доходность в конце
+    stats_text += f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    stats_text += f"💯 <b>Общая доходность к депозиту {period_name}:</b> {profit_emoji} {profit_sign}{format_percentage(profit_percentage)}"
+
     return stats_text
 
 
@@ -177,24 +210,85 @@ async def callback_stats_period(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("⏳ <i>Генерирую отчет...</i>", parse_mode="HTML")
 
     if period == "day":
-        # Логика для статистики за сутки (по МСК)
-        now_utc = datetime.now(timezone.utc)
-        start_of_day_msk = now_utc.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None) - timedelta(hours=3)
-        report_text = await _generate_stats_report(user_id, start_date=start_of_day_msk)
+        # Статистика за сутки (с 00:00 по МСК до текущего времени)
+        moscow_tz = timezone(timedelta(hours=3))
+        now_msk = datetime.now(moscow_tz)
+        start_of_day_msk = now_msk.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        report_text = await _generate_stats_report(
+            user_id,
+            start_date=start_of_day_msk,
+            end_date=now_msk,
+            period_name="за сегодня"
+        )
 
     elif period == "all":
-        # Логика для статистики за все время
-        report_text = await _generate_stats_report(user_id)
+        # Статистика за всё время
+        report_text = await _generate_stats_report(user_id, period_name="за всё время")
 
     elif period == "month_select":
-        # TODO: Реализовать выбор месяца. Сейчас покажем за все время.
-        await callback.message.edit_text(
-            "🗓️ <i>Функция выбора месяца в разработке. Показываю статистику за всё время.</i>", parse_mode="HTML")
-        report_text = await _generate_stats_report(user_id)
+        # Показываем меню выбора месяца
+        available_months = await db_manager.get_available_months(user_id)
 
-    else:  # Обработка выбора конкретного месяца
-        # TODO: Реализовать логику для `stats_period_2025-08`
-        report_text = await _generate_stats_report(user_id)
+        if not available_months:
+            await callback.message.edit_text(
+                "📊 <b>Статистика по месяцам</b>\n\n❌ Нет данных о торговле за какие-либо месяцы.",
+                parse_mode="HTML",
+                reply_markup=get_back_keyboard("main_menu")
+            )
+            return
+
+        # Создаём клавиатуру с доступными месяцами
+        month_buttons = []
+        for month in available_months:
+            month_buttons.append([{
+                "text": month['display'],  # "September 2024"
+                "callback_data": f"stats_period_{month['key']}"  # "stats_period_2024-09"
+            }])
+
+        month_buttons.append([{"text": "🔙 Назад", "callback_data": "main_menu"}])
+
+        from ..keyboards.inline import KeyboardBuilder
+        month_keyboard = KeyboardBuilder.build_keyboard(month_buttons)
+
+        await callback.message.edit_text(
+            "📊 <b>Выберите месяц для статистики:</b>",
+            parse_mode="HTML",
+            reply_markup=month_keyboard
+        )
+        await callback.answer()
+        return
+
+    else:  # Обработка выбора конкретного месяца (формат: "2024-09")
+        try:
+            # Парсим год и месяц из строки
+            year, month = map(int, period.split('-'))
+
+            # Создаём границы месяца по московскому времени
+            moscow_tz = timezone(timedelta(hours=3))
+            start_date = datetime(year, month, 1, tzinfo=moscow_tz)
+
+            # Конец месяца
+            if month == 12:
+                end_date = datetime(year + 1, 1, 1, tzinfo=moscow_tz) - timedelta(seconds=1)
+            else:
+                end_date = datetime(year, month + 1, 1, tzinfo=moscow_tz) - timedelta(seconds=1)
+
+            # Название месяца для отображения
+            month_names = {
+                1: "январь", 2: "февраль", 3: "март", 4: "апрель", 5: "май", 6: "июнь",
+                7: "июль", 8: "август", 9: "сентябрь", 10: "октябрь", 11: "ноябрь", 12: "декабрь"
+            }
+            period_name = f"за {month_names[month]} {year}"
+
+            report_text = await _generate_stats_report(
+                user_id,
+                start_date=start_date,
+                end_date=end_date,
+                period_name=period_name
+            )
+        except (ValueError, KeyError, IndexError):
+            report_text = "❌ Ошибка обработки выбранного периода."
 
     await callback.message.edit_text(report_text, parse_mode="HTML", reply_markup=get_back_keyboard("main_menu"))
     await callback.answer()
@@ -674,6 +768,25 @@ async def callback_confirm_emergency_stop(callback: CallbackQuery, state: FSMCon
 
     except Exception as e:
         log_error(user_id, f"Ошибка при подтверждении экстренной остановки: {e}", module_name='callback')
+
+
+@router.callback_query(F.data == "cancel_emergency_stop")
+async def callback_cancel_emergency_stop(callback: CallbackQuery, state: FSMContext):
+    """
+    Обрабатывает отмену экстренной остановки.
+    """
+    user_id = callback.from_user.id
+    await callback.answer("❌ Экстренная остановка отменена", show_alert=True)
+    try:
+        await callback.message.edit_text(
+            "✅ <b>Экстренная остановка отменена</b>\n\n"
+            "Торговля продолжается в обычном режиме.",
+            parse_mode="HTML"
+        )
+        log_info(user_id, "Пользователь отменил экстренную остановку", module_name='callback')
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка при отмене экстренной остановки: {e}", module_name='callback')
 
 
 # --- Обработчики кнопок из главного меню ---

@@ -903,6 +903,222 @@ class _DatabaseManager:
                 'tables': {}
             }
 
+    async def get_user_stats_by_period(self, user_id: int, start_date: Optional[datetime] = None,
+                                     end_date: Optional[datetime] = None) -> Dict[str, Any]:
+        """Получение статистики пользователя за указанный период"""
+        try:
+            # Базовые условия для WHERE
+            where_conditions = ["user_id = $1"]
+            params = [user_id]
+            param_index = 2
+
+            # Добавляем фильтры по датам, если указаны
+            if start_date:
+                where_conditions.append(f"exit_time >= ${param_index}")
+                params.append(start_date)
+                param_index += 1
+
+            if end_date:
+                where_conditions.append(f"exit_time <= ${param_index}")
+                params.append(end_date)
+                param_index += 1
+
+            # Добавляем фильтр только на завершённые сделки
+            where_conditions.append("exit_time IS NOT NULL")
+            where_conditions.append("profit IS NOT NULL")
+
+            where_clause = " AND ".join(where_conditions)
+
+            # Запрос общей статистики за период
+            query = f"""
+                SELECT
+                    COUNT(*) as total_trades,
+                    COUNT(CASE WHEN profit > 0 THEN 1 END) as winning_trades,
+                    COALESCE(SUM(profit), 0) as total_profit,
+                    COALESCE(SUM(commission), 0) as total_commission,
+                    COALESCE(AVG(profit), 0) as avg_profit,
+                    COALESCE(MIN(profit), 0) as min_profit,
+                    COALESCE(MAX(profit), 0) as max_profit
+                FROM trades
+                WHERE {where_clause}
+            """
+
+            stats = await self._execute_query(query, params, fetch_one=True)
+
+            if not stats or stats['total_trades'] == 0:
+                return {
+                    'total_trades': 0,
+                    'winning_trades': 0,
+                    'total_profit': Decimal('0'),
+                    'total_commission': Decimal('0'),
+                    'win_rate': Decimal('0'),
+                    'avg_profit': Decimal('0'),
+                    'min_profit': Decimal('0'),
+                    'max_profit': Decimal('0'),
+                    'net_profit': Decimal('0'),
+                    'profit_percentage': Decimal('0')
+                }
+
+            # Вычисляем производные показатели
+            total_trades = stats['total_trades']
+            winning_trades = stats['winning_trades']
+            total_profit = Decimal(str(stats['total_profit'])) if stats['total_profit'] else Decimal('0')
+            total_commission = Decimal(str(stats['total_commission'])) if stats['total_commission'] else Decimal('0')
+            net_profit = total_profit - total_commission
+
+            win_rate = (Decimal(winning_trades) / Decimal(total_trades) * 100) if total_trades > 0 else Decimal('0')
+
+            # Получаем депозит пользователя для расчёта процента дохода
+            # Если нет начального депозита, используем сумму маржи всех сделок как приблизительный депозит
+            user_profile = await self.get_user(user_id)
+
+            # Запрос для оценки размера депозита на основе использованной маржи
+            margin_query = f"""
+                SELECT COALESCE(SUM(ABS(quantity * entry_price / leverage)), 1000) as estimated_deposit
+                FROM trades
+                WHERE {where_clause}
+            """
+            margin_result = await self._execute_query(margin_query, params, fetch_one=True)
+            estimated_deposit = Decimal(str(margin_result['estimated_deposit'])) if margin_result else Decimal('1000')
+
+            # Рассчитываем процент дохода к депозиту
+            profit_percentage = (net_profit / estimated_deposit * 100) if estimated_deposit > 0 else Decimal('0')
+
+            return {
+                'total_trades': total_trades,
+                'winning_trades': winning_trades,
+                'total_profit': total_profit,
+                'total_commission': total_commission,
+                'net_profit': net_profit,
+                'win_rate': win_rate,
+                'avg_profit': Decimal(str(stats['avg_profit'])) if stats['avg_profit'] else Decimal('0'),
+                'min_profit': Decimal(str(stats['min_profit'])) if stats['min_profit'] else Decimal('0'),
+                'max_profit': Decimal(str(stats['max_profit'])) if stats['max_profit'] else Decimal('0'),
+                'profit_percentage': profit_percentage,
+                'estimated_deposit': estimated_deposit
+            }
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка получения статистики пользователя за период: {e}", module_name='database')
+            return {}
+
+    async def get_strategy_stats_by_period(self, user_id: int, start_date: Optional[datetime] = None,
+                                         end_date: Optional[datetime] = None) -> List[Dict]:
+        """Получение статистики по стратегиям за указанный период"""
+        try:
+            # Базовые условия для WHERE
+            where_conditions = ["user_id = $1"]
+            params = [user_id]
+            param_index = 2
+
+            # Добавляем фильтры по датам, если указаны
+            if start_date:
+                where_conditions.append(f"exit_time >= ${param_index}")
+                params.append(start_date)
+                param_index += 1
+
+            if end_date:
+                where_conditions.append(f"exit_time <= ${param_index}")
+                params.append(end_date)
+                param_index += 1
+
+            # Добавляем фильтр только на завершённые сделки
+            where_conditions.append("exit_time IS NOT NULL")
+            where_conditions.append("profit IS NOT NULL")
+            where_conditions.append("strategy_type IS NOT NULL")
+
+            where_clause = " AND ".join(where_conditions)
+
+            # Запрос статистики по стратегиям за период
+            query = f"""
+                SELECT
+                    strategy_type,
+                    COUNT(*) as total_trades,
+                    COUNT(CASE WHEN profit > 0 THEN 1 END) as winning_trades,
+                    COALESCE(SUM(profit), 0) as total_pnl,
+                    COALESCE(SUM(commission), 0) as total_commission,
+                    COALESCE(AVG(profit), 0) as avg_profit,
+                    COALESCE(MIN(profit), 0) as min_profit,
+                    COALESCE(MAX(profit), 0) as max_profit
+                FROM trades
+                WHERE {where_clause}
+                GROUP BY strategy_type
+                ORDER BY total_pnl DESC
+            """
+
+            results = await self._execute_query(query, params, fetch_all=True)
+
+            if not results:
+                return []
+
+            # Получаем общий депозит для расчёта процента по стратегиям
+            user_stats = await self.get_user_stats_by_period(user_id, start_date, end_date)
+            total_deposit = user_stats.get('estimated_deposit', Decimal('1000'))
+
+            strategy_stats = []
+            for row in results:
+                total_trades = row['total_trades']
+                winning_trades = row['winning_trades']
+                total_pnl = Decimal(str(row['total_pnl'])) if row['total_pnl'] else Decimal('0')
+                total_commission = Decimal(str(row['total_commission'])) if row['total_commission'] else Decimal('0')
+                net_pnl = total_pnl - total_commission
+
+                win_rate = (Decimal(winning_trades) / Decimal(total_trades) * 100) if total_trades > 0 else Decimal('0')
+
+                # Процент дохода стратегии к общему депозиту
+                profit_percentage = (net_pnl / total_deposit * 100) if total_deposit > 0 else Decimal('0')
+
+                strategy_stats.append({
+                    'strategy_type': row['strategy_type'],
+                    'total_trades': total_trades,
+                    'winning_trades': winning_trades,
+                    'total_pnl': total_pnl,
+                    'total_commission': total_commission,
+                    'net_pnl': net_pnl,
+                    'win_rate': win_rate,
+                    'avg_profit': Decimal(str(row['avg_profit'])) if row['avg_profit'] else Decimal('0'),
+                    'min_profit': Decimal(str(row['min_profit'])) if row['min_profit'] else Decimal('0'),
+                    'max_profit': Decimal(str(row['max_profit'])) if row['max_profit'] else Decimal('0'),
+                    'profit_percentage': profit_percentage
+                })
+
+            return strategy_stats
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка получения статистики по стратегиям за период: {e}", module_name='database')
+            return []
+
+    async def get_available_months(self, user_id: int) -> List[Dict[str, str]]:
+        """Получение списка месяцев, в которые пользователь торговал"""
+        try:
+            query = """
+                SELECT DISTINCT
+                    DATE_TRUNC('month', exit_time) as month_start,
+                    TO_CHAR(exit_time, 'YYYY-MM') as month_key,
+                    TO_CHAR(exit_time, 'FMMonth YYYY') as month_display
+                FROM trades
+                WHERE user_id = $1
+                    AND exit_time IS NOT NULL
+                    AND profit IS NOT NULL
+                ORDER BY month_start DESC
+            """
+
+            results = await self._execute_query(query, (user_id,), fetch_all=True)
+
+            months = []
+            for row in results:
+                months.append({
+                    'key': row['month_key'],      # '2024-09'
+                    'display': row['month_display'],  # 'September 2024'
+                    'start_date': row['month_start']
+                })
+
+            return months
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка получения доступных месяцев: {e}", module_name='database')
+            return []
+
 # Глобальный экземпляр менеджера базы данных
 db_manager = _DatabaseManager()
 

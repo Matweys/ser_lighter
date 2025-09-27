@@ -163,7 +163,18 @@ class BaseStrategy(ABC):
             # Рассчитываем цену стоп-лосса
             sl_price = self._calculate_precise_stop_loss(price, quantity, max_loss_usd, is_long)
 
-            return sl_price, max_loss_usd
+            # ТОЧНЫЙ расчёт реального убытка при срабатывании SL
+            if is_long:
+                actual_loss = (price - sl_price) * quantity
+            else:
+                actual_loss = (sl_price - price) * quantity
+
+            # Добавляем комиссию при закрытии
+            taker_fee_rate = Decimal('0.0006')  # 0.06% комиссия тейкера
+            estimated_close_fee = sl_price * quantity * taker_fee_rate
+            total_expected_loss = actual_loss + estimated_close_fee
+
+            return sl_price, total_expected_loss
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка расчета информации SL: {e}", "base_strategy")
@@ -202,6 +213,16 @@ class BaseStrategy(ABC):
                  module_name=__name__)
         for attempt in range(max_retries):
             try:
+                # БЫСТРАЯ ПРОВЕРКА: Если ордер уже обработан через WebSocket - выходим немедленно
+                if hasattr(self, 'processed_orders') and order_id in self.processed_orders:
+                    log_info(self.user_id, f"[БЫСТРЫЙ ВЫХОД] Ордер {order_id} уже обработан WebSocket'ом, прекращаем API-polling", module_name=__name__)
+                    return True
+
+                # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: Если стратегия больше не ждёт ордер (is_waiting_for_trade=False)
+                if hasattr(self, 'is_waiting_for_trade') and not self.is_waiting_for_trade:
+                    log_info(self.user_id, f"[БЫСТРЫЙ ВЫХОД] Стратегия больше не ждёт ордер {order_id}, прекращаем API-polling", module_name=__name__)
+                    return True
+
                 await asyncio.sleep(delay)
                 order_status = await self.api.get_order_status(order_id)
 

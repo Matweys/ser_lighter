@@ -71,9 +71,23 @@ class SignalScalperStrategy(BaseStrategy):
         self.sl_extended = False  # Флаг: был ли SL расширен для усреднения
         self.sl_extension_notified = False  # Флаг: было ли отправлено уведомление о расширении SL
 
+        # ИЗОЛЯЦИЯ НАСТРОЕК ДЛЯ АКТИВНОЙ СДЕЛКИ
+        self.active_trade_config = None  # Конфигурация, зафиксированная при входе в сделку
+        self.config_frozen = False  # Флаг: заморожены ли настройки для активной сделки
+
 
     def _get_strategy_type(self) -> StrategyType:
         return StrategyType.SIGNAL_SCALPER
+
+    def _get_frozen_config_value(self, key: str, default: Any = None) -> Any:
+        """
+        Получает значение из ЗАМОРОЖЕННОЙ конфигурации для активной сделки.
+        Если сделка не активна, возвращает текущее значение конфигурации.
+        """
+        if self.config_frozen and self.active_trade_config:
+            return self.active_trade_config.get(key, default)
+        else:
+            return self.get_config_value(key, default)
 
     async def _load_strategy_config(self):
         """Переопределяем для инициализации SignalAnalyzer."""
@@ -119,9 +133,6 @@ class SignalScalperStrategy(BaseStrategy):
         """Главный обработчик логики на каждой новой свече."""
         if event.symbol != self.symbol or self.is_waiting_for_trade:
             return
-
-        # Принудительная перезагрузка конфигурации перед анализом сигнала
-        await self._force_config_reload()
 
         log_debug(self.user_id, f"SignalScalper ({self.symbol}) получил новую свечу.", "SignalScalper")
         analysis_result = await self.signal_analyzer.get_analysis(self.symbol)
@@ -286,6 +297,15 @@ class SignalScalperStrategy(BaseStrategy):
     async def _enter_position(self, direction: str, signal_price: Decimal):
         """Логика входа в позицию."""
         self.is_waiting_for_trade = True
+
+        # Получаем актуальные данные ТОЛЬКО ОДИН РАЗ перед созданием ордера
+        await self._force_config_reload()
+
+        # ЗАМОРАЖИВАЕМ КОНФИГУРАЦИЮ ДЛЯ ЭТОЙ СДЕЛКИ
+        self.active_trade_config = self.config.copy()  # Полная копия конфигурации
+        self.config_frozen = True
+        log_info(self.user_id, f"Конфигурация заморожена для сделки по {self.symbol}: order_amount={self.active_trade_config.get('order_amount')}, leverage={self.active_trade_config.get('leverage')}", "SignalScalper")
+
         await self._set_leverage()
         order_amount = self._convert_to_decimal(self.get_config_value("order_amount", 50.0))
         leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
@@ -343,19 +363,28 @@ class SignalScalperStrategy(BaseStrategy):
 
     async def _handle_order_filled(self, event: OrderFilledEvent):
         """Обработка исполненных ордеров."""
-        # Защита от двойной обработки одного и того же ордера
+        # УЛУЧШЕННАЯ ЗАЩИТА ОТ ДВОЙНОЙ ОБРАБОТКИ
         if event.order_id in self.processed_orders:
-            log_debug(self.user_id, f"Ордер {event.order_id} уже был обработан, пропускаем.", "SignalScalper")
+            log_debug(self.user_id, f"[ДУПЛИКАТ] Ордер {event.order_id} уже обработан, игнорируем EventBus дубликат.", "SignalScalper")
             return
 
-        # Проверяем, что это ожидаемый ордер
-        if self.current_order_id and event.order_id != self.current_order_id:
-            log_warning(self.user_id, f"Получен неожиданный ордер {event.order_id}, ожидался {self.current_order_id}", "SignalScalper")
+        # Проверяем, что это ожидаемый ордер ИЛИ связанный с нашей позицией
+        is_our_order = (
+            # Ожидаемый ордер
+            (self.current_order_id and event.order_id == self.current_order_id) or
+            # Или ордер по нашему символу (для SL и других системных ордеров)
+            (not self.current_order_id and hasattr(event, 'symbol') and event.symbol == self.symbol)
+        )
+
+        if not is_our_order:
+            log_debug(self.user_id, f"[НЕ НАШ] Ордер {event.order_id} не относится к этой стратегии.", "SignalScalper")
             return
 
-        # Добавляем ордер в обработанные
+        # НЕМЕДЛЕННО добавляем ордер в обработанные чтобы блокировать повторную обработку
         self.processed_orders.add(event.order_id)
         self.current_order_id = None  # Сбрасываем ожидаемый ордер
+
+        log_info(self.user_id, f"[ОБРАБОТКА] Обрабатываем ордер {event.order_id} ({event.side} {event.qty} {self.symbol})", "SignalScalper")
 
         # Определяем тип ордера по reduce_only флагу
         is_closing_order = hasattr(event, 'reduce_only') and event.reduce_only
@@ -369,7 +398,7 @@ class SignalScalperStrategy(BaseStrategy):
 
         if not is_closing_order and not self.position_active:
             # Ордер на открытие позиции
-            log_info(self.user_id, f"Обрабатываем ордер открытия: {event.order_id}", "SignalScalper")
+            log_info(self.user_id, f"[ОТКРЫТИЕ] Обрабатываем ордер открытия: {event.order_id}", "SignalScalper")
             self.position_active = True
             self.active_direction = "LONG" if event.side == "Buy" else "SHORT"
             self.entry_price = event.price
@@ -390,7 +419,7 @@ class SignalScalperStrategy(BaseStrategy):
 
         elif is_closing_order and self.position_active:
             # Ордер на закрытие позиции
-            log_info(self.user_id, f"Обрабатываем ордер закрытия: {event.order_id}", "SignalScalper")
+            log_info(self.user_id, f"[ЗАКРЫТИЕ] Обрабатываем ордер закрытия: {event.order_id}", "SignalScalper")
 
             # ИСПРАВЛЕННЫЙ РАСЧЕТ PnL с учетом усреднения
             entry_price_for_pnl = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
@@ -413,8 +442,9 @@ class SignalScalperStrategy(BaseStrategy):
             self.signal_confirmation_count = 0
             self.last_signal = None
 
-            # Отменяем стоп-лосс перед сбросом состояния
-            await self._cancel_stop_loss_order()
+            # Отменяем стоп-лосс перед сбросом состояния (БЫСТРО)
+            if self.stop_loss_order_id:
+                await self._cancel_stop_loss_order()
 
             # Сброс состояния (ВКЛЮЧАЯ ПЕРЕМЕННЫЕ УСРЕДНЕНИЯ)
             self.position_active = False
@@ -432,10 +462,17 @@ class SignalScalperStrategy(BaseStrategy):
             self.sl_extended = False
             self.sl_extension_notified = False
 
+            # РАЗМОРОЗКА КОНФИГУРАЦИИ ПОСЛЕ ЗАКРЫТИЯ СДЕЛКИ
+            self.active_trade_config = None
+            self.config_frozen = False
+            log_info(self.user_id, f"Конфигурация разморожена после закрытия сделки по {self.symbol}", "SignalScalper")
+
             await self.event_bus.unsubscribe(self._handle_price_update)
+            # МГНОВЕННО отправляем уведомление
             await self._send_trade_close_notification(pnl_net, event.fee, exit_price=event.price)
+            log_info(self.user_id, f"[УСПЕХ] Позиция {self.symbol} закрыта быстро! PnL: {pnl_net:.2f}$", "SignalScalper")
         else:
-            log_warning(self.user_id, f"Неожиданное состояние при обработке ордера {event.order_id}. position_active={self.position_active}, is_closing={is_closing_order}", "SignalScalper")
+            log_warning(self.user_id, f"[НЕОЖИДАННО] Неожиданное состояние при обработке ордера {event.order_id}. position_active={self.position_active}, is_closing={is_closing_order}", "SignalScalper")
 
         self.is_waiting_for_trade = False
 
@@ -562,8 +599,11 @@ class SignalScalperStrategy(BaseStrategy):
         try:
             self.is_waiting_for_trade = True
 
+            # НЕ обновляем конфигурацию при усреднении - используем ЗАМОРОЖЕННЫЕ параметры текущей сделки
+
             # Рассчитываем размер усредняющего ордера (ПРОГРЕССИВНОЕ УСРЕДНЕНИЕ)
-            order_amount = self._convert_to_decimal(self.get_config_value("order_amount", 50.0))
+            # ВАЖНО: используем замороженную конфигурацию!
+            order_amount = self._convert_to_decimal(self._get_frozen_config_value("order_amount", 50.0))
 
             if self.averaging_mode == "progressive":
                 # Прогрессивное усреднение: каждый ордер больше предыдущего
@@ -574,7 +614,7 @@ class SignalScalperStrategy(BaseStrategy):
                 # Фиксированное усреднение
                 averaging_amount = order_amount * self.averaging_multiplier
 
-            leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
+            leverage = self._convert_to_decimal(self._get_frozen_config_value("leverage", 1.0))
 
             qty = await self.api.calculate_quantity_from_usdt(self.symbol, averaging_amount, leverage, price=current_price)
 
@@ -820,8 +860,8 @@ class SignalScalperStrategy(BaseStrategy):
             trigger_percent = self.averaging_trigger_percent * next_averaging_level
             max_loss_percent = max(max_loss_percent, trigger_percent)
 
-        # Добавляем буфер 20% для безопасности
-        max_loss_percent_with_buffer = max_loss_percent * Decimal('1.2')
+        # Добавляем минимальный буфер 5% для безопасности
+        max_loss_percent_with_buffer = max_loss_percent * Decimal('1.05')
 
         # Рассчитываем минимальную цену для всех усреднений
         entry_price_for_calc = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
@@ -840,7 +880,7 @@ class SignalScalperStrategy(BaseStrategy):
 
         return min_price_for_averaging
 
-    def _calculate_smart_stop_loss(self, entry_price: Decimal, direction: str, position_size: Decimal, current_price: Decimal) -> tuple[Decimal, bool, str]:
+    def _calculate_smart_stop_loss(self, entry_price: Decimal, direction: str, position_size: Decimal) -> tuple[Decimal, bool, str]:
         """
         Интеллектуальный расчет стоп-лосса с учетом будущих усреднений.
 
@@ -854,40 +894,55 @@ class SignalScalperStrategy(BaseStrategy):
         if not self.averaging_enabled or self.averaging_count >= self.max_averaging_count:
             return standard_sl, False, "standard_calculation"
 
-        # Проверяем, нужно ли расширение SL только начиная со 2-го усреднения
-        if self.averaging_count < 1:
-            return standard_sl, False, "first_position_no_extension_needed"
+        # УМНАЯ ПРОВЕРКА: расширяем SL только когда СЛЕДУЮЩЕЕ усреднение может быть заблокировано
+        # Проверяем не текущий уровень, а будет ли место для СЛЕДУЮЩЕГО усреднения
+        next_averaging_level = self.averaging_count + 1
+        if next_averaging_level > self.max_averaging_count:
+            return standard_sl, False, "all_averagings_completed"
 
-        # Рассчитываем минимальную цену для всех оставшихся усреднений
-        min_price_for_averaging = self._calculate_required_space_for_averaging(current_price)
+        # Рассчитываем цену для СЛЕДУЮЩЕГО усреднения (не всех сразу)
+        next_trigger_percent = self.averaging_trigger_percent * next_averaging_level
+        entry_price_for_calc = self.average_entry_price if self.average_entry_price > 0 else entry_price
 
-        # Проверяем, находится ли стандартный SL слишком близко к зоне усреднения
-        sl_threatens_averaging = False
+        if direction == "LONG":
+            # Цена для следующего усреднения = текущая_средняя_цена * (1 - процент_падения/100)
+            next_averaging_price = entry_price_for_calc * (Decimal('100') - next_trigger_percent) / Decimal('100')
+        else:  # SHORT
+            # Цена для следующего усреднения = текущая_средняя_цена * (1 + процент_роста/100)
+            next_averaging_price = entry_price_for_calc * (Decimal('100') + next_trigger_percent) / Decimal('100')
+
+        # Проверяем, блокирует ли стандартный SL СЛЕДУЮЩЕЕ усреднение
+        sl_threatens_next_averaging = False
         threat_reason = ""
 
-        if direction == "LONG":
-            # Для LONG: SL должен быть ниже минимальной цены усреднения
-            if standard_sl > min_price_for_averaging:
-                sl_threatens_averaging = True
-                threat_reason = f"SL {standard_sl:.4f} выше мин. цены усреднения {min_price_for_averaging:.4f}"
-        else:  # SHORT
-            # Для SHORT: SL должен быть выше максимальной цены усреднения
-            if standard_sl < min_price_for_averaging:
-                sl_threatens_averaging = True
-                threat_reason = f"SL {standard_sl:.4f} ниже макс. цены усреднения {min_price_for_averaging:.4f}"
+        # Добавляем небольшой буфер (0.5%) для безопасности
+        safety_buffer = next_averaging_price * Decimal('0.005')
 
-        if not sl_threatens_averaging:
-            return standard_sl, False, "sufficient_space_for_averaging"
-
-        # Расширяем SL для обеспечения места под усреднения
         if direction == "LONG":
-            # Для LONG: опускаем SL ниже зоны усреднения с буфером
-            buffer = min_price_for_averaging * Decimal('0.01')  # 1% буфер
-            extended_sl = min_price_for_averaging - buffer
+            # Для LONG: SL должен быть ниже цены следующего усреднения с буфером
+            safe_averaging_price = next_averaging_price - safety_buffer
+            if standard_sl > safe_averaging_price:
+                sl_threatens_next_averaging = True
+                threat_reason = f"SL {standard_sl:.4f} блокирует усреднение #{next_averaging_level} на уровне {next_averaging_price:.4f}"
         else:  # SHORT
-            # Для SHORT: поднимаем SL выше зоны усреднения с буфером
-            buffer = min_price_for_averaging * Decimal('0.01')  # 1% буфер
-            extended_sl = min_price_for_averaging + buffer
+            # Для SHORT: SL должен быть выше цены следующего усреднения с буфером
+            safe_averaging_price = next_averaging_price + safety_buffer
+            if standard_sl < safe_averaging_price:
+                sl_threatens_next_averaging = True
+                threat_reason = f"SL {standard_sl:.4f} блокирует усреднение #{next_averaging_level} на уровне {next_averaging_price:.4f}"
+
+        if not sl_threatens_next_averaging:
+            return standard_sl, False, f"sufficient_space_for_next_averaging_#{next_averaging_level}"
+
+        # МИНИМАЛЬНОЕ расширение SL для обеспечения места под СЛЕДУЮЩЕЕ усреднение
+        extended_buffer = next_averaging_price * Decimal('0.008')  # 0.8% буфер для надежности
+
+        if direction == "LONG":
+            # Для LONG: опускаем SL ниже цены следующего усреднения
+            extended_sl = next_averaging_price - extended_buffer
+        else:  # SHORT
+            # Для SHORT: поднимаем SL выше цены следующего усреднения
+            extended_sl = next_averaging_price + extended_buffer
 
         # Рассчитываем новый максимальный убыток
         position_size_for_calc = self.total_position_size if self.total_position_size > 0 else position_size
@@ -931,8 +986,7 @@ class SignalScalperStrategy(BaseStrategy):
                 new_stop_loss_price, was_extended, extension_reason = self._calculate_smart_stop_loss(
                     self.average_entry_price,
                     self.active_direction,
-                    self.total_position_size,
-                    current_price
+                    self.total_position_size
                 )
 
             # Обновляем SL через API

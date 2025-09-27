@@ -8,6 +8,7 @@ from aiogram.fsm.context import FSMContext
 from typing import Optional, Dict, Any
 from datetime import datetime
 import asyncio
+import time
 from core.bot_application import BotApplication
 from database.db_trades import db_manager, UserProfile
 from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent
@@ -377,7 +378,7 @@ async def cmd_autotrade_start(message: Message, state: FSMContext):
 
 @router.message(Command("autotrade_stop"))
 async def cmd_autotrade_stop(message: Message, state: FSMContext):
-    """Обработчик команды /autotrade_stop"""
+    """Обработчик команды /autotrade_stop - умная остановка с ожиданием закрытия ордеров"""
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "autotrade_stop")
 
@@ -387,33 +388,167 @@ async def cmd_autotrade_stop(message: Message, state: FSMContext):
         await message.answer("🔴 Торговля и так неактивна.")
         return
 
-    # Отправляем событие в шину
-    if basic_handler.event_bus:
+    # Получаем информацию о текущих позициях и ордерах
+    try:
+        user_api_keys = await db_manager.get_api_keys(user_id, "bybit")
+
+        if not user_api_keys:
+            await message.answer("❌ API ключи не найдены.")
+            return
+
+        # Определяем режим торговли (demo/live)
+        exchange_config = system_config.get_exchange_config("bybit")
+        use_demo = exchange_config.demo if exchange_config else False
+
+        from api.bybit_api import BybitAPI
+        async with BybitAPI(
+            user_id=user_id,
+            api_key=user_api_keys[0],
+            api_secret=user_api_keys[1],
+            demo=use_demo
+        ) as api:
+            # Получаем открытые позиции и ордера
+            positions = await api.get_positions()
+            open_orders = await api.get_open_orders()
+
+            # Подсчитываем активные позиции и ордера
+            active_positions = []
+            active_orders = []
+
+            if positions:
+                active_positions = [pos for pos in positions if float(pos.get('size', 0)) != 0]
+
+            if open_orders:
+                active_orders = [order for order in open_orders if order.get('orderStatus') in ['New', 'PartiallyFilled']]
+
+            total_active = len(active_positions) + len(active_orders)
+
+            if total_active == 0:
+                # Нет активных позиций/ордеров - можно остановить сразу
+                await basic_handler.event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id, reason="manual_stop_command"))
+                await message.answer("✅ <b>Торговля остановлена</b>\n\nАктивных позиций и ордеров не обнаружено.", parse_mode="HTML")
+                return
+            else:
+                # Есть активные позиции/ордера - останавливаем стратегии но ждём закрытия
+                position_info = ""
+                if active_positions:
+                    position_info += f"📈 Открытых позиций: {len(active_positions)}\n"
+                if active_orders:
+                    position_info += f"📋 Активных ордеров: {len(active_orders)}\n"
+
+                await message.answer(
+                    f"🛑 <b>Останавливаю автоторговлю...</b>\n\n"
+                    f"❗️ Обнаружены незакрытые позиции/ордера:\n"
+                    f"{position_info}"
+                    f"\n🔄 <b>Ожидаю завершения всех операций</b>\n"
+                    f"Новые сделки запрещены, текущие доводятся до результата.",
+                    parse_mode="HTML"
+                )
+
+                # Отправляем событие остановки стратегий
+                await basic_handler.event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id, reason="manual_stop_command"))
+
+                # Мониторим закрытие позиций/ордеров
+                await _monitor_pending_trades(user_id, message, api)
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка при проверке позиций для умной остановки: {e}", module_name='basic_handlers')
+        # Fallback к стандартной остановке
         await basic_handler.event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id, reason="manual_stop_command"))
-    else:
-        log_error(user_id, "EventBus не инициализирован для отправки команды остановки торговли", module_name='basic_handlers')
-        await message.answer("❌ Внутренняя ошибка системы. Попробуйте позже.")
-        return
-
-    await message.answer(
-        "🛑 <b>Останавливаю автоматическую торговлю...</b>\nСистема завершит текущие операции и сохранит статистику.",
-        parse_mode="HTML")
-
-    # Улучшенная проверка статуса остановки
-    is_stopped = False
-    for _ in range(15):  # Проверяем в течение 15 секунд
-        await asyncio.sleep(1)
-        session_data = await redis_manager.get_user_session(user_id)
-        if not session_data or not session_data.get('autotrade_enabled', False):
-            is_stopped = True
-            break
-
-    if is_stopped:
-        await message.answer("✅ <b>Торговля успешно остановлена.</b>", parse_mode="HTML")
-    else:
         await message.answer(
-            "❌ <b>Не удалось подтвердить остановку торговли.</b> Проверьте статус через /autotrade_status.",
-            parse_mode="HTML")
+            "🛑 <b>Останавливаю автоматическую торговлю...</b>\nСистема завершит текущие операции и сохранит статистику.",
+            parse_mode="HTML"
+        )
+
+
+async def _monitor_pending_trades(user_id: int, message: Message, api):
+    """Мониторинг незакрытых позиций и ордеров"""
+    last_update_time = 0
+    update_interval = 300  # Обновляем сообщение каждые 5 минут
+    start_time = time.time()
+
+    while True:
+        try:
+            current_time = time.time()
+
+            # Проверяем активные позиции и ордера
+            positions = await api.get_positions()
+            open_orders = await api.get_open_orders()
+
+            active_positions = []
+            active_orders = []
+
+            if positions:
+                active_positions = [pos for pos in positions if float(pos.get('size', 0)) != 0]
+
+            if open_orders:
+                active_orders = [order for order in open_orders if order.get('orderStatus') in ['New', 'PartiallyFilled']]
+
+            total_active = len(active_positions) + len(active_orders)
+
+            # Если всё закрыто - завершаем
+            if total_active == 0:
+                await message.answer(
+                    "✅ <b>Все позиции и ордера завершены</b>\n\n"
+                    "🛑 <b>Автоторговля полностью остановлена</b>",
+                    parse_mode="HTML"
+                )
+                return
+
+            # Обновляем статус каждые 5 минут
+            if current_time - last_update_time >= update_interval:
+                elapsed_minutes = int((current_time - start_time) / 60)
+                elapsed_hours = elapsed_minutes // 60
+                elapsed_mins_remainder = elapsed_minutes % 60
+
+                status_text = f"⏳ <b>Ожидание завершения операций</b>\n\n"
+
+                if active_positions:
+                    status_text += f"📈 Открытых позиций: {len(active_positions)}\n"
+                    # Показываем детали по символам
+                    symbol_summary = {}
+                    for pos in active_positions:
+                        symbol = pos.get('symbol', 'Unknown')
+                        side = pos.get('side', 'Unknown')
+                        unrealized_pnl = float(pos.get('unrealisedPnl', 0))
+
+                        if symbol not in symbol_summary:
+                            symbol_summary[symbol] = {'long': 0, 'short': 0, 'pnl': 0}
+
+                        if side.lower() == 'buy':
+                            symbol_summary[symbol]['long'] += 1
+                        else:
+                            symbol_summary[symbol]['short'] += 1
+                        symbol_summary[symbol]['pnl'] += unrealized_pnl
+
+                    for symbol, data in symbol_summary.items():
+                        pnl_emoji = "🟢" if data['pnl'] >= 0 else "🔴"
+                        status_text += f"  • {symbol}: {data['long']}L/{data['short']}S {pnl_emoji}{data['pnl']:.2f}$\n"
+
+                if active_orders:
+                    status_text += f"📋 Активных ордеров: {len(active_orders)}\n"
+
+                # Красивое отображение времени
+                if elapsed_hours > 0:
+                    status_text += f"\n⏰ Ожидание: {elapsed_hours}ч {elapsed_mins_remainder}мин"
+                else:
+                    status_text += f"\n⏰ Ожидание: {elapsed_minutes} мин"
+
+                status_text += f"\n\n💡 <i>Сделки доводятся до естественного завершения</i>"
+
+                try:
+                    await message.answer(status_text, parse_mode="HTML")
+                except Exception:
+                    # Игнорируем ошибки отправки обновлений
+                    pass
+
+                last_update_time = current_time
+
+            await asyncio.sleep(30)  # Проверяем каждые 30 секунд
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка мониторинга позиций: {e}", module_name='basic_handlers')
+            await asyncio.sleep(60)  # При ошибке ждём минуту
 
 
 @router.message(Command("autotrade_status"))
@@ -481,26 +616,34 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
 
         # Получаем API для проверки позиций
         api_keys = await db_manager.get_api_keys(user_id, "bybit")
-        api = None
         positions_data = {}
 
         if api_keys:
             try:
-                api = BybitAPI(api_keys.api_key, api_keys.secret_key, testnet=False)
-                # Получаем все позиции пользователя
-                all_positions = await api.get_positions()
-                if all_positions:
-                    for pos in all_positions:
-                        symbol = pos.get('symbol', '')
-                        size = float(pos.get('size', 0))
-                        if size > 0:  # Только активные позиции
-                            positions_data[symbol] = {
-                                'side': pos.get('side', ''),
-                                'size': size,
-                                'unrealizedPnl': float(pos.get('unrealizedPnl', 0)),
-                                'avgPrice': float(pos.get('avgPrice', 0)),
-                                'markPrice': float(pos.get('markPrice', 0))
-                            }
+                # Определяем режим торговли (demo/live)
+                exchange_config = system_config.get_exchange_config("bybit")
+                use_demo = exchange_config.demo if exchange_config else False
+
+                async with BybitAPI(
+                    user_id=user_id,
+                    api_key=api_keys[0],
+                    api_secret=api_keys[1],
+                    demo=use_demo
+                ) as api:
+                    # Получаем все позиции пользователя
+                    all_positions = await api.get_positions()
+                    if all_positions:
+                        for pos in all_positions:
+                            symbol = pos.get('symbol', '')
+                            size = float(pos.get('size', 0))
+                            if size != 0:  # Только активные позиции (и лонги, и шорты)
+                                positions_data[symbol] = {
+                                    'side': pos.get('side', ''),
+                                    'size': size,
+                                    'unrealizedPnl': float(pos.get('unrealisedPnl', 0)),
+                                    'avgPrice': float(pos.get('avgPrice', 0)),
+                                    'markPrice': float(pos.get('markPrice', 0))
+                                }
             except Exception as e:
                 log_warning(user_id, f"Не удалось получить данные позиций: {e}", "autotrade_status")
 
@@ -685,16 +828,135 @@ async def cmd_positions(message: Message, state: FSMContext):
 
 @router.message(Command("stop_all"))
 async def cmd_stop_all(message: Message, state: FSMContext):
-    """Обработчик команды /stop_all (экстренная остановка)"""
+    """Обработчик команды /stop_all (экстренная остановка с показом статистики)"""
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "stop_all")
 
-    # Эта команда выполняет то же, что и кнопка экстренной остановки
-    await message.answer(
-        "🚨 <b>ВНИМАНИЕ!</b>\nВы собираетесь экстренно остановить всю торговлю и закрыть все открытые позиции. Это действие необратимо.",
-        parse_mode="HTML",
-        reply_markup=get_confirmation_keyboard("emergency_stop")  # Используем клавиатуру подтверждения
-    )
+    # Получаем информацию о текущих позициях и стратегиях
+    try:
+        session_status = await redis_manager.get_user_session(user_id)
+        if not session_status or not session_status.get('autotrade_enabled', False):
+            await message.answer("🔴 Торговля уже неактивна.")
+            return
+
+        # Получаем API ключи
+        user_api_keys = await db_manager.get_api_keys(user_id, "bybit")
+
+        if not user_api_keys:
+            await message.answer("❌ API ключи не найдены.")
+            return
+
+        # Получаем данные о позициях
+        from api.bybit_api import BybitAPI
+
+        # Определяем режим торговли (demo/live)
+        exchange_config = system_config.get_exchange_config("bybit")
+        use_demo = exchange_config.demo if exchange_config else False
+
+        async with BybitAPI(
+            user_id=user_id,
+            api_key=user_api_keys[0],
+            api_secret=user_api_keys[1],
+            demo=use_demo
+        ) as api:
+            positions = await api.get_positions()
+            open_orders = await api.get_open_orders()
+
+            # Формируем сообщение со статистикой
+            warning_text = "🚨 <b>ЭКСТРЕННАЯ ОСТАНОВКА</b>\n"
+            warning_text += "═" * 30 + "\n\n"
+            warning_text += "⚠️ <b>ВНИМАНИЕ!</b> Все открытые позиции будут закрыты по рыночной цене.\n\n"
+
+            # Анализируем позиции
+            active_positions = []
+            total_pnl = 0
+            profitable_count = 0
+            losing_count = 0
+
+            if positions:
+                active_positions = [pos for pos in positions if float(pos.get('size', 0)) != 0]
+
+            if active_positions:
+                warning_text += f"📈 <b>Открытые позиции ({len(active_positions)}):</b>\n"
+
+                for pos in active_positions:
+                    symbol = pos.get('symbol', 'Unknown')
+                    side = pos.get('side', 'Unknown')
+                    size = float(pos.get('size', 0))
+                    unrealized_pnl = float(pos.get('unrealisedPnl', 0))
+                    total_pnl += unrealized_pnl
+
+                    if unrealized_pnl >= 0:
+                        profitable_count += 1
+                        pnl_emoji = "🟢"
+                        pnl_text = f"+${unrealized_pnl:.2f}"
+                    else:
+                        losing_count += 1
+                        pnl_emoji = "🔴"
+                        pnl_text = f"${unrealized_pnl:.2f}"
+
+                    side_emoji = "📈" if side == 'Buy' else "📉"
+                    symbol_short = symbol.replace('USDT', '')
+
+                    warning_text += f"  • {symbol_short} {side_emoji} {size} {pnl_emoji} {pnl_text}\n"
+
+                warning_text += f"\n💰 <b>Общий нереализованный PnL:</b> "
+                if total_pnl >= 0:
+                    warning_text += f"🟢 +${total_pnl:.2f}\n"
+                else:
+                    warning_text += f"🔴 ${total_pnl:.2f}\n"
+
+                warning_text += f"📊 В прибыли: {profitable_count} | В убытке: {losing_count}\n\n"
+            else:
+                warning_text += "✅ Открытых позиций нет\n\n"
+
+            # Проверяем открытые ордера
+            active_orders = []
+            if open_orders:
+                active_orders = [order for order in open_orders if order.get('orderStatus') in ['New', 'PartiallyFilled']]
+                if active_orders:
+                    warning_text += f"📋 <b>Активные ордера:</b> {len(active_orders)}\n\n"
+
+            # Проверяем активные стратегии
+            active_strategies = session_status.get('active_strategies', [])
+            if active_strategies:
+                warning_text += f"🔄 <b>Активных стратегий:</b> {len(active_strategies)}\n\n"
+
+            # Добавляем предупреждение о последствиях
+            warning_text += "⚠️ <b>Последствия экстренной остановки:</b>\n"
+            warning_text += "• Все позиции закроются по рыночной цене\n"
+            warning_text += "• Все ордера будут отменены\n"
+            warning_text += "• Автоторговля будет остановлена\n"
+            warning_text += "• Действие необратимо\n\n"
+
+            if total_pnl < 0:
+                warning_text += f"🚨 <b>Внимание:</b> Убыток составит ${abs(total_pnl):.2f}\n\n"
+
+            warning_text += "Вы уверены, что хотите продолжить?"
+
+            # Создаём специальную клавиатуру с ясным подтверждением
+            emergency_buttons = [
+                [
+                    {"text": "🚨 ДА, остановить немедленно", "callback_data": "confirm_emergency_stop"},
+                    {"text": "❌ НЕТ, отменить", "callback_data": "cancel_emergency_stop"}
+                ]
+            ]
+            emergency_keyboard = KeyboardBuilder.build_keyboard(emergency_buttons)
+
+            await message.answer(
+                warning_text,
+                parse_mode="HTML",
+                reply_markup=emergency_keyboard
+            )
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка при подготовке экстренной остановки: {e}", module_name='basic_handlers')
+        # Fallback к простому подтверждению
+        await message.answer(
+            "🚨 <b>ВНИМАНИЕ!</b>\nВы собираетесь экстренно остановить всю торговлю и закрыть все открытые позиции. Это действие необратимо.",
+            parse_mode="HTML",
+            reply_markup=get_confirmation_keyboard("emergency_stop")
+        )
 
 
 # Обработчик неизвестных команд
