@@ -154,7 +154,7 @@ async def _generate_stats_report(user_id: int, start_date: Optional[datetime] = 
 
     stats_text = (
         f"📊 <b>Статистика {period_name}</b>\n"
-        f"═" * 30 + "\n\n"
+        f"{'═' * 30}\n\n"
         f"💰 <b>Чистая прибыль:</b> {profit_emoji} {profit_sign}{format_currency(net_profit)}\n"
         f"📈 <b>Всего сделок:</b> {total_trades}\n"
         f"🎯 <b>Успешных сделок:</b> {winning_trades}\n"

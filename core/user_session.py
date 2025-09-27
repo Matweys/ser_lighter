@@ -788,6 +788,71 @@ class UserSession:
             log_error(self.user_id, f"Ошибка при отложенном запуске стратегии {event.symbol}: {e}",
                       module_name=__name__)
 
+    async def recover_strategy_from_state(self, strategy_type: StrategyType, symbol: str, saved_state: Dict[str, Any]) -> bool:
+        """
+        Восстанавливает стратегию из сохраненного состояния после перезагрузки сервера.
+
+        Args:
+            strategy_type: Тип стратегии для восстановления
+            symbol: Символ для торговли
+            saved_state: Сохраненное состояние стратегии
+
+        Returns:
+            bool: True если стратегия успешно восстановлена
+        """
+        try:
+            strategy_id = f"{strategy_type.value}_{symbol}"
+
+            # Проверяем, не запущена ли уже такая стратегия
+            if strategy_id in self.active_strategies:
+                log_warning(self.user_id, f"Стратегия {strategy_id} уже активна, пропускаем восстановление", module_name=__name__)
+                return True
+
+            # Создаем стратегию с использованием factory
+            strategy = create_strategy(
+                strategy_type=strategy_type.value,
+                bot=self.bot,
+                user_id=self.user_id,
+                symbol=symbol,
+                signal_data=saved_state.get("signal_data", {}),
+                api=self.api,
+                event_bus=self.event_bus,
+                config=None
+            )
+
+            if not strategy:
+                log_error(self.user_id, f"Не удалось создать стратегию типа: {strategy_type.value} для восстановления", module_name=__name__)
+                return False
+
+            # Восстанавливаем состояние стратегии
+            success = await strategy.recover_after_restart(saved_state)
+
+            if success:
+                # Добавляем в активные стратегии
+                self.active_strategies[strategy_id] = strategy
+
+                # Обновляем статистику
+                self.session_stats["strategies_launched"] += 1
+
+                # Публикуем событие о запуске стратегии
+                event = StrategyStartEvent(
+                    user_id=self.user_id,
+                    strategy_type=strategy_type.value,
+                    symbol=symbol,
+                    strategy_id=strategy.strategy_id
+                )
+                await self.event_bus.publish(event)
+
+                log_info(self.user_id, f"Стратегия {strategy_id} успешно восстановлена из состояния", module_name=__name__)
+                return True
+            else:
+                log_error(self.user_id, f"Не удалось восстановить состояние стратегии {strategy_id}", module_name=__name__)
+                return False
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка восстановления стратегии {strategy_type.value}_{symbol}: {e}", module_name=__name__)
+            return False
+
     async def _send_strategy_start_notification(self, strategy: BaseStrategy):
         """Отправка уведомления о запуске стратегии пользователю"""
         try:

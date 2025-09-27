@@ -342,7 +342,8 @@ class BybitAPI:
         """Получение позиций"""
         try:
             params = {
-                "category": "linear"
+                "category": "linear",
+                "settleCoin": "USDT"  # Обязательный параметр для Bybit API v5
             }
 
             if symbol:
@@ -626,7 +627,8 @@ class BybitAPI:
         """Получение открытых ордеров"""
         try:
             params = {
-                "category": "linear"
+                "category": "linear",
+                "settleCoin": "USDT"  # Обязательный параметр для Bybit API v5
             }
             
             if symbol:

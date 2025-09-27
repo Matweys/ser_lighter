@@ -894,10 +894,16 @@ class SignalScalperStrategy(BaseStrategy):
         if not self.averaging_enabled or self.averaging_count >= self.max_averaging_count:
             return standard_sl, False, "standard_calculation"
 
-        # УМНАЯ ПРОВЕРКА: расширяем SL только когда СЛЕДУЮЩЕЕ усреднение может быть заблокировано
-        # Проверяем не текущий уровень, а будет ли место для СЛЕДУЮЩЕГО усреднения
+        # ИСПРАВЛЕННАЯ ЛОГИКА: SL корректируется только при втором усреднении и далее
+        # При первом усреднении (averaging_count = 0) НЕ корректируем SL
+        if self.averaging_count == 0:
+            log_info(self.user_id, f"🧠 УМНЫЙ SL: Первое усреднение - SL не корректируется", "SignalScalper")
+            return standard_sl, False, "first_averaging_no_correction"
+
+        # Проверяем, есть ли еще усреднения впереди
         next_averaging_level = self.averaging_count + 1
         if next_averaging_level > self.max_averaging_count:
+            log_info(self.user_id, f"🧠 УМНЫЙ SL: Все усреднения завершены, используем стандартный SL", "SignalScalper")
             return standard_sl, False, "all_averagings_completed"
 
         # Рассчитываем цену для СЛЕДУЮЩЕГО усреднения (не всех сразу)
@@ -972,22 +978,16 @@ class SignalScalperStrategy(BaseStrategy):
 
             # Получаем текущую цену для анализа
             current_price = await self.api.get_current_price(self.symbol)
-            if not current_price:
-                log_warning(self.user_id, "Не удалось получить текущую цену для умного SL", "SignalScalper")
-                # Fallback к старой логике
-                new_stop_loss_price = self._calculate_stop_loss_price(
-                    self.average_entry_price,
-                    self.active_direction,
-                    self.total_position_size
-                )
-                was_extended = False
-            else:
-                # Используем интеллектуальный расчет SL
-                new_stop_loss_price, was_extended, extension_reason = self._calculate_smart_stop_loss(
-                    self.average_entry_price,
-                    self.active_direction,
-                    self.total_position_size
-                )
+            # ИСПРАВЛЕННАЯ ЛОГИКА: Всегда используем стандартный расчёт на основе средней цены
+            # "Умный" расчёт должен вызываться только при необходимости корректировки
+            new_stop_loss_price = self._calculate_stop_loss_price(
+                self.average_entry_price,
+                self.active_direction,
+                self.total_position_size
+            )
+            was_extended = False
+
+            log_info(self.user_id, f"🔧 Стандартное обновление SL после усреднения: {new_stop_loss_price:.4f}", "SignalScalper")
 
             # Обновляем SL через API
             success = await self.api.set_trading_stop(
@@ -1054,3 +1054,95 @@ class SignalScalperStrategy(BaseStrategy):
     async def _execute_strategy_logic(self):
         """Пустышка, так как логика теперь управляется событиями свечей."""
         pass
+
+    # ===============================================================================
+    # СПЕЦИФИЧНОЕ ВОССТАНОВЛЕНИЕ СОСТОЯНИЯ ДЛЯ SIGNAL SCALPER
+    # ===============================================================================
+
+    async def _strategy_specific_recovery(self, additional_data: Dict[str, Any]):
+        """
+        Специфичное восстановление состояния для SignalScalper.
+        Восстанавливает состояние усреднения, мониторинга позиций и сигналов.
+        """
+        try:
+            log_info(self.user_id, f"🔧 Специфичное восстановление SignalScalper для {self.symbol}...", "SignalScalper")
+
+            # Проверяем, была ли активна позиция на момент сохранения
+            if hasattr(self, 'position_active') and self.position_active:
+                log_info(self.user_id, f"🎯 Восстанавливаю активную позицию SignalScalper", "SignalScalper")
+
+                # Восстанавливаем подписки на события цен (критически важно для мониторинга)
+                if not hasattr(self, '_price_subscription_restored'):
+                    await self.event_bus.subscribe(EventType.PRICE_UPDATE, self._handle_price_update, user_id=self.user_id)
+                    log_info(self.user_id, f"✅ Восстановлена подписка на обновления цен для {self.symbol}", "SignalScalper")
+                    self._price_subscription_restored = True
+
+                # Если есть состояние усреднения - восстанавливаем его детально
+                if hasattr(self, 'averaging_count') and self.averaging_count > 0:
+                    log_info(self.user_id,
+                            f"📊 Восстанавливаю состояние усреднения: #{self.averaging_count}/{getattr(self, 'max_averaging_count', 3)}, "
+                            f"общий размер: {getattr(self, 'total_position_size', 0)}, средняя цена: {getattr(self, 'average_entry_price', 0)}",
+                            "SignalScalper")
+
+                # Если есть активный стоп-лосс - восстанавливаем его отслеживание
+                if hasattr(self, 'stop_loss_order_id') and self.stop_loss_order_id:
+                    log_info(self.user_id, f"🛡️ Восстанавливаю отслеживание стоп-лосса: {self.stop_loss_order_id}", "SignalScalper")
+
+                # Восстанавливаем мониторинг позиции для предотвращения десинхронизации
+                if not self._position_monitor_task or self._position_monitor_task.done():
+                    if hasattr(self, 'position_size') and getattr(self, 'position_size', 0) > 0:
+                        self._position_monitor_task = asyncio.create_task(self._monitor_active_position())
+                        log_info(self.user_id, f"🔍 Запущен монитор позиции для {self.symbol}", "SignalScalper")
+
+                # Проверяем состояние замороженной конфигурации
+                if hasattr(self, 'config_frozen') and self.config_frozen:
+                    log_info(self.user_id, f"❄️ Восстановлена заморозка конфигурации активной сделки", "SignalScalper")
+
+                # Восстанавливаем последние сигналы и счетчики для корректной работы логики
+                if hasattr(self, 'last_signal'):
+                    log_debug(self.user_id, f"📡 Восстановлен последний сигнал: {getattr(self, 'last_signal', 'None')}", "SignalScalper")
+
+                # Инициализируем анализатор сигналов если его нет
+                if not self.signal_analyzer:
+                    from analysis.signal_analyzer import SignalAnalyzer
+                    self.signal_analyzer = SignalAnalyzer(self.user_id, self.api, self.config)
+                    log_info(self.user_id, f"📈 Переинициализирован анализатор сигналов", "SignalScalper")
+
+                log_info(self.user_id, f"✅ Активная позиция SignalScalper для {self.symbol} полностью восстановлена", "SignalScalper")
+
+            else:
+                log_info(self.user_id, f"ℹ️ Позиция неактивна, восстанавливаю только базовые компоненты", "SignalScalper")
+
+                # Даже для неактивной позиции нужен анализатор сигналов
+                if not self.signal_analyzer:
+                    from analysis.signal_analyzer import SignalAnalyzer
+                    self.signal_analyzer = SignalAnalyzer(self.user_id, self.api, self.config)
+                    log_info(self.user_id, f"📈 Инициализирован анализатор сигналов для неактивной позиции", "SignalScalper")
+
+            # Проверяем синхронизацию с базой данных
+            await self._sync_database_state()
+
+        except Exception as e:
+            log_error(self.user_id, f"❌ Ошибка специфичного восстановления SignalScalper: {e}", "SignalScalper")
+
+    async def _sync_database_state(self):
+        """
+        Синхронизирует состояние стратегии с базой данных.
+        Проверяет соответствие активных сделок в памяти и БД.
+        """
+        try:
+            # Если есть активная связь с БД, проверяем что запись существует
+            if hasattr(self, 'active_trade_db_id') and self.active_trade_db_id:
+                from database.db_trades import db_manager
+
+                # Проверяем, что сделка действительно существует в БД
+                trade_exists = await db_manager.trade_exists(self.active_trade_db_id)
+
+                if trade_exists:
+                    log_info(self.user_id, f"✅ Связь с БД подтверждена: trade_id={self.active_trade_db_id}", "SignalScalper")
+                else:
+                    log_warning(self.user_id, f"⚠️ Сделка {self.active_trade_db_id} не найдена в БД, сбрасываю связь", "SignalScalper")
+                    delattr(self, 'active_trade_db_id')
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка синхронизации с БД: {e}", "SignalScalper")

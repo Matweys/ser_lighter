@@ -297,6 +297,13 @@ class BaseStrategy(ABC):
                              f"Стратегия {self.symbol} получила событие OrderFilledEvent для ордера {event.order_id}",
                              "BaseStrategy")
                     await self._handle_order_filled(event)
+                    # Сохраняем состояние после обработки исполненного ордера
+                    await self.save_strategy_state({
+                        "last_action": "order_filled",
+                        "order_id": event.order_id,
+                        "fill_price": str(event.fill_price),
+                        "fill_qty": str(event.fill_qty)
+                    })
 
             # Обработка остальных событий без изменений
             elif isinstance(event, PriceUpdateEvent):
@@ -330,11 +337,11 @@ class BaseStrategy(ABC):
                 log_error(self.user_id, "Конфигурация стратегии не прошла валидацию", module_name=__name__)
                 return False
             
-            # Сохранение состояния в Redis
-            await self._save_strategy_state()
-
             # Устанавливаем флаг перед выполнением логики
             self.is_running = True
+
+            # Сохранение состояния в Redis после установки флага
+            await self.save_strategy_state({"last_action": "strategy_started"})
             # Выполнение начальной логики стратегии
             await self._execute_strategy_logic()
 
@@ -379,8 +386,11 @@ class BaseStrategy(ABC):
                 # Сохранение финальной статистики
                 await self._save_final_stats()
                 
+                # Сохранение финального состояния и очистка
+                await self.save_strategy_state({"last_action": "strategy_stopped", "reason": reason})
                 # Удаление состояния из Redis
                 await self._cleanup_redis_state()
+                await self.clear_strategy_state()
             log_info(self.user_id,f"Стратегия {self.strategy_type.value} остановлена", module_name=__name__)
             return True
         except Exception as e:
@@ -534,12 +544,19 @@ class BaseStrategy(ABC):
                 "unrealized_pnl": self._convert_to_decimal(event.unrealized_pnl),
                 "updated_at": datetime.now()
             }
-            
+
             # Обновление статистики
             unrealized_pnl = self._convert_to_decimal(event.unrealized_pnl)
             self.stats["current_drawdown"] = min(Decimal('0'), unrealized_pnl)
             if abs(self.stats["current_drawdown"]) > self.stats["max_drawdown"]:
                 self.stats["max_drawdown"] = abs(self.stats["current_drawdown"])
+
+            # Сохраняем состояние после обновления позиции
+            await self.save_strategy_state({
+                "last_action": "position_updated",
+                "position_key": position_key,
+                "unrealized_pnl": str(unrealized_pnl)
+            })
                 
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки обновления позиции: {e}", module_name=__name__)
@@ -570,6 +587,8 @@ class BaseStrategy(ABC):
 
             if order_id:
                 self.active_orders[order_id] = {"order_id": order_id, "status": "New"}
+                # Сохраняем состояние после размещения ордера
+                await self.save_strategy_state({"last_action": "order_placed", "order_id": order_id})
                 log_info(self.user_id, f"Ордер {order_id} ({side} {qty} {self.symbol}) отправлен на биржу.",
                          module_name=__name__)
                 return order_id
@@ -595,7 +614,9 @@ class BaseStrategy(ABC):
                 # Удаление из активных ордеров
                 if order_id in self.active_orders:
                     del self.active_orders[order_id]
-                    
+
+                # Сохраняем состояние после отмены ордера
+                await self.save_strategy_state({"last_action": "order_cancelled", "order_id": order_id})
                 log_info(self.user_id, f"Ордер отменен: {order_id}", module_name=__name__)
                 return True
                 
@@ -1129,3 +1150,299 @@ class BaseStrategy(ABC):
     def __repr__(self) -> str:
         """Представление стратегии для отладки."""
         return f"<{self.__class__.__name__}: {self.strategy_type.value}, {self.symbol}, user={self.user_id}>"
+
+    # ===============================================================================
+    # СИСТЕМА ВОССТАНОВЛЕНИЯ СОСТОЯНИЯ ПОСЛЕ ПЕРЕЗАГРУЗКИ СЕРВЕРА
+    # ===============================================================================
+
+    async def save_strategy_state(self, additional_data: Dict[str, Any] = None):
+        """
+        Сохраняет текущее состояние стратегии в Redis для восстановления после перезагрузки.
+        Вызывается при каждом важном изменении состояния.
+        """
+        try:
+            state_key = f"strategy_state:{self.user_id}:{self.symbol}:{self.strategy_type.value}"
+
+            # Собираем все атрибуты стратегии для полного восстановления
+            strategy_attributes = {}
+
+            # Ключевые атрибуты для всех стратегий
+            critical_attributes = [
+                'position_active', 'entry_price', 'position_size', 'active_direction',
+                'current_order_id', 'stop_loss_order_id', 'stop_loss_price',
+                'is_waiting_for_trade', 'processed_orders', 'intended_order_amount',
+                'active_trade_db_id'  # Важно для связи с БД
+            ]
+
+            # Дополнительные атрибуты для SignalScalper
+            scalper_attributes = [
+                'averaging_count', 'total_position_size', 'average_entry_price',
+                'last_averaging_percent', 'sl_extended', 'config_frozen',
+                'active_trade_config', 'peak_profit_usd', 'hold_signal_counter'
+            ]
+
+            # Сохраняем все доступные атрибуты
+            all_attributes = critical_attributes + scalper_attributes
+            for attr in all_attributes:
+                if hasattr(self, attr):
+                    value = getattr(self, attr)
+                    # Конвертируем специальные типы для JSON
+                    if isinstance(value, Decimal):
+                        strategy_attributes[attr] = str(value)
+                    elif isinstance(value, set):
+                        strategy_attributes[attr] = list(value)
+                    elif value is not None:
+                        strategy_attributes[attr] = value
+
+            strategy_state = {
+                "user_id": self.user_id,
+                "symbol": self.symbol,
+                "strategy_type": self.strategy_type.value,
+                "strategy_id": self.strategy_id,
+                "is_running": self.is_running,
+                "config": self.config,
+                "stats": {
+                    "start_time": self.stats["start_time"].isoformat(),
+                    "orders_count": self.stats["orders_count"],
+                    "profit_orders": self.stats["profit_orders"],
+                    "loss_orders": self.stats["loss_orders"],
+                    "total_pnl": float(self.stats["total_pnl"]),
+                    "max_drawdown": float(self.stats["max_drawdown"]),
+                    "current_drawdown": float(self.stats["current_drawdown"])
+                },
+                "active_orders": self.active_orders,
+                "active_positions": self.active_positions,
+                "signal_data": self.signal_data,
+                "strategy_attributes": strategy_attributes,  # Полное состояние стратегии
+                "last_saved": datetime.now().isoformat(),
+                # Дополнительные данные от конкретных стратегий
+                "additional_data": additional_data or {}
+            }
+
+            # Сохраняем состояние в Redis с TTL 7 дней
+            await redis_manager.client.setex(
+                state_key,
+                604800,  # 7 дней в секундах
+                json.dumps(strategy_state, default=str)
+            )
+
+            log_debug(self.user_id, f"Состояние стратегии {self.symbol} сохранено в Redis", "BaseStrategy")
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка сохранения состояния стратегии {self.symbol}: {e}", "BaseStrategy")
+
+    @classmethod
+    async def restore_strategy_state(cls, user_id: int, symbol: str, strategy_type: StrategyType) -> Optional[Dict[str, Any]]:
+        """
+        Восстанавливает состояние стратегии из Redis после перезагрузки сервера.
+        Возвращает сохранённое состояние или None если состояние не найдено.
+        """
+        try:
+            state_key = f"strategy_state:{user_id}:{symbol}:{strategy_type.value}"
+
+            saved_state = await redis_manager.client.get(state_key)
+            if not saved_state:
+                return None
+
+            strategy_state = json.loads(saved_state)
+
+            # Логируем время последнего сохранения для информации
+            last_saved = datetime.fromisoformat(strategy_state["last_saved"])
+            downtime = datetime.now() - last_saved
+            if downtime.total_seconds() < 60:
+                downtime_str = f"{int(downtime.total_seconds())} сек."
+            elif downtime.total_seconds() < 3600:
+                downtime_str = f"{int(downtime.total_seconds() / 60)} мин."
+            else:
+                hours = int(downtime.total_seconds() / 3600)
+                minutes = int((downtime.total_seconds() % 3600) / 60)
+                downtime_str = f"{hours}ч {minutes}мин"
+
+            log_info(user_id, f"Найдено сохранённое состояние стратегии {symbol} от {last_saved}", "BaseStrategy")
+            return strategy_state
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка восстановления состояния стратегии {symbol}: {e}", "BaseStrategy")
+            return None
+
+    async def recover_after_restart(self, saved_state: Dict[str, Any]) -> bool:
+        """
+        Восстанавливает состояние стратегии после перезагрузки сервера.
+        Возвращает True если восстановление прошло успешно.
+        """
+        try:
+            log_info(self.user_id, f"🔄 Начинаю восстановление стратегии {self.symbol} после перезагрузки сервера...", "BaseStrategy")
+
+            # Восстанавливаем базовые параметры
+            self.strategy_id = saved_state.get("strategy_id", self.strategy_id)
+            self.config = saved_state.get("config", {})
+            self.signal_data = saved_state.get("signal_data", {})
+            self.active_orders = saved_state.get("active_orders", {})
+            self.active_positions = saved_state.get("active_positions", {})
+
+            # Восстанавливаем статистику
+            saved_stats = saved_state.get("stats", {})
+            if saved_stats.get("start_time"):
+                self.stats["start_time"] = datetime.fromisoformat(saved_stats["start_time"])
+            self.stats["orders_count"] = saved_stats.get("orders_count", 0)
+            self.stats["profit_orders"] = saved_stats.get("profit_orders", 0)
+            self.stats["loss_orders"] = saved_stats.get("loss_orders", 0)
+            self.stats["total_pnl"] = Decimal(str(saved_stats.get("total_pnl", 0)))
+            self.stats["max_drawdown"] = Decimal(str(saved_stats.get("max_drawdown", 0)))
+            self.stats["current_drawdown"] = Decimal(str(saved_stats.get("current_drawdown", 0)))
+
+            # КРИТИЧЕСКИ ВАЖНО: Восстанавливаем все атрибуты стратегии
+            strategy_attributes = saved_state.get("strategy_attributes", {})
+            for attr_name, attr_value in strategy_attributes.items():
+                if hasattr(self, attr_name):
+                    # Восстанавливаем типы данных
+                    if attr_name in ['entry_price', 'position_size', 'stop_loss_price',
+                                   'total_position_size', 'average_entry_price', 'peak_profit_usd',
+                                   'last_averaging_percent', 'intended_order_amount']:
+                        setattr(self, attr_name, Decimal(str(attr_value)) if attr_value else None)
+                    elif attr_name == 'processed_orders':
+                        setattr(self, attr_name, set(attr_value) if attr_value else set())
+                    else:
+                        setattr(self, attr_name, attr_value)
+
+                    log_debug(self.user_id, f"Восстановлен атрибут {attr_name} = {attr_value}", "BaseStrategy")
+
+            # Специальная проверка и восстановление связи с БД
+            if hasattr(self, 'active_trade_db_id') and self.active_trade_db_id:
+                log_info(self.user_id, f"Восстановлена связь с записью БД: trade_id={self.active_trade_db_id}", "BaseStrategy")
+
+            # Проверяем актуальные ордера на бирже и синхронизируем состояние
+            await self._sync_orders_after_restart()
+
+            # Уведомляем пользователя о восстановлении
+            await self._notify_user_about_recovery(saved_state)
+
+            # Конкретная стратегия может переопределить этот метод для дополнительного восстановления
+            await self._strategy_specific_recovery(saved_state.get("additional_data", {}))
+
+            log_info(self.user_id, f"✅ Стратегия {self.symbol} успешно восстановлена после перезагрузки", "BaseStrategy")
+            return True
+
+        except Exception as e:
+            log_error(self.user_id, f"❌ Ошибка восстановления стратегии {self.symbol}: {e}", "BaseStrategy")
+            return False
+
+    async def _sync_orders_after_restart(self):
+        """
+        Синхронизирует состояние ордеров с биржей после перезагрузки.
+        Проверяет какие ордера всё ещё активны, какие исполнены или отменены.
+        """
+        try:
+            if not self.active_orders:
+                log_info(self.user_id, f"Нет сохранённых ордеров для синхронизации по {self.symbol}", "BaseStrategy")
+                return
+
+            log_info(self.user_id, f"🔄 Синхронизирую {len(self.active_orders)} ордеров с биржей для {self.symbol}", "BaseStrategy")
+
+            # Получаем все открытые ордера с биржи
+            exchange_orders = await self.api.get_open_orders(symbol=self.symbol)
+            exchange_order_ids = set()
+
+            if exchange_orders:
+                exchange_order_ids = {order.get("orderId") for order in exchange_orders}
+
+            orders_to_remove = []
+
+            for order_id, order_data in self.active_orders.items():
+                if order_id in exchange_order_ids:
+                    # Ордер всё ещё активен на бирже
+                    log_info(self.user_id, f"✅ Ордер {order_id} по {self.symbol} всё ещё активен, продолжаю отслеживание", "BaseStrategy")
+                else:
+                    # Ордер не найден в активных - возможно исполнен или отменён
+                    log_warning(self.user_id, f"⚠️ Ордер {order_id} по {self.symbol} не найден в активных, проверяю статус", "BaseStrategy")
+
+                    # Проверяем статус ордера через историю
+                    order_status = await self.api.get_order_status(order_id)
+                    if order_status:
+                        status = order_status.get("orderStatus", "Unknown")
+                        if status == "Filled":
+                            # Ордер исполнен - создаём событие об исполнении
+                            log_info(self.user_id, f"📈 Ордер {order_id} был исполнен во время перезагрузки", "BaseStrategy")
+                            filled_event = OrderFilledEvent(
+                                user_id=self.user_id,
+                                order_id=order_id,
+                                symbol=self.symbol,
+                                side=order_data.get("side", "Buy"),
+                                qty=Decimal(str(order_status.get("cumExecQty", "0"))),
+                                price=Decimal(str(order_status.get("avgPrice", "0"))),
+                                fee=Decimal(str(order_status.get("cumExecFee", "0")))
+                            )
+                            await self._handle_order_filled(filled_event)
+                        else:
+                            log_info(self.user_id, f"ℹ️ Ордер {order_id} имеет статус {status}, удаляю из отслеживания", "BaseStrategy")
+
+                    orders_to_remove.append(order_id)
+
+            # Удаляем неактивные ордера
+            for order_id in orders_to_remove:
+                self.active_orders.pop(order_id, None)
+
+            if orders_to_remove:
+                log_info(self.user_id, f"🧹 Удалено {len(orders_to_remove)} неактивных ордеров для {self.symbol}", "BaseStrategy")
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка синхронизации ордеров после перезагрузки для {self.symbol}: {e}", "BaseStrategy")
+
+    async def _notify_user_about_recovery(self, saved_state: Dict[str, Any]):
+        """Уведомляет пользователя о восстановлении стратегии после перезагрузки"""
+        try:
+            if not self.bot:
+                return
+
+            last_saved = datetime.fromisoformat(saved_state["last_saved"])
+            downtime = datetime.now() - last_saved
+
+            # Формируем красивое время простоя
+            if downtime.total_seconds() < 60:
+                downtime_str = f"{int(downtime.total_seconds())} сек."
+            elif downtime.total_seconds() < 3600:
+                downtime_str = f"{int(downtime.total_seconds() / 60)} мин."
+            else:
+                hours = int(downtime.total_seconds() / 3600)
+                minutes = int((downtime.total_seconds() % 3600) / 60)
+                downtime_str = f"{hours}ч {minutes}мин"
+
+            active_orders_count = len(self.active_orders)
+
+            message = (
+                f"🔄 <b>Восстановление после перезагрузки</b>\n\n"
+                f"📊 Стратегия: <b>{self.strategy_type.value}</b>\n"
+                f"💱 Символ: <b>{self.symbol}</b>\n"
+                f"⏰ Время простоя: <b>{downtime_str}</b>\n"
+            )
+
+            if active_orders_count > 0:
+                message += f"📋 Активных ордеров: <b>{active_orders_count}</b>\n"
+                message += f"✅ Отслеживание ордеров возобновлено"
+            else:
+                message += f"ℹ️ Активных ордеров не обнаружено"
+
+            await self.bot.send_message(
+                chat_id=self.user_id,
+                text=message,
+                parse_mode="HTML"
+            )
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка отправки уведомления о восстановлении: {e}", "BaseStrategy")
+
+    async def _strategy_specific_recovery(self, additional_data: Dict[str, Any]):
+        """
+        Переопределяется в конкретных стратегиях для дополнительного восстановления состояния.
+        Например, Signal Scalper может восстановить состояние усреднения.
+        """
+        pass
+
+    async def clear_strategy_state(self):
+        """Очищает сохранённое состояние стратегии из Redis при штатном завершении"""
+        try:
+            state_key = f"strategy_state:{self.user_id}:{self.symbol}:{self.strategy_type.value}"
+            await redis_manager.client.delete(state_key)
+            log_debug(self.user_id, f"Состояние стратегии {self.symbol} очищено из Redis", "BaseStrategy")
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка очистки состояния стратегии {self.symbol}: {e}", "BaseStrategy")
