@@ -374,6 +374,10 @@ class ImpulseTrailingStrategy(BaseStrategy):
             await self._send_trade_close_notification(pnl_net, event.fee)
             await self.stop("Position closed by TP/SL")
 
+    async def handle_price_update(self, event: PriceUpdateEvent):
+        """Обработка обновления цены (реализация абстрактного метода)"""
+        await self._handle_price_update(event)
+
     async def _handle_price_update(self, event: PriceUpdateEvent):
         """
         ФИНАЛЬНАЯ ВЕРСИЯ 3.2. Надежный трейлинг на основе USDT с закрытием по откату.

@@ -284,7 +284,7 @@ class BaseStrategy(ABC):
         pass
         
     @abstractmethod
-    async def _handle_price_update(self, event: PriceUpdateEvent):
+    async def handle_price_update(self, event: PriceUpdateEvent):
         """Обработка обновления цены (реализуется в наследниках)"""
         pass
         

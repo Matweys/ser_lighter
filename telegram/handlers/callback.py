@@ -684,7 +684,6 @@ async def callback_statistics(callback: CallbackQuery, state: FSMContext):
                 )
         else:
             text += "Сделок пока нет\n"
-        is_active_session = session_status.get('running', False) if session_status else False
         await callback.message.edit_text(
             text,
             reply_markup=get_main_menu_keyboard(),

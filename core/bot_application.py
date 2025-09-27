@@ -696,7 +696,9 @@ class BotApplication:
                         await session.start_auto_trading()
 
                         # Восстанавливаем оригинальную конфигурацию
-                        await redis_manager.save_config(user_id, ConfigType.GLOBAL, global_config)
+                        restore_config = global_config.copy()
+                        restore_config["watchlist_symbols"] = original_watchlist
+                        await redis_manager.save_config(user_id, ConfigType.GLOBAL, restore_config)
 
                         # Получаем количество запущенных стратегий
                         active_strategies_count = len(session.active_strategies)
@@ -759,10 +761,11 @@ class BotApplication:
                             f"🎯 Трейлинг активирован"
                         )
                     else:
+                        positions_list = '\n'.join([f'• {pos["symbol"]}: {pos["side"]} {pos["size"]}' for pos in active_positions_info])
                         recovery_message = (
                             f"❌ <b>ОШИБКА ВОССТАНОВЛЕНИЯ МОНИТОРИНГА</b>\n\n"
                             f"Найдены активные позиции, но не удалось создать стратегии мониторинга.\n\n"
-                            f"📊 Активные позиции:\n{chr(10).join([f'• {pos[\"symbol\"]}: {pos[\"side\"]} {pos[\"size\"]}' for pos in active_positions_info])}\n\n"
+                            f"📊 Активные позиции:\n{positions_list}\n\n"
                             f"⚠️ <b>СРОЧНО проверьте позиции и запустите мониторинг вручную!</b>"
                         )
             else:

@@ -208,7 +208,7 @@ class SignalScalperStrategy(BaseStrategy):
                 self.signal_confirmation_count = 0
                 self.last_signal = None
 
-    async def _handle_price_update(self, event: PriceUpdateEvent):
+    async def handle_price_update(self, event: PriceUpdateEvent):
         """Обработка тиков цены для усреднения и динамического тейк-профита."""
         if not self.position_active or not self.entry_price or self.is_waiting_for_trade:
             return
@@ -400,15 +400,36 @@ class SignalScalperStrategy(BaseStrategy):
 
         log_info(self.user_id, f"[ОБРАБОТКА] Обрабатываем ордер {event.order_id} ({event.side} {event.qty} {self.symbol})", "SignalScalper")
 
-        # Определяем тип ордера по reduce_only флагу
+        # УМНАЯ МНОГОУРОВНЕВАЯ ЛОГИКА ОПРЕДЕЛЕНИЯ ТИПА ОРДЕРА
+
+        # ПЕРВИЧНАЯ проверка по reduce_only флагу (наиболее надежно)
         is_closing_order = hasattr(event, 'reduce_only') and event.reduce_only
 
-        # Или определяем по текущему состоянию позиции и направлению ордера
-        if not is_closing_order:
-            # Если позиция активна и ордер в противоположном направлении - это закрытие
-            if self.position_active:
-                opposite_side = "Sell" if self.active_direction == "LONG" else "Buy"
-                is_closing_order = (event.side == opposite_side)
+        # ВТОРИЧНАЯ проверка по направлению ордера (fallback для случаев без reduce_only)
+        if not is_closing_order and self.position_active:
+            # Для закрытия позиции используется противоположное направление
+            expected_closing_side = "Sell" if self.active_direction == "LONG" else "Buy"
+
+            # Если ордер в направлении закрытия и НЕТ флага reduce_only - скорее всего это закрытие
+            if event.side == expected_closing_side:
+                is_closing_order = True
+                log_info(self.user_id, f"[FALLBACK] Ордер {event.order_id} определен как ЗАКРЫТИЕ по направлению: {event.side} (ожидалось {expected_closing_side})", "SignalScalper")
+
+        # ДЕТАЛЬНОЕ логирование для диагностики
+        log_info(self.user_id,
+                f"[ДИАГНОСТИКА] Ордер {event.order_id}: "
+                f"side={event.side}, qty={event.qty}, price={event.price}, "
+                f"reduce_only={getattr(event, 'reduce_only', 'НЕТ')}, "
+                f"position_active={self.position_active}, active_direction={self.active_direction}, "
+                f"is_closing={is_closing_order}",
+                "SignalScalper")
+
+        # Определение усреднения: позиция активна + НЕ закрытие + правильное направление
+        is_averaging_order = False
+        if self.position_active and not is_closing_order:
+            expected_averaging_side = "Buy" if self.active_direction == "LONG" else "Sell"
+            is_averaging_order = (event.side == expected_averaging_side)
+            log_info(self.user_id, f"[УСРЕДНЕНИЕ] Проверка: expected_side={expected_averaging_side}, actual_side={event.side}, is_averaging={is_averaging_order}", "SignalScalper")
 
         if not is_closing_order and not self.position_active:
             # Ордер на открытие позиции
@@ -419,7 +440,7 @@ class SignalScalperStrategy(BaseStrategy):
             self.position_size = event.qty
             self.peak_profit_usd = Decimal('0')
             self.hold_signal_counter = 0
-            await self.event_bus.subscribe(EventType.PRICE_UPDATE, self._handle_price_update, user_id=self.user_id)
+            await self.event_bus.subscribe(EventType.PRICE_UPDATE, self.handle_price_update, user_id=self.user_id)
             await self._send_trade_open_notification(event.side, event.price, event.qty, self.intended_order_amount)
 
             # Инициализируем счетчики усреднения
@@ -430,6 +451,45 @@ class SignalScalperStrategy(BaseStrategy):
 
             # ВСЕГДА устанавливаем стоп-лосс для защиты (даже при усреднении)
             await self._place_stop_loss_order(self.active_direction, self.entry_price, self.position_size)
+
+        elif is_averaging_order and self.position_active:
+            # Ордер на усреднение позиции
+            log_info(self.user_id, f"[УСРЕДНЕНИЕ] Обрабатываем ордер усреднения: {event.order_id}", "SignalScalper")
+
+            # НЕ ОБНОВЛЯЕМ position_active, так как позиция остается активной
+            # Обновляем размер позиции и среднюю цену напрямую в этом методе
+            if self.total_position_size == 0:
+                # Первое усреднение - инициализируем
+                self.total_position_size = self.position_size + event.qty
+                self.average_entry_price = ((self.entry_price * self.position_size) + (event.price * event.qty)) / self.total_position_size
+            else:
+                # Последующие усреднения
+                old_total_value = self.average_entry_price * self.total_position_size
+                new_value = event.price * event.qty
+                self.total_position_size += event.qty
+                self.average_entry_price = (old_total_value + new_value) / self.total_position_size
+
+            # Сохраняем процент, при котором усреднялись
+            if self.active_direction == "LONG":
+                self.last_averaging_percent = ((self.average_entry_price - event.price) / self.average_entry_price * 100)
+            else:  # SHORT
+                self.last_averaging_percent = ((event.price - self.average_entry_price) / self.average_entry_price * 100)
+
+            # Увеличиваем счетчик усреднений
+            self.averaging_count += 1
+
+            log_info(self.user_id,
+                    f"[УСРЕДНЕНИЕ] Усреднение #{self.averaging_count} выполнено. Новая средняя цена: {self.average_entry_price:.4f}, размер: {self.total_position_size}",
+                    "SignalScalper")
+
+            # ДИНАМИЧЕСКАЯ КОРРЕКТИРОВКА СТОП-ЛОССА после усреднения
+            await self._update_stop_loss_after_averaging()
+
+            # Отправляем уведомление об усреднении
+            await self._send_averaging_notification(
+                event.price, event.qty, self.average_entry_price, self.total_position_size,
+                side=event.side
+            )
 
         elif is_closing_order and self.position_active:
             # Ордер на закрытие позиции
@@ -1085,7 +1145,7 @@ class SignalScalperStrategy(BaseStrategy):
 
                 # Восстанавливаем подписки на события цен (критически важно для мониторинга)
                 if not hasattr(self, '_price_subscription_restored'):
-                    await self.event_bus.subscribe(EventType.PRICE_UPDATE, self._handle_price_update, user_id=self.user_id)
+                    await self.event_bus.subscribe(EventType.PRICE_UPDATE, self.handle_price_update, user_id=self.user_id)
                     log_info(self.user_id, f"✅ Восстановлена подписка на обновления цен для {self.symbol}", "SignalScalper")
                     self._price_subscription_restored = True
 

@@ -1050,7 +1050,7 @@ class UserSession:
                     log_info(self.user_id, f"🛡️ Восстановлен стоп-лосс: {order_id}", module_name=__name__)
 
             # ШАГ 5: Подписываемся на события цен для мониторинга
-            await strategy.event_bus.subscribe(EventType.PRICE_UPDATE, strategy._handle_price_update, user_id=strategy.user_id)
+            await strategy.event_bus.subscribe(EventType.PRICE_UPDATE, strategy.handle_price_update, user_id=strategy.user_id)
 
             # ШАГ 6: Сохраняем состояние для будущего восстановления
             await strategy.save_strategy_state({
@@ -1067,7 +1067,7 @@ class UserSession:
             log_error(self.user_id, f"Ошибка умной синхронизации стратегии с позицией: {e}", module_name=__name__)
             return False
 
-    async def _send_position_monitoring_notification(self, strategy, position_info: dict):
+    async def _send_position_monitoring_notification(self, _strategy, position_info: dict):
         """Отправляет уведомление о начале мониторинга активной позиции."""
         try:
             symbol = position_info.get('symbol')
