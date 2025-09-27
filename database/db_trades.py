@@ -968,9 +968,9 @@ class _DatabaseManager:
 
             win_rate = (Decimal(winning_trades) / Decimal(total_trades) * 100) if total_trades > 0 else Decimal('0')
 
-            # Получаем депозит пользователя для расчёта процента дохода
-            # Если нет начального депозита, используем сумму маржи всех сделок как приблизительный депозит
-            user_profile = await self.get_user(user_id)
+            # В demo режиме используем сумму маржи всех сделок как приблизительный депозит
+            # В будущем здесь будет использоваться реальный депозит пользователя
+            # TODO: В продакшене заменить на user_profile.initial_deposit
 
             # Запрос для оценки размера депозита на основе использованной маржи
             margin_query = f"""
@@ -1118,6 +1118,217 @@ class _DatabaseManager:
         except Exception as e:
             log_error(user_id, f"Ошибка получения доступных месяцев: {e}", module_name='database')
             return []
+
+    # ===============================================================================
+    # МЕТОДЫ ДЛЯ РАБОТЫ С ОРДЕРАМИ (для системы восстановления)
+    # ===============================================================================
+
+    async def save_order(self, user_id: int, symbol: str, side: str, order_type: str,
+                        quantity: Decimal, price: Decimal, order_id: str,
+                        strategy_type: str = None, client_order_id: str = None,
+                        metadata: Dict[str, Any] = None) -> Optional[int]:
+        """
+        Сохраняет ордер в базу данных
+
+        Args:
+            user_id: ID пользователя
+            symbol: Символ
+            side: Сторона (BUY/SELL)
+            order_type: Тип ордера (LIMIT/MARKET/STOP)
+            quantity: Количество
+            price: Цена
+            order_id: ID ордера на бирже
+            strategy_type: Тип стратегии
+            client_order_id: Клиентский ID ордера
+            metadata: Дополнительные данные
+
+        Returns:
+            Optional[int]: ID записи в БД или None при ошибке
+        """
+        try:
+            query = """
+            INSERT INTO orders (user_id, symbol, side, order_type, quantity, price,
+                              order_id, client_order_id, strategy_type, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            RETURNING id
+            """
+
+            metadata_json = json.dumps(metadata or {}, cls=DecimalEncoder)
+
+            result = await self._execute_query(
+                query,
+                (user_id, symbol, side, order_type, quantity, price,
+                 order_id, client_order_id, strategy_type, metadata_json),
+                fetch_one=True
+            )
+
+            if result:
+                log_debug(user_id, f"Ордер {order_id} сохранён в БД с ID {result['id']}", module_name='database')
+                return result['id']
+            return None
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка сохранения ордера {order_id}: {e}", module_name='database')
+            return None
+
+    async def get_active_orders_by_user(self, user_id: int, symbol: str = None,
+                                      strategy_type: str = None) -> List[Dict[str, Any]]:
+        """
+        Получает активные ордера пользователя из БД
+
+        Args:
+            user_id: ID пользователя
+            symbol: Символ (опционально)
+            strategy_type: Тип стратегии (опционально)
+
+        Returns:
+            List[Dict]: Список активных ордеров
+        """
+        try:
+            conditions = ["user_id = $1", "status IN ('PENDING', 'PARTIALLY_FILLED', 'NEW')"]
+            params = [user_id]
+            param_count = 1
+
+            if symbol:
+                param_count += 1
+                conditions.append(f"symbol = ${param_count}")
+                params.append(symbol)
+
+            if strategy_type:
+                param_count += 1
+                conditions.append(f"strategy_type = ${param_count}")
+                params.append(strategy_type)
+
+            query = f"""
+            SELECT id, user_id, symbol, side, order_type, quantity, price,
+                   filled_quantity, average_price, status, order_id,
+                   client_order_id, strategy_type, metadata, created_at, updated_at
+            FROM orders
+            WHERE {' AND '.join(conditions)}
+            ORDER BY created_at DESC
+            """
+
+            rows = await self._execute_query(query, tuple(params), fetch_all=True)
+
+            orders = []
+            for row in rows:
+                order_dict = dict(row)
+                if order_dict.get('metadata'):
+                    order_dict['metadata'] = json.loads(order_dict['metadata'])
+                orders.append(order_dict)
+
+            log_debug(user_id, f"Найдено {len(orders)} активных ордеров", module_name='database')
+            return orders
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка получения активных ордеров: {e}", module_name='database')
+            return []
+
+    async def update_order_status(self, order_id: str, status: str,
+                                filled_quantity: Decimal = None,
+                                average_price: Decimal = None,
+                                metadata: Dict[str, Any] = None) -> bool:
+        """
+        Обновляет статус ордера в БД
+
+        Args:
+            order_id: ID ордера на бирже
+            status: Новый статус
+            filled_quantity: Исполненное количество
+            average_price: Средняя цена исполнения
+            metadata: Дополнительные данные
+
+        Returns:
+            bool: True если обновление успешно
+        """
+        try:
+            set_clauses = ["status = $2", "updated_at = NOW()"]
+            params = [order_id, status]
+            param_count = 2
+
+            if filled_quantity is not None:
+                param_count += 1
+                set_clauses.append(f"filled_quantity = ${param_count}")
+                params.append(filled_quantity)
+
+            if average_price is not None:
+                param_count += 1
+                set_clauses.append(f"average_price = ${param_count}")
+                params.append(average_price)
+
+            if metadata is not None:
+                param_count += 1
+                set_clauses.append(f"metadata = ${param_count}")
+                params.append(json.dumps(metadata, cls=DecimalEncoder))
+
+            query = f"""
+            UPDATE orders
+            SET {', '.join(set_clauses)}
+            WHERE order_id = $1
+            RETURNING user_id
+            """
+
+            result = await self._execute_query(query, tuple(params), fetch_one=True)
+
+            if result:
+                log_debug(result['user_id'], f"Статус ордера {order_id} обновлён на {status}", module_name='database')
+                return True
+            return False
+
+        except Exception as e:
+            log_error(0, f"Ошибка обновления статуса ордера {order_id}: {e}", module_name='database')
+            return False
+
+    async def trade_exists(self, trade_id: int) -> bool:
+        """
+        Проверяет существование сделки в БД
+
+        Args:
+            trade_id: ID сделки
+
+        Returns:
+            bool: True если сделка существует
+        """
+        try:
+            query = "SELECT 1 FROM trades WHERE id = $1"
+            result = await self._execute_query(query, (trade_id,), fetch_one=True)
+            return result is not None
+
+        except Exception as e:
+            log_error(0, f"Ошибка проверки существования сделки {trade_id}: {e}", module_name='database')
+            return False
+
+    async def get_order_by_exchange_id(self, order_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Получает ордер по ID с биржи
+
+        Args:
+            order_id: ID ордера на бирже
+
+        Returns:
+            Optional[Dict]: Данные ордера или None
+        """
+        try:
+            query = """
+            SELECT id, user_id, symbol, side, order_type, quantity, price,
+                   filled_quantity, average_price, status, order_id,
+                   client_order_id, strategy_type, metadata, created_at, updated_at
+            FROM orders
+            WHERE order_id = $1
+            """
+
+            result = await self._execute_query(query, (order_id,), fetch_one=True)
+
+            if result:
+                order_dict = dict(result)
+                if order_dict.get('metadata'):
+                    order_dict['metadata'] = json.loads(order_dict['metadata'])
+                return order_dict
+            return None
+
+        except Exception as e:
+            log_error(0, f"Ошибка получения ордера {order_id}: {e}", module_name='database')
+            return None
 
 # Глобальный экземпляр менеджера базы данных
 db_manager = _DatabaseManager()

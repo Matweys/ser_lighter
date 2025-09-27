@@ -246,6 +246,20 @@ class BaseStrategy(ABC):
                         return True
 
                     elif status in ["Cancelled", "Rejected", "Expired"]:
+                        # КРИТИЧЕСКИ ВАЖНО: Обновляем статус ордера в БД
+                        try:
+                            from database.db_trades import db_manager
+                            await db_manager.update_order_status(
+                                order_id=order_id,
+                                status=status.upper(),
+                                filled_price=None,
+                                filled_qty=None,
+                                fee=None
+                            )
+                            log_debug(self.user_id, f"Статус ордера {order_id} обновлён в БД: {status.upper()}", module_name=__name__)
+                        except Exception as db_error:
+                            log_error(self.user_id, f"Ошибка обновления статуса ордера {order_id} в БД: {db_error}", module_name=__name__)
+
                         log_error(self.user_id, f"Ордер {order_id} не будет исполнен. Статус: {status}",
                                   module_name=__name__)
                         return False
@@ -587,6 +601,30 @@ class BaseStrategy(ABC):
 
             if order_id:
                 self.active_orders[order_id] = {"order_id": order_id, "status": "New"}
+
+                # КРИТИЧЕСКИ ВАЖНО: Сохраняем ордер в БД для системы восстановления
+                try:
+                    from database.db_trades import db_manager
+                    await db_manager.save_order(
+                        user_id=self.user_id,
+                        symbol=self.symbol,
+                        side=side,
+                        order_type=order_type,
+                        quantity=qty,
+                        price=price or Decimal('0'),
+                        order_id=order_id,
+                        strategy_type=self.strategy_type.value,
+                        metadata={
+                            "stop_loss": str(stop_loss) if stop_loss else None,
+                            "take_profit": str(take_profit) if take_profit else None,
+                            "reduce_only": reduce_only,
+                            "created_by": "base_strategy_place_order"
+                        }
+                    )
+                    log_debug(self.user_id, f"Ордер {order_id} сохранён в БД", module_name=__name__)
+                except Exception as db_error:
+                    log_error(self.user_id, f"Ошибка сохранения ордера в БД: {db_error}", module_name=__name__)
+
                 # Сохраняем состояние после размещения ордера
                 await self.save_strategy_state({"last_action": "order_placed", "order_id": order_id})
                 log_info(self.user_id, f"Ордер {order_id} ({side} {qty} {self.symbol}) отправлен на биржу.",
@@ -611,6 +649,20 @@ class BaseStrategy(ABC):
             result = await self.api.cancel_order(self.symbol, order_id)
             
             if result:
+                # КРИТИЧЕСКИ ВАЖНО: Обновляем статус ордера в БД
+                try:
+                    from database.db_trades import db_manager
+                    await db_manager.update_order_status(
+                        order_id=order_id,
+                        status="CANCELLED",
+                        filled_price=None,
+                        filled_qty=None,
+                        fee=None
+                    )
+                    log_debug(self.user_id, f"Статус ордера {order_id} обновлён в БД: CANCELLED", module_name=__name__)
+                except Exception as db_error:
+                    log_error(self.user_id, f"Ошибка обновления статуса ордера {order_id} в БД: {db_error}", module_name=__name__)
+
                 # Удаление из активных ордеров
                 if order_id in self.active_orders:
                     del self.active_orders[order_id]
@@ -1258,7 +1310,7 @@ class BaseStrategy(ABC):
                 minutes = int((downtime.total_seconds() % 3600) / 60)
                 downtime_str = f"{hours}ч {minutes}мин"
 
-            log_info(user_id, f"Найдено сохранённое состояние стратегии {symbol} от {last_saved}", "BaseStrategy")
+            log_info(user_id, f"Найдено сохранённое состояние стратегии {symbol} от {last_saved} (простой: {downtime_str})", "BaseStrategy")
             return strategy_state
 
         except Exception as e:
@@ -1363,6 +1415,21 @@ class BaseStrategy(ABC):
                         if status == "Filled":
                             # Ордер исполнен - создаём событие об исполнении
                             log_info(self.user_id, f"📈 Ордер {order_id} был исполнен во время перезагрузки", "BaseStrategy")
+
+                            # КРИТИЧЕСКИ ВАЖНО: Обновляем статус ордера в БД
+                            try:
+                                from database.db_trades import db_manager
+                                await db_manager.update_order_status(
+                                    order_id=order_id,
+                                    status="FILLED",
+                                    filled_price=Decimal(str(order_status.get("avgPrice", "0"))),
+                                    filled_qty=Decimal(str(order_status.get("cumExecQty", "0"))),
+                                    fee=Decimal(str(order_status.get("cumExecFee", "0")))
+                                )
+                                log_debug(self.user_id, f"Статус ордера {order_id} обновлён в БД: FILLED", "BaseStrategy")
+                            except Exception as db_error:
+                                log_error(self.user_id, f"Ошибка обновления статуса ордера {order_id} в БД: {db_error}", "BaseStrategy")
+
                             filled_event = OrderFilledEvent(
                                 user_id=self.user_id,
                                 order_id=order_id,
@@ -1374,7 +1441,20 @@ class BaseStrategy(ABC):
                             )
                             await self._handle_order_filled(filled_event)
                         else:
+                            # КРИТИЧЕСКИ ВАЖНО: Обновляем статус отменённых ордеров в БД
                             log_info(self.user_id, f"ℹ️ Ордер {order_id} имеет статус {status}, удаляю из отслеживания", "BaseStrategy")
+                            try:
+                                from database.db_trades import db_manager
+                                await db_manager.update_order_status(
+                                    order_id=order_id,
+                                    status=status.upper(),
+                                    filled_price=None,
+                                    filled_qty=None,
+                                    fee=None
+                                )
+                                log_debug(self.user_id, f"Статус ордера {order_id} обновлён в БД: {status.upper()}", "BaseStrategy")
+                            except Exception as db_error:
+                                log_error(self.user_id, f"Ошибка обновления статуса ордера {order_id} в БД: {db_error}", "BaseStrategy")
 
                     orders_to_remove.append(order_id)
 

@@ -876,3 +876,227 @@ class UserSession:
                 log_info(self.user_id, f"Уведомление о запуске стратегии {strategy.strategy_id} отправлено", module_name=__name__)
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления о запуске стратегии: {e}", module_name=__name__)
+
+    async def create_strategy_from_active_position(self, position_info: dict, strategy_type: StrategyType = None) -> bool:
+        """
+        Создаёт стратегию для мониторинга существующей активной позиции.
+
+        Args:
+            position_info: Информация о позиции с биржи
+            strategy_type: Тип стратегии (по умолчанию SIGNAL_SCALPER)
+
+        Returns:
+            bool: True если стратегия успешно создана
+        """
+        try:
+            symbol = position_info.get('symbol')
+            if not symbol:
+                log_error(self.user_id, "Не указан символ позиции", module_name=__name__)
+                return False
+
+            # По умолчанию используем SIGNAL_SCALPER
+            if not strategy_type:
+                strategy_type = StrategyType.SIGNAL_SCALPER
+
+            strategy_id = f"{strategy_type.value}_{symbol}"
+
+            # Проверяем, не запущена ли уже такая стратегия
+            if strategy_id in self.active_strategies:
+                log_warning(self.user_id, f"Стратегия {strategy_id} уже активна", module_name=__name__)
+                return True
+
+            # Создаем стратегию с использованием factory
+            strategy = create_strategy(
+                strategy_type=strategy_type.value,
+                bot=self.bot,
+                user_id=self.user_id,
+                symbol=symbol,
+                signal_data={},
+                api=self.api,
+                event_bus=self.event_bus,
+                config=None
+            )
+
+            if not strategy:
+                log_error(self.user_id, f"Не удалось создать стратегию типа: {strategy_type.value}", module_name=__name__)
+                return False
+
+            # КРИТИЧЕСКИ ВАЖНО: Синхронизируем состояние стратегии с активной позицией
+            success = await self._sync_strategy_with_position(strategy, position_info)
+
+            if success:
+                # Добавляем в активные стратегии
+                self.active_strategies[strategy_id] = strategy
+
+                # Обновляем статистику
+                self.session_stats["strategies_launched"] += 1
+
+                # Публикуем событие о запуске стратегии
+                event = StrategyStartEvent(
+                    user_id=self.user_id,
+                    strategy_type=strategy_type.value,
+                    symbol=symbol,
+                    strategy_id=strategy.strategy_id
+                )
+                await self.event_bus.publish(event)
+
+                # Отправляем уведомление о восстановлении мониторинга
+                await self._send_position_monitoring_notification(strategy, position_info)
+
+                log_info(self.user_id, f"✅ Стратегия {strategy_id} создана для мониторинга активной позиции", module_name=__name__)
+                return True
+            else:
+                log_error(self.user_id, f"❌ Не удалось синхронизировать стратегию с позицией {symbol}", module_name=__name__)
+                return False
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка создания стратегии из позиции: {e}", module_name=__name__)
+            return False
+
+    async def _sync_strategy_with_position(self, strategy, position_info: dict) -> bool:
+        """
+        УМНАЯ СИНХРОНИЗАЦИЯ: Восстанавливает состояние стратегии на основе данных из БД и биржи.
+        НЕ создаёт новые ордера, а восстанавливает связь с существующими.
+        """
+        try:
+            from database.db_trades import db_manager
+
+            # Извлекаем данные позиции
+            symbol = position_info.get('symbol')
+            side = position_info.get('side')  # 'Buy' или 'Sell'
+            size = float(position_info.get('size', 0))
+            entry_price = float(position_info.get('entry_price', 0))
+
+            if size <= 0 or entry_price <= 0:
+                log_error(self.user_id, f"Некорректные данные позиции: size={size}, entry_price={entry_price}", module_name=__name__)
+                return False
+
+            # Конвертируем направление позиции
+            direction = "LONG" if side == "Buy" else "SHORT"
+
+            log_info(self.user_id, f"🔍 Восстанавливаю стратегию для позиции {symbol} {direction} {size} @ {entry_price}", module_name=__name__)
+
+            # ШАГ 1: Получаем ВСЕ активные ордера бота для этого символа из БД
+            active_orders_from_db = await db_manager.get_active_orders_by_user(
+                user_id=self.user_id,
+                symbol=symbol,
+                strategy_type=strategy.strategy_type.value
+            )
+
+            log_info(self.user_id, f"🗄️ Найдено {len(active_orders_from_db)} активных ордеров в БД для {symbol}", module_name=__name__)
+
+            # ШАГ 2: Синхронизируем каждый ордер с биржей
+            restored_orders = {}
+            for db_order in active_orders_from_db:
+                exchange_order_id = db_order['order_id']
+
+                try:
+                    # Проверяем статус ордера на бирже
+                    order_status_on_exchange = await self.api.get_order_status(exchange_order_id)
+
+                    if order_status_on_exchange:
+                        # Ордер существует на бирже - синхронизируем статус
+                        exchange_status = order_status_on_exchange.get('status', 'UNKNOWN')
+                        db_status = db_order['status']
+
+                        if exchange_status != db_status:
+                            # Обновляем статус в БД
+                            await db_manager.update_order_status(
+                                order_id=exchange_order_id,
+                                status=exchange_status,
+                                filled_quantity=Decimal(str(order_status_on_exchange.get('filled_qty', 0))),
+                                average_price=Decimal(str(order_status_on_exchange.get('avg_price', 0)))
+                            )
+                            log_info(self.user_id, f"🔄 Обновлён статус ордера {exchange_order_id}: {db_status} → {exchange_status}", module_name=__name__)
+
+                        # Если ордер активен, добавляем в стратегию
+                        if exchange_status in ['NEW', 'PENDING', 'PARTIALLY_FILLED']:
+                            restored_orders[exchange_order_id] = {
+                                "order_id": exchange_order_id,
+                                "status": exchange_status,
+                                "type": db_order['order_type'],
+                                "side": db_order['side'],
+                                "quantity": db_order['quantity'],
+                                "price": db_order['price']
+                            }
+                            log_info(self.user_id, f"✅ Восстановлен ордер {exchange_order_id} ({db_order['order_type']})", module_name=__name__)
+                    else:
+                        # Ордер не найден на бирже - помечаем как потерянный
+                        await db_manager.update_order_status(
+                            order_id=exchange_order_id,
+                            status='LOST',
+                            metadata={"lost_at": datetime.now().isoformat(), "reason": "not_found_on_exchange"}
+                        )
+                        log_warning(self.user_id, f"⚠️ Ордер {exchange_order_id} не найден на бирже, помечен как потерянный", module_name=__name__)
+
+                except Exception as order_error:
+                    log_error(self.user_id, f"Ошибка проверки ордера {exchange_order_id}: {order_error}", module_name=__name__)
+
+            # ШАГ 3: Устанавливаем состояние позиции в стратегии
+            strategy.position_active = True
+            strategy.active_direction = direction
+            strategy.entry_price = Decimal(str(entry_price))
+            strategy.position_size = Decimal(str(size))
+            strategy.peak_profit_usd = Decimal('0')
+            strategy.hold_signal_counter = 0
+
+            # ШАГ 4: Восстанавливаем ордера в стратегии
+            strategy.active_orders = restored_orders
+
+            # Определяем специфичные ордера (стоп-лосс, тейк-профит)
+            for order_id, order_data in restored_orders.items():
+                if order_data['type'] == 'STOP' or 'stop' in order_data.get('metadata', {}).get('purpose', '').lower():
+                    strategy.stop_loss_order_id = order_id
+                    log_info(self.user_id, f"🛡️ Восстановлен стоп-лосс: {order_id}", module_name=__name__)
+
+            # ШАГ 5: Подписываемся на события цен для мониторинга
+            await strategy.event_bus.subscribe(EventType.PRICE_UPDATE, strategy._handle_price_update, user_id=strategy.user_id)
+
+            # ШАГ 6: Сохраняем состояние для будущего восстановления
+            await strategy.save_strategy_state({
+                "restored_from_position": True,
+                "original_position_info": position_info,
+                "restored_orders_count": len(restored_orders),
+                "restoration_time": datetime.now().isoformat()
+            })
+
+            log_info(self.user_id, f"✅ Стратегия восстановлена: {symbol} {direction} {size} @ {entry_price}, ордеров: {len(restored_orders)}", module_name=__name__)
+            return True
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка умной синхронизации стратегии с позицией: {e}", module_name=__name__)
+            return False
+
+    async def _send_position_monitoring_notification(self, strategy, position_info: dict):
+        """Отправляет уведомление о начале мониторинга активной позиции."""
+        try:
+            symbol = position_info.get('symbol')
+            side = position_info.get('side')
+            size = position_info.get('size', 0)
+            entry_price = position_info.get('entry_price', 0)
+            direction = "LONG 🟢" if side == "Buy" else "SHORT 🔴"
+
+            message = (
+                f"🛡️ <b>МОНИТОРИНГ ПОЗИЦИИ ВОССТАНОВЛЕН</b>\n\n"
+                f"▫️ Стратегия: Signal Scalper\n"
+                f"▫️ Символ: {symbol}\n"
+                f"▫️ Направление: {direction}\n"
+                f"▫️ Размер: {size}\n"
+                f"▫️ Цена входа: {entry_price} USDT\n\n"
+                f"✅ Стратегия автоматически возобновила:\n"
+                f"• 📊 Мониторинг P&L\n"
+                f"• 🛡️ Защитный стоп-лосс\n"
+                f"• 🎯 Трейлинг прибыли\n"
+                f"• 📈 Анализ сигналов\n\n"
+                f"🔄 <b>Позиция под полным контролем!</b>"
+            )
+
+            if bot_manager and bot_manager.bot:
+                await bot_manager.bot.send_message(
+                    chat_id=self.user_id,
+                    text=message,
+                    parse_mode="HTML"
+                )
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка отправки уведомления о мониторинге позиции: {e}", module_name=__name__)

@@ -384,6 +384,20 @@ class SignalScalperStrategy(BaseStrategy):
         self.processed_orders.add(event.order_id)
         self.current_order_id = None  # Сбрасываем ожидаемый ордер
 
+        # КРИТИЧЕСКИ ВАЖНО: Обновляем статус ордера в БД как FILLED
+        try:
+            from database.db_trades import db_manager
+            await db_manager.update_order_status(
+                order_id=event.order_id,
+                status="FILLED",
+                filled_price=event.price,
+                filled_qty=event.qty,
+                fee=getattr(event, 'fee', Decimal('0'))
+            )
+            log_debug(self.user_id, f"Статус ордера {event.order_id} обновлён в БД: FILLED", "SignalScalper")
+        except Exception as db_error:
+            log_error(self.user_id, f"Ошибка обновления статуса ордера {event.order_id} в БД: {db_error}", "SignalScalper")
+
         log_info(self.user_id, f"[ОБРАБОТКА] Обрабатываем ордер {event.order_id} ({event.side} {event.qty} {self.symbol})", "SignalScalper")
 
         # Определяем тип ордера по reduce_only флагу
@@ -976,8 +990,6 @@ class SignalScalperStrategy(BaseStrategy):
                 log_warning(self.user_id, "Не удалось обновить стоп-лосс: позиция неактивна или нет средней цены", "SignalScalper")
                 return
 
-            # Получаем текущую цену для анализа
-            current_price = await self.api.get_current_price(self.symbol)
             # ИСПРАВЛЕННАЯ ЛОГИКА: Всегда используем стандартный расчёт на основе средней цены
             # "Умный" расчёт должен вызываться только при необходимости корректировки
             new_stop_loss_price = self._calculate_stop_loss_price(

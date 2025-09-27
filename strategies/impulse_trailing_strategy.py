@@ -317,6 +317,20 @@ class ImpulseTrailingStrategy(BaseStrategy):
             self.position_initiated = True
             # === КОНЕЦ БЛОКА ЗАЩИТЫ ===
 
+            # КРИТИЧЕСКИ ВАЖНО: Обновляем статус ордера в БД как FILLED
+            try:
+                from database.db_trades import db_manager
+                await db_manager.update_order_status(
+                    order_id=event.order_id,
+                    status="FILLED",
+                    filled_price=event.price,
+                    filled_qty=event.qty,
+                    fee=getattr(event, 'fee', Decimal('0'))
+                )
+                log_debug(self.user_id, f"Статус ордера {event.order_id} обновлён в БД: FILLED", "impulse_trailing")
+            except Exception as db_error:
+                log_error(self.user_id, f"Ошибка обновления статуса ордера {event.order_id} в БД: {db_error}", "impulse_trailing")
+
             self.entry_price = event.price
             self.position_size = event.qty
             self.peak_price = event.price
@@ -341,6 +355,20 @@ class ImpulseTrailingStrategy(BaseStrategy):
 
         # --- Сценарий: Закрытие позиции ---
         if self.position_side and event.side != self.position_side:
+            # КРИТИЧЕСКИ ВАЖНО: Обновляем статус ордера в БД как FILLED
+            try:
+                from database.db_trades import db_manager
+                await db_manager.update_order_status(
+                    order_id=event.order_id,
+                    status="FILLED",
+                    filled_price=event.price,
+                    filled_qty=event.qty,
+                    fee=getattr(event, 'fee', Decimal('0'))
+                )
+                log_debug(self.user_id, f"Статус ордера {event.order_id} обновлён в БД: FILLED", "impulse_trailing")
+            except Exception as db_error:
+                log_error(self.user_id, f"Ошибка обновления статуса ордера {event.order_id} в БД: {db_error}", "impulse_trailing")
+
             pnl_gross = (event.price - self.entry_price) * self.position_size if self.position_side == "Buy" else (self.entry_price - event.price) * self.position_size
             pnl_net = pnl_gross - event.fee
             await self._send_trade_close_notification(pnl_net, event.fee)
