@@ -18,7 +18,6 @@ from database.db_trades import db_manager
 from cache.redis_manager import redis_manager
 from core.bot_application import BotApplication
 from telegram.bot import bot_manager
-from telegram.handlers import basic, callback
 from core.default_configs import DefaultConfigs
 from core.enums import ConfigType
 from aiogram.exceptions import TelegramRetryAfter
@@ -129,11 +128,8 @@ async def main():
 
         await bot_manager.initialize(event_bus=event_bus)
 
-        # Регистрация роутеров и передача event_bus
-        bot_manager.dp.include_router(basic.router)
-        bot_manager.dp.include_router(callback.router)
-        basic.set_event_bus(event_bus)
-        callback.set_event_bus(event_bus)
+        # EventBus уже передан в bot_manager.initialize(),
+        # а роутеры зарегистрированы в _register_handlers()
 
         # Настройка админа и команд
         await setup_admin_user()
