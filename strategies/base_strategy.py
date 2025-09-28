@@ -256,9 +256,8 @@ class BaseStrategy(ABC):
                             await db_manager.update_order_status(
                                 order_id=order_id,
                                 status=status.upper(),
-                                filled_price=None,
-                                filled_qty=None,
-                                fee=None
+                                filled_quantity=None,
+                                average_price=None
                             )
                             log_debug(self.user_id, f"Статус ордера {order_id} обновлён в БД: {status.upper()}", module_name=__name__)
                         except Exception as db_error:
@@ -721,9 +720,8 @@ class BaseStrategy(ABC):
                     await db_manager.update_order_status(
                         order_id=order_id,
                         status="CANCELLED",
-                        filled_price=None,
-                        filled_qty=None,
-                        fee=None
+                        filled_quantity=None,
+                        average_price=None
                     )
                     log_debug(self.user_id, f"Статус ордера {order_id} обновлён в БД: CANCELLED", module_name=__name__)
                 except Exception as db_error:
@@ -1119,7 +1117,22 @@ class BaseStrategy(ABC):
 
             # Получаем информацию о SL для новой позиции
             if side:
-                sl_price, sl_loss = self._get_stop_loss_info(side, new_avg_price, new_total_size)
+                # Используем реальный SL если он есть (для стратегий с усреднением)
+                if hasattr(self, 'stop_loss_price') and self.stop_loss_price:
+                    sl_price = self.stop_loss_price
+                    # Точный расчёт убытка на основе реального SL
+                    is_long = side.lower() == 'buy'
+                    if is_long:
+                        actual_loss = (new_avg_price - sl_price) * new_total_size
+                    else:
+                        actual_loss = (sl_price - new_avg_price) * new_total_size
+
+                    # Добавляем комиссию при закрытии
+                    taker_fee_rate = Decimal('0.0006')
+                    estimated_close_fee = sl_price * new_total_size * taker_fee_rate
+                    sl_loss = actual_loss + estimated_close_fee
+                else:
+                    sl_price, sl_loss = self._get_stop_loss_info(side, new_avg_price, new_total_size)
             else:
                 # Если side не передан, используем значения по умолчанию
                 sl_price, sl_loss = new_avg_price, Decimal('15.0')
@@ -1491,9 +1504,8 @@ class BaseStrategy(ABC):
                                 await db_manager.update_order_status(
                                     order_id=order_id,
                                     status="FILLED",
-                                    filled_price=Decimal(str(order_status.get("avgPrice", "0"))),
-                                    filled_qty=Decimal(str(order_status.get("cumExecQty", "0"))),
-                                    fee=Decimal(str(order_status.get("cumExecFee", "0")))
+                                    filled_quantity=Decimal(str(order_status.get("cumExecQty", "0"))),
+                                    average_price=Decimal(str(order_status.get("avgPrice", "0")))
                                 )
                                 log_debug(self.user_id, f"Статус ордера {order_id} обновлён в БД: FILLED", "BaseStrategy")
                             except Exception as db_error:

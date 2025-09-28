@@ -1043,8 +1043,8 @@ class SignalScalperStrategy(BaseStrategy):
         sl_threatens_next_averaging = False
         threat_reason = ""
 
-        # Добавляем небольшой буфер (0.5%) для безопасности
-        safety_buffer = next_averaging_price * Decimal('0.005')
+        # Добавляем небольшой буфер (0.3%) для безопасности
+        safety_buffer = next_averaging_price * Decimal('0.003')
 
         if direction == "LONG":
             # Для LONG: SL должен быть ниже цены следующего усреднения с буфером
@@ -1063,7 +1063,7 @@ class SignalScalperStrategy(BaseStrategy):
             return standard_sl, False, f"sufficient_space_for_next_averaging_#{next_averaging_level}"
 
         # МИНИМАЛЬНОЕ расширение SL для обеспечения места под СЛЕДУЮЩЕЕ усреднение
-        extended_buffer = next_averaging_price * Decimal('0.008')  # 0.8% буфер для надежности
+        extended_buffer = next_averaging_price * Decimal('0.004')  # 0.4% буфер для надежности
 
         if direction == "LONG":
             # Для LONG: опускаем SL ниже цены следующего усреднения
