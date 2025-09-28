@@ -18,8 +18,8 @@ from core.enums import ExchangeType, AccountType
 
 # Константы системы
 DEFAULT_SYMBOLS = [
-    'BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'SOLUSDT', 'DOTUSDT',
-    'XRPUSDT', 'LINKUSDT', 'AVAXUSDT', 'ATOMUSDT',
+    'BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'SOLUSDT', 'ASTERUSDT',
+    'XRPUSDT', 'LINKUSDT', 'MYXUSDT', 'ATOMUSDT',
     'NEARUSDT', 'ICPUSDT'
 ]
 # Комиссии бирж для внутреннего расчета PnL

@@ -56,6 +56,12 @@ class SignalScalperStrategy(BaseStrategy):
         self.cooldown_seconds = 60  # Кулдаун в секундах (1 минута)
         self.last_trade_was_loss = False  # Была ли последняя сделка убыточной
 
+        # СИСТЕМА КОНТРОЛЯ РЕВЕРСОВ
+        self.last_reversal_time: Optional[float] = None  # Время последнего реверса
+        self.reversal_cooldown_seconds = 60  # Кулдаун после реверса в секундах (1 минута)
+        self.reversal_required_confirmations = 2  # Требуемые подтверждения после реверса
+        self.after_reversal_mode = False  # Флаг: находимся ли мы в режиме после реверса
+
         # НОВАЯ СИСТЕМА УСРЕДНЕНИЯ ПОЗИЦИИ
         self.averaging_enabled = False  # Включена ли система усреднения
         self.averaging_count = 0  # Текущее количество усреднений
@@ -187,11 +193,15 @@ class SignalScalperStrategy(BaseStrategy):
         else:
             # Правило 1: Вход в новую сделку
             if signal in ["LONG", "SHORT"]:
-                # Проверка кулдауна
+                # Проверка обычного кулдауна после закрытия сделки
                 if self._is_cooldown_active():
                     return
 
-                # Проверка подтверждения сигнала
+                # НОВАЯ ПРОВЕРКА: Проверка кулдауна после реверса
+                if self._is_reversal_cooldown_active():
+                    return
+
+                # Проверка подтверждения сигнала (включает логику после реверса)
                 if not self._is_signal_confirmed(signal):
                     return
 
@@ -352,18 +362,22 @@ class SignalScalperStrategy(BaseStrategy):
             self.is_waiting_for_trade = False
 
     async def _reverse_position(self, new_direction: str):
-        """Закрывает текущую позицию и немедленно открывает противоположную."""
+        """Закрывает текущую позицию и УСТАНАВЛИВАЕТ ЗАДЕРЖКУ перед открытием новой."""
         # Сначала закрываем текущую
         await self._close_position(reason=f"reversing_to_{new_direction}")
 
-        # Небольшая пауза, чтобы биржа обработала закрытие
-        await asyncio.sleep(2)
+        # НОВАЯ ЛОГИКА: Устанавливаем флаг реверса вместо немедленного открытия новой позиции
+        self.last_reversal_time = time.time()
+        self.after_reversal_mode = True
 
-        # Открываем новую
-        # Для получения актуальной цены нужен новый анализ, но для скорости используем последнюю цену из PriceUpdate
-        last_price = await self.api.get_current_price(self.symbol)
-        if last_price:
-            await self._enter_position(direction=new_direction, signal_price=last_price)
+        # Сбрасываем счетчики сигналов для требования новых подтверждений
+        self.signal_confirmation_count = 0
+        self.last_signal = None
+
+        log_warning(self.user_id,
+                   f"🔄 РЕВЕРС ВЫПОЛНЕН! Установлена задержка {self.reversal_cooldown_seconds} сек. "
+                   f"Следующему сигналу {new_direction} потребуется {self.reversal_required_confirmations} подтверждения.",
+                   "SignalScalper")
 
     async def _handle_order_filled(self, event: OrderFilledEvent):
         """Обработка исполненных ордеров."""
@@ -394,9 +408,9 @@ class SignalScalperStrategy(BaseStrategy):
             await db_manager.update_order_status(
                 order_id=event.order_id,
                 status="FILLED",
-                filled_price=event.price,
-                filled_qty=event.qty,
-                fee=getattr(event, 'fee', Decimal('0'))
+                filled_quantity=event.qty,
+                average_price=event.price,
+                filled_price=event.price
             )
             log_debug(self.user_id, f"Статус ордера {event.order_id} обновлён в БД: FILLED", "SignalScalper")
         except Exception as db_error:
@@ -540,6 +554,14 @@ class SignalScalperStrategy(BaseStrategy):
             self.sl_extended = False
             self.sl_extension_notified = False
 
+            # КРИТИЧЕСКИ ВАЖНО: СБРОС РЕЖИМА РЕВЕРСА
+            # Сбрасываем ТОЛЬКО если это НЕ реверс (при реверсе флаг уже установлен)
+            # Проверяем, был ли это обычный reaso закрытия или реверс
+            if not reason.startswith("reversing_to_"):
+                self.after_reversal_mode = False
+                self.last_reversal_time = None
+                log_info(self.user_id, f"🔄 Режим реверса сброшен при закрытии сделки (причина: {reason})", "SignalScalper")
+
             # РАЗМОРОЗКА КОНФИГУРАЦИИ ПОСЛЕ ЗАКРЫТИЯ СДЕЛКИ
             self.active_trade_config = None
             self.config_frozen = False
@@ -625,7 +647,7 @@ class SignalScalperStrategy(BaseStrategy):
     def _is_signal_confirmed(self, signal: str) -> bool:
         """
         Проверяет, подтвержден ли сигнал достаточным количеством повторений.
-        После убыточной сделки требует больше подтверждений.
+        После убыточной сделки или реверса требует больше подтверждений.
         """
         if signal == self.last_signal:
             self.signal_confirmation_count += 1
@@ -634,20 +656,40 @@ class SignalScalperStrategy(BaseStrategy):
             self.last_signal = signal
             self.signal_confirmation_count = 1
 
-        # После убыточной сделки требуем больше подтверждений
+        # Определяем требуемое количество подтверждений
         required = self.required_confirmations
+
+        # После убыточной сделки требуем больше подтверждений
         if self.last_trade_was_loss:
-            required = 3  # После убытка требуем 3 подтверждения
+            required = max(required, 3)  # После убытка требуем минимум 3 подтверждения
+
+        # НОВАЯ ЛОГИКА: После реверса требуем специальное количество подтверждений
+        if self.after_reversal_mode:
+            required = max(required, self.reversal_required_confirmations)  # Выбираем максимум
 
         confirmed = self.signal_confirmation_count >= required
+
+        # ДОПОЛНИТЕЛЬНАЯ ЛОГИКА: После подтверждения сигнала в режиме реверса, выходим из этого режима
+        if confirmed and self.after_reversal_mode:
+            log_info(self.user_id,
+                    f"🔄 Режим после реверса завершен. Сигнал {signal} получил необходимые подтверждения.",
+                    "SignalScalper")
+            self.after_reversal_mode = False
+            self.last_reversal_time = None
 
         if confirmed:
             log_info(self.user_id,
                     f"Сигнал {signal} подтвержден! ({self.signal_confirmation_count}/{required})",
                     "SignalScalper")
         else:
+            reason = ""
+            if self.last_trade_was_loss:
+                reason = " (после убытка)"
+            elif self.after_reversal_mode:
+                reason = " (после реверса)"
+
             log_info(self.user_id,
-                    f"Сигнал {signal} ожидает подтверждения ({self.signal_confirmation_count}/{required})",
+                    f"Сигнал {signal} ожидает подтверждения ({self.signal_confirmation_count}/{required}){reason}",
                     "SignalScalper")
 
         return confirmed
@@ -665,6 +707,23 @@ class SignalScalperStrategy(BaseStrategy):
             remaining_time = self.cooldown_seconds - time_since_close
             log_info(self.user_id,
                     f"Кулдаун активен. Осталось {remaining_time:.0f} сек до следующего входа",
+                    "SignalScalper")
+
+        return cooldown_active
+
+    def _is_reversal_cooldown_active(self) -> bool:
+        """Проверяет, активен ли кулдаун после реверса позиции."""
+        if not self.after_reversal_mode or self.last_reversal_time is None:
+            return False
+
+        current_time = time.time()
+        time_since_reversal = current_time - self.last_reversal_time
+        cooldown_active = time_since_reversal < self.reversal_cooldown_seconds
+
+        if cooldown_active:
+            remaining_time = self.reversal_cooldown_seconds - time_since_reversal
+            log_info(self.user_id,
+                    f"🔄 Кулдаун после реверса активен. Осталось {remaining_time:.0f} сек до следующего входа",
                     "SignalScalper")
 
         return cooldown_active

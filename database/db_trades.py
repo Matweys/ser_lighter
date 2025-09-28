@@ -1227,6 +1227,7 @@ class _DatabaseManager:
     async def update_order_status(self, order_id: str, status: str,
                                 filled_quantity: Decimal = None,
                                 average_price: Decimal = None,
+                                filled_price: Decimal = None,
                                 metadata: Dict[str, Any] = None) -> bool:
         """
         Обновляет статус ордера в БД
@@ -1236,6 +1237,7 @@ class _DatabaseManager:
             status: Новый статус
             filled_quantity: Исполненное количество
             average_price: Средняя цена исполнения
+            filled_price: Цена исполнения (для обратной совместимости)
             metadata: Дополнительные данные
 
         Returns:
