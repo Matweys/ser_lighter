@@ -267,21 +267,21 @@ class SignalScalperStrategy(BaseStrategy):
                 if loss_percent >= next_trigger_percent and loss_percent > self.last_averaging_percent:
                     # Проверяем технические фильтры перед усреднением
                     filter_result = await self._check_averaging_filters()
-
-                    if filter_result:
-                        log_info(self.user_id,
-                                f"🎯 ТРИГГЕР УСРЕДНЕНИЯ: убыток {loss_percent:.2f}% >= {next_trigger_percent:.1f}%",
-                                "SignalScalper")
-                        await self._execute_averaging(current_price)
-                    else:
-                        log_info(self.user_id, f"❌ Усреднение пропущено: не прошел технические фильтры", "SignalScalper")
-                else:
-                    log_info(self.user_id, f"⏸️ Триггер НЕ сработал: условие {loss_percent:.2f} >= {next_trigger_percent:.1f} and {loss_percent:.2f} > {self.last_averaging_percent:.2f}", "SignalScalper")
-            else:
-                if pnl >= 0:
-                    log_info(self.user_id, f"✅ Усреднение пропущено: позиция в плюсе (${pnl:.2f})", "SignalScalper")
-                if self.averaging_count >= self.max_averaging_count:
-                    log_info(self.user_id, f"🚫 Усреднение пропущено: достигнут лимит ({self.averaging_count}/{self.max_averaging_count})", "SignalScalper")
+            # Временно закомментировал, частый шум в логах
+            #         if filter_result:
+            #             log_info(self.user_id,
+            #                     f"🎯 ТРИГГЕР УСРЕДНЕНИЯ: убыток {loss_percent:.2f}% >= {next_trigger_percent:.1f}%",
+            #                     "SignalScalper")
+            #             await self._execute_averaging(current_price)
+            #         else:
+            #             log_info(self.user_id, f"❌ Усреднение пропущено: не прошел технические фильтры", "SignalScalper")
+            #     else:
+            #         log_info(self.user_id, f"⏸️ Триггер НЕ сработал: условие {loss_percent:.2f} >= {next_trigger_percent:.1f} and {loss_percent:.2f} > {self.last_averaging_percent:.2f}", "SignalScalper")
+            # else:
+            #     if pnl >= 0:
+            #         log_info(self.user_id, f"✅ Усреднение пропущено: позиция в плюсе (${pnl:.2f})", "SignalScalper")
+            #     if self.averaging_count >= self.max_averaging_count:
+            #         log_info(self.user_id, f"🚫 Усреднение пропущено: достигнут лимит ({self.averaging_count}/{self.max_averaging_count})", "SignalScalper")
 
         # Обновляем пиковую прибыль
         if pnl > self.peak_profit_usd:
