@@ -38,6 +38,7 @@ class SignalScalperStrategy(BaseStrategy):
         self.processed_orders: set = set()  # Отслеживание обработанных ордеров
         self.current_order_id: Optional[str] = None  # ID текущего ожидаемого ордера
         self.intended_order_amount: Optional[Decimal] = None  # Запрошенная сумма ордера
+        self.close_reason: Optional[str] = None  # Причина закрытия позиции для передачи в _handle_order_filled
 
         # Настраиваемые параметры
         self.min_profit_usd: Decimal = Decimal('1.0')
@@ -254,7 +255,7 @@ class SignalScalperStrategy(BaseStrategy):
         if self.averaging_enabled:
             # Детальное логирование для диагностики с ценами
             entry_price_display = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
-            log_info(self.user_id, f"📊 Усреднение: pnl=${pnl:.2f}, loss%={loss_percent:.2f}, вход=${entry_price_display:.4f}, текущая=${current_price:.4f}, count={self.averaging_count}/{self.max_averaging_count}", "SignalScalper")
+            #log_info(self.user_id, f"📊 Усреднение: pnl=${pnl:.2f}, loss%={loss_percent:.2f}, вход=${entry_price_display:.4f}, текущая=${current_price:.4f}, count={self.averaging_count}/{self.max_averaging_count}", "SignalScalper")
 
             if (pnl < 0 and  # Позиция в убытке
                 self.averaging_count < self.max_averaging_count):
@@ -262,12 +263,12 @@ class SignalScalperStrategy(BaseStrategy):
                 # Проверяем, достиг ли убыток нового порога для усреднения
                 next_trigger_percent = self.averaging_trigger_percent * (self.averaging_count + 1)
 
-                log_info(self.user_id, f"🔍 Проверка триггера: loss={loss_percent:.2f}% >= trigger={next_trigger_percent:.1f}%, last={self.last_averaging_percent:.2f}%", "SignalScalper")
+                #log_info(self.user_id, f"🔍 Проверка триггера: loss={loss_percent:.2f}% >= trigger={next_trigger_percent:.1f}%, last={self.last_averaging_percent:.2f}%", "SignalScalper")
 
                 if loss_percent >= next_trigger_percent and loss_percent > self.last_averaging_percent:
                     # Проверяем технические фильтры перед усреднением
                     filter_result = await self._check_averaging_filters()
-            # Временно закомментировал, частый шум в логах
+                    # Временно закомментировал, частый шум в логах
             #         if filter_result:
             #             log_info(self.user_id,
             #                     f"🎯 ТРИГГЕР УСРЕДНЕНИЯ: убыток {loss_percent:.2f}% >= {next_trigger_percent:.1f}%",
@@ -348,6 +349,7 @@ class SignalScalperStrategy(BaseStrategy):
 
         log_info(self.user_id, f"Закрытие позиции {self.symbol}. Причина: {reason}", "SignalScalper")
         self.is_waiting_for_trade = True
+        self.close_reason = reason  # Сохраняем причину для использования в _handle_order_filled
         side = "Sell" if self.active_direction == "LONG" else "Buy"
 
         # Используем общий размер позиции с учетом усреднений
@@ -556,11 +558,11 @@ class SignalScalperStrategy(BaseStrategy):
 
             # КРИТИЧЕСКИ ВАЖНО: СБРОС РЕЖИМА РЕВЕРСА
             # Сбрасываем ТОЛЬКО если это НЕ реверс (при реверсе флаг уже установлен)
-            # Проверяем, был ли это обычный reaso закрытия или реверс
-            if not reason.startswith("reversing_to_"):
+            # Проверяем, был ли это обычный reason закрытия или реверс
+            if self.close_reason and not self.close_reason.startswith("reversing_to_"):
                 self.after_reversal_mode = False
                 self.last_reversal_time = None
-                log_info(self.user_id, f"🔄 Режим реверса сброшен при закрытии сделки (причина: {reason})", "SignalScalper")
+                log_info(self.user_id, f"🔄 Режим реверса сброшен при закрытии сделки (причина: {self.close_reason})", "SignalScalper")
 
             # РАЗМОРОЗКА КОНФИГУРАЦИИ ПОСЛЕ ЗАКРЫТИЯ СДЕЛКИ
             self.active_trade_config = None

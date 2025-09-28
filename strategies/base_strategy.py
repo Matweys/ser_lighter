@@ -315,8 +315,8 @@ class BaseStrategy(ABC):
                     await self.save_strategy_state({
                         "last_action": "order_filled",
                         "order_id": event.order_id,
-                        "fill_price": str(event.fill_price),
-                        "fill_qty": str(event.fill_qty)
+                        "fill_price": str(event.price),
+                        "fill_qty": str(event.qty)
                     })
 
             # Обработка остальных событий без изменений
