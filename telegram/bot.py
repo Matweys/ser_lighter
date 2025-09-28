@@ -99,6 +99,7 @@ class TelegramBotManager:
             # Передаем event_bus в контекст dispatcher'а
             self.dp = Dispatcher(storage=self.storage, event_bus=self.event_bus)
             await self._setup_middleware()
+            await self._register_handlers()
             log_info(0, "Диспетчер настроен", module_name='bot')
 
         except Exception as e:
@@ -139,6 +140,25 @@ class TelegramBotManager:
 
         except Exception as e:
             log_error(0, f"Ошибка настройки middleware: {e}", module_name='bot')
+            raise
+
+    async def _register_handlers(self) -> None:
+        """Регистрация обработчиков команд"""
+        try:
+            from .handlers.basic import router as basic_router, set_event_bus
+            from .handlers.callback import router as callback_router
+
+            # Устанавливаем EventBus для обработчиков
+            set_event_bus(self.event_bus)
+
+            # Регистрируем роутеры
+            self.dp.include_router(basic_router)
+            self.dp.include_router(callback_router)
+
+            log_info(0, "Обработчики команд зарегистрированы", module_name='bot')
+
+        except Exception as e:
+            log_error(0, f"Ошибка регистрации обработчиков: {e}", module_name='bot')
             raise
     
     async def _setup_bot_commands(self) -> None:

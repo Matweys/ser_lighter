@@ -69,6 +69,8 @@ class TelegramConfig:
     """Конфигурация Telegram бота"""
     token: str
     admin_ids: List[int] = field(default_factory=list)
+    allowed_updates: List[str] = field(default_factory=lambda: ["message", "callback_query"])
+    max_connections: int = 40
 
 @dataclass
 class SystemConfig:
