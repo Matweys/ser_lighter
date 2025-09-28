@@ -1425,6 +1425,9 @@ class BaseStrategy(ABC):
 
                     log_debug(self.user_id, f"Восстановлен атрибут {attr_name} = {attr_value}", "BaseStrategy")
 
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: Синхронизируем состояние position_active с реальной позицией на бирже
+            await self._sync_position_state_with_exchange()
+
             # Специальная проверка и восстановление связи с БД
             if hasattr(self, 'active_trade_db_id') and self.active_trade_db_id:
                 log_info(self.user_id, f"Восстановлена связь с записью БД: trade_id={self.active_trade_db_id}", "BaseStrategy")
@@ -1592,3 +1595,70 @@ class BaseStrategy(ABC):
             log_debug(self.user_id, f"Состояние стратегии {self.symbol} очищено из Redis", "BaseStrategy")
         except Exception as e:
             log_error(self.user_id, f"Ошибка очистки состояния стратегии {self.symbol}: {e}", "BaseStrategy")
+
+    async def _sync_position_state_with_exchange(self):
+        """
+        КРИТИЧЕСКИ ВАЖНЫЙ МЕТОД!
+        Синхронизирует состояние position_active с реальной позицией на бирже.
+        Предотвращает повторное открытие позиции при восстановлении.
+        """
+        try:
+            log_info(self.user_id, f"🔍 Синхронизирую состояние позиции для {self.symbol} с биржей...", "BaseStrategy")
+
+            # Получаем реальные позиции с биржи
+            positions = await self.api.get_positions(symbol=self.symbol)
+
+            has_real_position = False
+            real_position_size = Decimal('0')
+            real_entry_price = Decimal('0')
+            real_side = None
+
+            if positions:
+                for position in positions:
+                    position_size = self._convert_to_decimal(position.get('size', 0))
+                    if position_size > 0:
+                        has_real_position = True
+                        real_position_size = position_size
+                        real_entry_price = self._convert_to_decimal(position.get('entryPrice', 0))
+                        real_side = position.get('side', 'Buy')
+                        break
+
+            # Получаем состояние position_active из восстановленных данных
+            saved_position_active = getattr(self, 'position_active', False)
+
+            log_info(self.user_id, f"📊 Анализ состояния позиции {self.symbol}:", "BaseStrategy")
+            log_info(self.user_id, f"   Сохранённое состояние: position_active={saved_position_active}", "BaseStrategy")
+            log_info(self.user_id, f"   Реальная позиция на бирже: размер={real_position_size}, цена={real_entry_price}", "BaseStrategy")
+
+            if has_real_position:
+                # КРИТИЧЕСКИ ВАЖНО: Есть позиция на бирже
+                if not saved_position_active:
+                    # Состояние не синхронно! Восстанавливаем из биржи
+                    log_warning(self.user_id, f"⚠️ НАЙДЕНА РАССИНХРОНИЗАЦИЯ! На бирже есть позиция {self.symbol}, но стратегия не знает об этом", "BaseStrategy")
+
+                    # Восстанавливаем состояние позиции из биржи
+                    self.position_active = True
+                    self.position_size = real_position_size
+                    self.entry_price = real_entry_price
+                    self.active_direction = "LONG" if real_side == "Buy" else "SHORT"
+
+                    log_info(self.user_id, f"✅ ВОССТАНОВЛЕНО состояние позиции: размер={real_position_size}, цена={real_entry_price}, направление={self.active_direction}", "BaseStrategy")
+                else:
+                    log_info(self.user_id, f"✅ Состояние позиции синхронно с биржей", "BaseStrategy")
+            else:
+                # На бирже нет позиции
+                if saved_position_active:
+                    # Состояние не синхронно! Сбрасываем флаг
+                    log_warning(self.user_id, f"⚠️ НАЙДЕНА РАССИНХРОНИЗАЦИЯ! Стратегия считает что есть позиция, но на бирже её нет", "BaseStrategy")
+
+                    self.position_active = False
+                    self.position_size = Decimal('0')
+                    self.entry_price = Decimal('0')
+                    self.active_direction = None
+
+                    log_info(self.user_id, f"✅ СБРОШЕНО состояние позиции (на бирже позиции нет)", "BaseStrategy")
+                else:
+                    log_info(self.user_id, f"✅ Состояние корректно: нет позиции ни в стратегии, ни на бирже", "BaseStrategy")
+
+        except Exception as e:
+            log_error(self.user_id, f"❌ Ошибка синхронизации состояния позиции для {self.symbol}: {e}", "BaseStrategy")

@@ -72,6 +72,7 @@ class SignalScalperStrategy(BaseStrategy):
         self.last_averaging_percent = Decimal('0')  # Последний процент, при котором усреднялись
         self.total_position_size = Decimal('0')  # Общий размер позиции после усреднений
         self.average_entry_price = Decimal('0')  # Средняя цена входа после усреднений
+        self.last_averaging_time = 0  # Время последнего усреднения для защиты от частых срабатываний
 
         # ИНТЕЛЛЕКТУАЛЬНАЯ СИСТЕМА УПРАВЛЕНИЯ SL ПРИ УСРЕДНЕНИИ
         self.original_max_loss_usd = None  # Будет инициализирован из конфигурации
@@ -263,12 +264,21 @@ class SignalScalperStrategy(BaseStrategy):
                 # Проверяем, достиг ли убыток нового порога для усреднения
                 next_trigger_percent = self.averaging_trigger_percent * (self.averaging_count + 1)
 
-                #log_info(self.user_id, f"🔍 Проверка триггера: loss={loss_percent:.2f}% >= trigger={next_trigger_percent:.1f}%, last={self.last_averaging_percent:.2f}%", "SignalScalper")
+                log_info(self.user_id, f"🔍 Проверка триггера: loss={loss_percent:.2f}% >= trigger={next_trigger_percent:.1f}%, last={self.last_averaging_percent:.2f}%", "SignalScalper")
 
                 if loss_percent >= next_trigger_percent and loss_percent > self.last_averaging_percent:
+                    # ЗАЩИТА ОТ ЧАСТЫХ УСРЕДНЕНИЙ: проверяем временной интервал
+                    current_time = time.time()
+                    time_since_last_averaging = current_time - self.last_averaging_time
+                    min_averaging_interval = 30  # Минимум 30 секунд между усреднениями
+
+                    if self.last_averaging_time > 0 and time_since_last_averaging < min_averaging_interval:
+                        remaining_time = min_averaging_interval - time_since_last_averaging
+                        log_info(self.user_id, f"⏳ Усреднение пропущено: нужно подождать ещё {remaining_time:.0f} сек", "SignalScalper")
+                        return
+
                     # Проверяем технические фильтры перед усреднением
                     filter_result = await self._check_averaging_filters()
-                    # Временно закомментировал, частый шум в логах
                     if filter_result:
                         log_info(self.user_id,
                                 f"🎯 ТРИГГЕР УСРЕДНЕНИЯ: убыток {loss_percent:.2f}% >= {next_trigger_percent:.1f}%",
@@ -497,6 +507,9 @@ class SignalScalperStrategy(BaseStrategy):
 
             # Увеличиваем счетчик усреднений
             self.averaging_count += 1
+
+            # ОБНОВЛЯЕМ ВРЕМЯ ПОСЛЕДНЕГО УСРЕДНЕНИЯ
+            self.last_averaging_time = time.time()
 
             log_info(self.user_id,
                     f"[УСРЕДНЕНИЕ] Усреднение #{self.averaging_count} выполнено. Новая средняя цена: {self.average_entry_price:.4f}, размер: {self.total_position_size}",
@@ -772,43 +785,9 @@ class SignalScalperStrategy(BaseStrategy):
 
             if order_id:
                 self.current_order_id = order_id
-                success = await self._await_order_fill(order_id, side=side, qty=qty)
-
-                if success:
-                    # Обновляем статистику усреднения
-                    self.averaging_count += 1
-
-                    # Обновляем размер позиции и среднюю цену
-                    if self.total_position_size == 0:
-                        # Первое усреднение - инициализируем
-                        self.total_position_size = self.position_size + qty
-                        self.average_entry_price = ((self.entry_price * self.position_size) + (current_price * qty)) / self.total_position_size
-                    else:
-                        # Последующие усреднения
-                        old_total_value = self.average_entry_price * self.total_position_size
-                        new_value = current_price * qty
-                        self.total_position_size += qty
-                        self.average_entry_price = (old_total_value + new_value) / self.total_position_size
-
-                    # Сохраняем процент, при котором усреднялись
-                    entry_price_for_calc = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
-                    if self.active_direction == "LONG":
-                        self.last_averaging_percent = ((entry_price_for_calc - current_price) / entry_price_for_calc * 100)
-                    else:  # SHORT
-                        self.last_averaging_percent = ((current_price - entry_price_for_calc) / entry_price_for_calc * 100)
-
-                    log_info(self.user_id,
-                            f"Усреднение #{self.averaging_count} выполнено. Новая средняя цена: {self.average_entry_price:.4f}, размер: {self.total_position_size}",
-                            "SignalScalper")
-
-                    # ДИНАМИЧЕСКАЯ КОРРЕКТИРОВКА СТОП-ЛОССА после усреднения
-                    await self._update_stop_loss_after_averaging()
-
-                    # Отправляем уведомление об усреднении
-                    await self._send_averaging_notification(
-                        current_price, qty, self.average_entry_price, self.total_position_size,
-                        side="Buy" if self.active_direction == "LONG" else "Sell"
-                    )
+                # Просто ждем исполнения ордера
+                # Вся логика обновления статистики будет в _handle_order_filled()
+                await self._await_order_fill(order_id, side=side, qty=qty)
 
             self.is_waiting_for_trade = False
 
@@ -1119,16 +1098,17 @@ class SignalScalperStrategy(BaseStrategy):
                 log_warning(self.user_id, "Не удалось обновить стоп-лосс: позиция неактивна или нет средней цены", "SignalScalper")
                 return
 
-            # ИСПРАВЛЕННАЯ ЛОГИКА: Всегда используем стандартный расчёт на основе средней цены
-            # "Умный" расчёт должен вызываться только при необходимости корректировки
-            new_stop_loss_price = self._calculate_stop_loss_price(
+            # УЛУЧШЕННАЯ ЛОГИКА: Используем умный расчёт SL с учетом будущих усреднений
+            new_stop_loss_price, was_extended, extension_reason = self._calculate_smart_stop_loss(
                 self.average_entry_price,
                 self.active_direction,
                 self.total_position_size
             )
-            was_extended = False
 
-            log_info(self.user_id, f"🔧 Стандартное обновление SL после усреднения: {new_stop_loss_price:.4f}", "SignalScalper")
+            if was_extended:
+                log_info(self.user_id, f"🧠 УМНОЕ обновление SL: {new_stop_loss_price:.4f} (расширен для усреднений)", "SignalScalper")
+            else:
+                log_info(self.user_id, f"🔧 Стандартное обновление SL: {new_stop_loss_price:.4f} (достаточно места)", "SignalScalper")
 
             # Обновляем SL через API
             success = await self.api.set_trading_stop(
