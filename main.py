@@ -147,11 +147,8 @@ async def main():
 
         log_info(0, "=== БОТ УСПЕШНО ЗАПУЩЕН И ГОТОВ К РАБОТЕ ===", module_name="main")
 
-        # Запуск polling в основном цикле
-        await bot_manager.dp.start_polling(
-            bot_manager.bot,
-            allowed_updates=bot_manager.dp.resolve_used_update_types()
-        )
+        # ИСПРАВЛЕНО: Используем правильный метод с очисткой старых команд
+        await bot_manager.start_polling()
 
     except (KeyboardInterrupt, SystemExit):
         log_info(0, "Получен сигнал завершения (KeyboardInterrupt/SystemExit)", module_name="main")

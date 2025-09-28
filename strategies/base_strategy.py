@@ -95,6 +95,10 @@ class BaseStrategy(ABC):
         self.active_orders: Dict[str, Dict] = {}  # order_id -> order_data
         self.active_positions: Dict[str, Dict] = {}  # position_key -> position_data
 
+        # Система отложенной остановки
+        self.deferred_stop_marked: bool = False
+        self.deferred_stop_reason: Optional[str] = None
+
         self._position_monitor_task: Optional[asyncio.Task] = None
         log_info(self.user_id,f"Инициализирована стратегия {self.strategy_type.value} для {symbol} (ID: {self.strategy_id})", module_name=__name__)
 
@@ -409,6 +413,68 @@ class BaseStrategy(ABC):
             return True
         except Exception as e:
             log_error(self.user_id, f"Ошибка остановки стратегии: {e}", module_name=__name__)
+            return False
+
+    async def mark_for_deferred_stop(self, reason: str) -> bool:
+        """
+        Помечает стратегию для отложенной остановки после завершения активной позиции.
+
+        Args:
+            reason: Причина отложенной остановки
+
+        Returns:
+            bool: True если стратегия успешно помечена для остановки
+        """
+        try:
+            self.deferred_stop_reason = reason
+            self.deferred_stop_marked = True
+
+            log_info(self.user_id, f"Стратегия {self.strategy_type.value} для {self.symbol} помечена для отложенной остановки: {reason}", module_name=__name__)
+
+            # Сохраняем информацию о отложенной остановке в состоянии
+            await self.save_strategy_state({
+                "deferred_stop_marked": True,
+                "deferred_stop_reason": reason,
+                "deferred_stop_time": datetime.now().isoformat()
+            })
+
+            return True
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка пометки стратегии для отложенной остановки: {e}", module_name=__name__)
+            return False
+
+    async def check_deferred_stop(self) -> bool:
+        """
+        Проверяет, должна ли стратегия быть остановлена отложенно.
+        Вызывается после закрытия позиции или при отсутствии активной позиции.
+
+        Returns:
+            bool: True если стратегия была остановлена
+        """
+        try:
+            if not self.deferred_stop_marked:
+                return False
+
+            # Проверяем, есть ли активная позиция
+            has_active_position = getattr(self, 'position_active', False)
+
+            if not has_active_position:
+                reason = self.deferred_stop_reason or 'deferred_stop_triggered'
+                log_info(self.user_id, f"Выполнение отложенной остановки стратегии {self.strategy_type.value} для {self.symbol}: {reason}", module_name=__name__)
+
+                # Сбрасываем флаги отложенной остановки
+                self.deferred_stop_marked = False
+                self.deferred_stop_reason = None
+
+                # Останавливаем стратегию
+                await self.stop(reason)
+                return True
+
+            return False
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка проверки отложенной остановки: {e}", module_name=__name__)
             return False
             
     async def execute(self) -> None:

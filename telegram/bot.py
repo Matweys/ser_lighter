@@ -13,7 +13,7 @@ import aioredis
 from contextlib import asynccontextmanager
 
 from core.settings_config import system_config
-from core.logger import log_info, log_error, log_warning
+from core.logger import log_info, log_error, log_warning, log_debug
 from core.enums import SystemConstants
 from core.events import EventBus
 from aiogram.fsm.storage.redis import RedisStorage
@@ -177,15 +177,34 @@ class TelegramBotManager:
             log_info(0, "Запуск бота в режиме polling...", module_name='bot')
             self._is_running = True
             
-            # Пропускаем накопившиеся обновления
-            await self.bot.delete_webhook(drop_pending_updates=True)
-            
-            # Запускаем polling с пропуском старых обновлений
+            # УСИЛЕННАЯ ОЧИСТКА СТАРЫХ КОМАНД И ВЕБХУКОВ
+            log_info(0, "Очистка старых webhook и pending updates...", module_name='bot')
+
+            # 1. Принудительно удаляем любой установленный webhook
+            try:
+                await self.bot.delete_webhook(drop_pending_updates=True)
+                log_info(0, "Webhook удален и pending updates очищены", module_name='bot')
+            except Exception as e:
+                log_warning(0, f"Не удалось удалить webhook (возможно, его не было): {e}", module_name='bot')
+
+            # 2. Дополнительная очистка через get_updates с большим offset
+            try:
+                updates = await self.bot.get_updates(offset=-1, limit=1, timeout=1)
+                if updates:
+                    last_update_id = updates[0].update_id
+                    await self.bot.get_updates(offset=last_update_id + 1, limit=100, timeout=1)
+                    log_info(0, f"Принудительно пропущены старые обновления до ID {last_update_id}", module_name='bot')
+            except Exception as e:
+                log_debug(0, f"Дополнительная очистка updates завершена: {e}", module_name='bot')
+
+            # 3. Запускаем polling с максимальной защитой от старых команд
+            log_info(0, "Запуск polling с защитой от старых команд...", module_name='bot')
             await self.dp.start_polling(
                 self.bot,
                 allowed_updates=self.config.allowed_updates,
                 handle_signals=True,
-                drop_pending_updates=True,  # Дополнительная защита от старых команд
+                drop_pending_updates=True,  # Основная защита
+                skip_updates=True,         # Дополнительная защита
             )
             
         except Exception as e:

@@ -696,10 +696,16 @@ class UserSession:
                 added = new_watchlist - old_watchlist
                 removed = old_watchlist - new_watchlist
 
+                # Подписываемся на новые символы в WebSocket
                 for symbol in added:
                     await self.global_ws_manager.subscribe_symbol(self.user_id, symbol)
+
+                # Отписываемся от удаленных символов в WebSocket
                 for symbol in removed:
                     await self.global_ws_manager.unsubscribe_symbol(self.user_id, symbol)
+
+                # УМНАЯ СИСТЕМА ЗАМЕНЫ СИМВОЛОВ
+                await self._handle_smart_symbol_replacement(new_watchlist, old_watchlist, added, removed)
 
             log_info(self.user_id, "Конфигурации и подписки обновлены после изменения настроек.", module_name=__name__)
 
@@ -1100,3 +1106,185 @@ class UserSession:
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления о мониторинге позиции: {e}", module_name=__name__)
+
+    async def _handle_smart_symbol_replacement(self, new_watchlist: set, old_watchlist: set, added: set, removed: set):
+        """
+        Умная система замены символов в watchlist с учетом активных позиций и лимита одновременных торгов.
+
+        Логика:
+        1. Если символ удален и у него нет активной позиции - останавливаем стратегию сразу
+        2. Если символ удален и у него есть активная позиция - помечаем для отложенной остановки
+        3. Если добавлен новый символ и есть место - запускаем стратегию
+        4. Максимум 3 одновременных торга (настраивается)
+        """
+        try:
+            # Получаем лимит одновременных торгов из конфигурации
+            risk_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
+            max_concurrent_trades = risk_config.get("max_concurrent_trades", 3)
+
+            log_info(self.user_id, f"🔧 Умная замена символов: добавлено {len(added)}, удалено {len(removed)}, лимит торгов: {max_concurrent_trades}", module_name=__name__)
+
+            # Анализируем текущие активные стратегии
+            active_strategies_analysis = await self._analyze_active_strategies()
+            current_trading_count = len([s for s in active_strategies_analysis.values() if s['has_active_position']])
+
+            log_info(self.user_id, f"📊 Анализ активных стратегий: всего {len(active_strategies_analysis)}, с позициями {current_trading_count}/{max_concurrent_trades}", module_name=__name__)
+
+            # === ОБРАБОТКА УДАЛЕННЫХ СИМВОЛОВ ===
+            strategies_to_stop_immediately = []
+            strategies_to_mark_for_deferred_stop = []
+
+            for symbol in removed:
+                for strategy_id, analysis in active_strategies_analysis.items():
+                    if analysis['symbol'] == symbol:
+                        if analysis['has_active_position']:
+                            # У символа есть активная позиция - помечаем для отложенной остановки
+                            strategies_to_mark_for_deferred_stop.append((strategy_id, symbol, analysis))
+                            log_info(self.user_id, f"🔄 Символ {symbol} помечен для отложенной остановки (есть активная позиция)", module_name=__name__)
+                        else:
+                            # Нет активной позиции - можем остановить сразу
+                            strategies_to_stop_immediately.append((strategy_id, symbol))
+                            log_info(self.user_id, f"⏹️ Символ {symbol} будет остановлен немедленно (нет активной позиции)", module_name=__name__)
+
+            # Останавливаем стратегии без активных позиций
+            for strategy_id, symbol in strategies_to_stop_immediately:
+                await self.stop_strategy(strategy_id, reason=f"symbol_{symbol}_removed_from_watchlist")
+                current_trading_count -= 1
+
+            # Помечаем стратегии с активными позициями для отложенной остановки
+            for strategy_id, symbol, analysis in strategies_to_mark_for_deferred_stop:
+                strategy = self.active_strategies.get(strategy_id)
+                if strategy and hasattr(strategy, 'mark_for_deferred_stop'):
+                    await strategy.mark_for_deferred_stop(reason=f"symbol_{symbol}_removed_from_watchlist")
+                    log_info(self.user_id, f"📝 Стратегия {strategy_id} помечена для остановки после завершения позиции", module_name=__name__)
+
+            # === ОБРАБОТКА ДОБАВЛЕННЫХ СИМВОЛОВ ===
+            available_slots = max_concurrent_trades - current_trading_count
+            symbols_to_start = []
+
+            log_info(self.user_id, f"🎯 Доступно слотов для новых символов: {available_slots}", module_name=__name__)
+
+            for symbol in added:
+                if available_slots > 0:
+                    # Проверяем, нет ли уже стратегии для этого символа
+                    # ИСПРАВЛЕНО: используем корректное формирование strategy_id как в start_strategy
+                    strategy_id = f"{StrategyType.SIGNAL_SCALPER.value}_{symbol}"
+                    if strategy_id not in self.active_strategies:
+                        symbols_to_start.append(symbol)
+                        available_slots -= 1
+                        log_info(self.user_id, f"✅ Символ {symbol} будет запущен немедленно (есть свободный слот)", module_name=__name__)
+                    else:
+                        log_info(self.user_id, f"ℹ️ Символ {symbol} уже имеет активную стратегию", module_name=__name__)
+                else:
+                    log_info(self.user_id, f"⏳ Символ {symbol} ожидает освобождения слота (лимит {max_concurrent_trades} достигнут)", module_name=__name__)
+                    # Можно добавить в очередь ожидания для будущей реализации
+
+            # Запускаем новые стратегии для добавленных символов
+            for symbol in symbols_to_start:
+                success = await self.start_strategy(
+                    strategy_type=StrategyType.SIGNAL_SCALPER.value,
+                    symbol=symbol,
+                    analysis_data={'trigger': 'smart_symbol_replacement'}
+                )
+                if success:
+                    log_info(self.user_id, f"🚀 Стратегия для {symbol} успешно запущена", module_name=__name__)
+                else:
+                    log_warning(self.user_id, f"⚠️ Не удалось запустить стратегию для {symbol}", module_name=__name__)
+
+            # Отправляем уведомление пользователю о произведенных изменениях
+            await self._send_symbol_replacement_notification(
+                strategies_to_stop_immediately,
+                strategies_to_mark_for_deferred_stop,
+                symbols_to_start,
+                available_slots,
+                max_concurrent_trades
+            )
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка в умной системе замены символов: {e}", module_name=__name__)
+
+    async def _analyze_active_strategies(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Анализирует состояние всех активных стратегий.
+
+        Returns:
+            Dict: Информация о каждой стратегии {strategy_id: {symbol, has_active_position, strategy_type, ...}}
+        """
+        analysis = {}
+
+        for strategy_id, strategy in self.active_strategies.items():
+            try:
+                has_position = False
+
+                # Проверяем, есть ли активная позиция у стратегии
+                if hasattr(strategy, 'position_active'):
+                    has_position = strategy.position_active
+                else:
+                    # Fallback: проверяем по размеру позиции
+                    position_size = getattr(strategy, 'position_size', 0)
+                    has_position = position_size and position_size > 0
+
+                analysis[strategy_id] = {
+                    'symbol': strategy.symbol,
+                    'strategy_type': strategy.strategy_type.value,
+                    'has_active_position': has_position,
+                    'is_waiting_for_trade': getattr(strategy, 'is_waiting_for_trade', False),
+                    'position_size': getattr(strategy, 'position_size', 0),
+                    'entry_price': getattr(strategy, 'entry_price', None)
+                }
+
+            except Exception as e:
+                log_error(self.user_id, f"Ошибка анализа стратегии {strategy_id}: {e}", module_name=__name__)
+                analysis[strategy_id] = {
+                    'symbol': strategy.symbol,
+                    'strategy_type': 'unknown',
+                    'has_active_position': False,
+                    'error': str(e)
+                }
+
+        return analysis
+
+    async def _send_symbol_replacement_notification(self, stopped_immediately, marked_for_deferred_stop, started_symbols, available_slots, max_concurrent):
+        """Отправляет уведомление пользователю о произведенных изменениях в watchlist."""
+        try:
+            if not (stopped_immediately or marked_for_deferred_stop or started_symbols):
+                return  # Нет изменений для уведомления
+
+            message_parts = ["🔄 <b>УМНАЯ ЗАМЕНА СИМВОЛОВ</b>\n"]
+
+            if stopped_immediately:
+                message_parts.append("⏹️ <b>Остановлено немедленно:</b>")
+                for strategy_id, symbol in stopped_immediately:
+                    message_parts.append(f"▫️ {symbol} (не было позиции)")
+                message_parts.append("")
+
+            if marked_for_deferred_stop:
+                message_parts.append("⏳ <b>Помечено для остановки после закрытия позиции:</b>")
+                for strategy_id, symbol, analysis in marked_for_deferred_stop:
+                    message_parts.append(f"▫️ {symbol} (активная позиция)")
+                message_parts.append("")
+
+            if started_symbols:
+                message_parts.append("🚀 <b>Запущено:</b>")
+                for symbol in started_symbols:
+                    message_parts.append(f"▫️ {symbol}")
+                message_parts.append("")
+
+            # Добавляем информацию о лимитах
+            current_active = len(self.active_strategies)
+            message_parts.append(f"📊 <b>Статус торговых слотов:</b>")
+            message_parts.append(f"▫️ Активных стратегий: {current_active}")
+            message_parts.append(f"▫️ Максимум одновременно: {max_concurrent}")
+            message_parts.append(f"▫️ Доступно слотов: {available_slots}")
+
+            message = "\n".join(message_parts)
+
+            if bot_manager and bot_manager.bot:
+                await bot_manager.bot.send_message(
+                    chat_id=self.user_id,
+                    text=message,
+                    parse_mode="HTML"
+                )
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка отправки уведомления о замене символов: {e}", module_name=__name__)

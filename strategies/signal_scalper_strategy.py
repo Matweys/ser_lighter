@@ -255,7 +255,7 @@ class SignalScalperStrategy(BaseStrategy):
         if self.averaging_enabled:
             # Детальное логирование для диагностики с ценами
             entry_price_display = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
-            #log_info(self.user_id, f"📊 Усреднение: pnl=${pnl:.2f}, loss%={loss_percent:.2f}, вход=${entry_price_display:.4f}, текущая=${current_price:.4f}, count={self.averaging_count}/{self.max_averaging_count}", "SignalScalper")
+            log_info(self.user_id, f"📊 Усреднение: pnl=${pnl:.2f}, loss%={loss_percent:.2f}, вход=${entry_price_display:.4f}, текущая=${current_price:.4f}, count={self.averaging_count}/{self.max_averaging_count}", "SignalScalper")
 
             if (pnl < 0 and  # Позиция в убытке
                 self.averaging_count < self.max_averaging_count):
@@ -269,20 +269,20 @@ class SignalScalperStrategy(BaseStrategy):
                     # Проверяем технические фильтры перед усреднением
                     filter_result = await self._check_averaging_filters()
                     # Временно закомментировал, частый шум в логах
-            #         if filter_result:
-            #             log_info(self.user_id,
-            #                     f"🎯 ТРИГГЕР УСРЕДНЕНИЯ: убыток {loss_percent:.2f}% >= {next_trigger_percent:.1f}%",
-            #                     "SignalScalper")
-            #             await self._execute_averaging(current_price)
-            #         else:
-            #             log_info(self.user_id, f"❌ Усреднение пропущено: не прошел технические фильтры", "SignalScalper")
-            #     else:
-            #         log_info(self.user_id, f"⏸️ Триггер НЕ сработал: условие {loss_percent:.2f} >= {next_trigger_percent:.1f} and {loss_percent:.2f} > {self.last_averaging_percent:.2f}", "SignalScalper")
-            # else:
-            #     if pnl >= 0:
-            #         log_info(self.user_id, f"✅ Усреднение пропущено: позиция в плюсе (${pnl:.2f})", "SignalScalper")
-            #     if self.averaging_count >= self.max_averaging_count:
-            #         log_info(self.user_id, f"🚫 Усреднение пропущено: достигнут лимит ({self.averaging_count}/{self.max_averaging_count})", "SignalScalper")
+                    if filter_result:
+                        log_info(self.user_id,
+                                f"🎯 ТРИГГЕР УСРЕДНЕНИЯ: убыток {loss_percent:.2f}% >= {next_trigger_percent:.1f}%",
+                                "SignalScalper")
+                        await self._execute_averaging(current_price)
+                    else:
+                        log_info(self.user_id, f"❌ Усреднение пропущено: не прошел технические фильтры", "SignalScalper")
+                else:
+                    log_info(self.user_id, f"⏸️ Триггер НЕ сработал: условие {loss_percent:.2f} >= {next_trigger_percent:.1f} and {loss_percent:.2f} > {self.last_averaging_percent:.2f}", "SignalScalper")
+            else:
+                if pnl >= 0:
+                    log_info(self.user_id, f"✅ Усреднение пропущено: позиция в плюсе (${pnl:.2f})", "SignalScalper")
+                if self.averaging_count >= self.max_averaging_count:
+                    log_info(self.user_id, f"🚫 Усреднение пропущено: достигнут лимит ({self.averaging_count}/{self.max_averaging_count})", "SignalScalper")
 
         # Обновляем пиковую прибыль
         if pnl > self.peak_profit_usd:
@@ -573,6 +573,10 @@ class SignalScalperStrategy(BaseStrategy):
             # МГНОВЕННО отправляем уведомление
             await self._send_trade_close_notification(pnl_net, event.fee, exit_price=event.price)
             log_info(self.user_id, f"[УСПЕХ] Позиция {self.symbol} закрыта быстро! PnL: {pnl_net:.2f}$", "SignalScalper")
+
+            # ПРОВЕРКА ОТЛОЖЕННОЙ ОСТАНОВКИ
+            # Проверяем, должна ли стратегия быть остановлена после закрытия позиции
+            await self.check_deferred_stop()
         else:
             log_warning(self.user_id, f"[НЕОЖИДАННО] Неожиданное состояние при обработке ордера {event.order_id}. position_active={self.position_active}, is_closing={is_closing_order}", "SignalScalper")
 
