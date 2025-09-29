@@ -131,7 +131,7 @@ class ImpulseTrailingStrategy(BaseStrategy):
             is_panic = analysis.get('is_panic_bar')
             self.min_profit_threshold_usdt = self._convert_to_decimal(
                 self.get_config_value('min_profit_activation_usdt', 3.0))
-            long_breakout_buffer = self._convert_to_decimal(self.get_config_value('long_breakout_buffer', '0.001'))
+            long_breakout_buffer = self._convert_to_decimal(self.get_config_value('long_breakout_buffer', '0.0002'))
 
             # --- ОБЩИЙ БЛОК РАСЧЕТА QTY И SL ---
             order_size_usdt = self._convert_to_decimal(self.get_config_value("order_amount", 50.0))
@@ -162,9 +162,9 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 # Проверяем наличие импульсных сигналов
                 volume_spike = analysis.get('volume_spike', False)
                 price_momentum = analysis.get('price_momentum', 0)
-                momentum_threshold = self._convert_to_decimal(self.get_config_value('momentum_threshold', 1.0))
+                momentum_threshold = self._convert_to_decimal(self.get_config_value('momentum_threshold', 0.5))
 
-                # Если есть всплеск объема или сильный моментум вверх (более чувствительный)
+                # АГРЕССИВНО: Если есть всплеск объема или сильный моментум вверх (более чувствительный)
                 if volume_spike or price_momentum > momentum_threshold:
                     long_signal_triggered = True
                     long_signal_reason = "Импульс вверх при восходящем тренде"
@@ -174,8 +174,8 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 support_level = analysis.get('support_level')
                 if support_level:
                     support_distance = (current_price - self._convert_to_decimal(support_level)) / current_price
-                    support_distance_percent = self._convert_to_decimal(self.get_config_value('support_distance_percent', 0.008))
-                    # Если цена близко к поддержке (более широкий диапазон) и отскакивает
+                    support_distance_percent = self._convert_to_decimal(self.get_config_value('support_distance_percent', 0.015))
+                    # РАСШИРЕНО: Если цена близко к поддержке (широкий диапазон 1.5%) и отскакивает
                     if 0 < support_distance < support_distance_percent:
                         long_signal_triggered = True
                         long_signal_reason = "Отскок от поддержки"
@@ -185,10 +185,10 @@ class ImpulseTrailingStrategy(BaseStrategy):
                     await self.stop("Signal skipped: High friction")
                     return
 
-                log_info(self.user_id, f"LONG сигнал для {self.symbol}: {long_signal_reason} (ИНВЕРТИРОВАНО В SHORT)", "impulse_trailing")
-                self.position_side = "Sell"  # ИНВЕРСИЯ: Сигнал LONG -> Вход SHORT
-                # Для SHORT позиции: SL должен быть выше цены входа - используем точный расчет
-                self.stop_loss_price = BaseStrategy._calculate_precise_stop_loss(current_price, qty, initial_sl_usdt, False)
+                log_info(self.user_id, f"LONG сигнал для {self.symbol}: {long_signal_reason}", "impulse_trailing")
+                self.position_side = "Buy"  # Сигнал LONG -> Вход LONG
+                # Для LONG позиции: SL должен быть ниже цены входа - используем точный расчет
+                self.stop_loss_price = BaseStrategy._calculate_precise_stop_loss(current_price, qty, initial_sl_usdt, True)
 
                 log_info(self.user_id,
                          f"Точный расчет SL для LONG: Цена={current_price:.4f}, SL={self.stop_loss_price:.4f}, убыток={initial_sl_usdt} USDT",
@@ -211,9 +211,10 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 # Проверяем наличие импульсных сигналов вниз
                 volume_spike = analysis.get('volume_spike', False)
                 price_momentum = analysis.get('price_momentum', 0)
+                momentum_threshold = self._convert_to_decimal(self.get_config_value('momentum_threshold', 0.5))
 
-                # Если есть всплеск объема или сильный моментум вниз
-                if volume_spike or price_momentum < -1.5:
+                # АГРЕССИВНО: Ловим ранние нисходящие импульсы (используем тот же порог что и для LONG)
+                if volume_spike or price_momentum < -float(momentum_threshold):
                     short_signal_triggered = True
                     short_signal_reason = "Импульс вниз при нисходящем тренде"
 
@@ -231,8 +232,9 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 resistance_level = analysis.get('resistance_level')
                 if resistance_level:
                     resistance_distance = (self._convert_to_decimal(resistance_level) - current_price) / current_price
-                    # Если цена близко к сопротивлению (в пределах 0.5%) и отскакивает вниз
-                    if 0 < resistance_distance < 0.005:
+                    support_distance_percent = self._convert_to_decimal(self.get_config_value('support_distance_percent', 0.015))
+                    # РАСШИРЕНО: используем тот же широкий диапазон что и для LONG отскоков
+                    if 0 < resistance_distance < support_distance_percent:
                         short_signal_triggered = True
                         short_signal_reason = "Отскок от сопротивления"
 
@@ -241,10 +243,10 @@ class ImpulseTrailingStrategy(BaseStrategy):
                     await self.stop("Signal skipped: High friction")
                     return
 
-                log_info(self.user_id, f"SHORT сигнал для {self.symbol}: {short_signal_reason} (ИНВЕРТИРОВАНО В LONG)", "impulse_trailing")
-                self.position_side = "Buy"  # ИНВЕРСИЯ: Сигнал SHORT -> Вход LONG
-                # Для LONG позиции: SL должен быть ниже цены входа - используем точный расчет
-                self.stop_loss_price = BaseStrategy._calculate_precise_stop_loss(current_price, qty, initial_sl_usdt, True)
+                log_info(self.user_id, f"SHORT сигнал для {self.symbol}: {short_signal_reason}", "impulse_trailing")
+                self.position_side = "Sell"  # Сигнал SHORT -> Вход SHORT
+                # Для SHORT позиции: SL должен быть выше цены входа - используем точный расчет
+                self.stop_loss_price = BaseStrategy._calculate_precise_stop_loss(current_price, qty, initial_sl_usdt, False)
 
                 log_info(self.user_id,f"Точный расчет SL для SHORT: Цена={current_price:.4f}, SL={self.stop_loss_price:.4f}, убыток={initial_sl_usdt} USDT",
                          "impulse_trailing")

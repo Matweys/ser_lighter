@@ -249,49 +249,49 @@ class SignalScalperStrategy(BaseStrategy):
         else:  # SHORT
             pnl = (entry_price_to_use - current_price) * position_size_to_use
 
-        # УМНАЯ СИСТЕМА УСРЕДНЕНИЯ ПО УРОВНЯМ
-        if self.averaging_enabled:
-            entry_price_display = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
-            log_info(self.user_id, f"📊 Усреднение: pnl=${pnl:.2f}, вход=${entry_price_display:.4f}, текущая=${current_price:.4f}, count={self.averaging_count}/{self.max_averaging_count}", "SignalScalper")
-
-            if (pnl < 0 and  # Позиция в убытке
-                self.averaging_count < self.max_averaging_count):
-
-                # НОВАЯ ЛОГИКА: проверяем достижение уровней усреднения
-                averaging_level_reached = await self._check_averaging_level_reached(current_price)
-
-                if averaging_level_reached:
-                    # ЗАЩИТА ОТ ЧАСТЫХ УСРЕДНЕНИЙ: проверяем временной интервал
-                    current_time = time.time()
-                    time_since_last_averaging = current_time - self.last_averaging_time
-                    min_averaging_interval = 30  # Минимум 30 секунд между усреднениями
-
-                    if self.last_averaging_time > 0 and time_since_last_averaging < min_averaging_interval:
-                        remaining_time = min_averaging_interval - time_since_last_averaging
-                        log_info(self.user_id, f"⏳ Усреднение пропущено: нужно подождать ещё {remaining_time:.0f} сек", "SignalScalper")
-                        return
-
-                    # Проверяем технические фильтры перед усреднением
-                    filter_result = await self._check_averaging_filters()
-                    if filter_result:
-                        next_level = self.averaging_count + 1
-                        level_price = self._get_averaging_level_price(next_level)
-                        log_info(self.user_id,
-                                f"🎯 ДОСТИГНУТ УРОВЕНЬ {next_level}: цена ${current_price:.4f} достигла ${level_price:.4f}",
-                                "SignalScalper")
-                        await self._execute_level_averaging(current_price, next_level)
-                    else:
-                        log_info(self.user_id, f"❌ Усреднение пропущено: не прошел технические фильтры", "SignalScalper")
-                else:
-                    next_level = self.averaging_count + 1
-                    if next_level <= self.max_averaging_count:
-                        target_price = self._get_averaging_level_price(next_level)
-                        log_info(self.user_id, f"⏸️ Уровень {next_level} не достигнут: текущая ${current_price:.4f}, цель ${target_price:.4f}", "SignalScalper")
-            else:
-                if pnl >= 0:
-                    log_info(self.user_id, f"✅ Усреднение пропущено: позиция в плюсе (${pnl:.2f})", "SignalScalper")
-                if self.averaging_count >= self.max_averaging_count:
-                    log_info(self.user_id, f"🚫 Усреднение пропущено: достигнут лимит ({self.averaging_count}/{self.max_averaging_count})", "SignalScalper")
+        # УМНАЯ СИСТЕМА УСРЕДНЕНИЯ ПО УРОВНЯМ - ВРЕМЕННО ОТКЛЮЧЕНА
+        # if self.averaging_enabled:
+        #     entry_price_display = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
+        #     log_info(self.user_id, f"📊 Усреднение: pnl=${pnl:.2f}, вход=${entry_price_display:.4f}, текущая=${current_price:.4f}, count={self.averaging_count}/{self.max_averaging_count}", "SignalScalper")
+        #
+        #     if (pnl < 0 and  # Позиция в убытке
+        #         self.averaging_count < self.max_averaging_count):
+        #
+        #         # НОВАЯ ЛОГИКА: проверяем достижение уровней усреднения
+        #         averaging_level_reached = await self._check_averaging_level_reached(current_price)
+        #
+        #         if averaging_level_reached:
+        #             # ЗАЩИТА ОТ ЧАСТЫХ УСРЕДНЕНИЙ: проверяем временной интервал
+        #             current_time = time.time()
+        #             time_since_last_averaging = current_time - self.last_averaging_time
+        #             min_averaging_interval = 30  # Минимум 30 секунд между усреднениями
+        #
+        #             if self.last_averaging_time > 0 and time_since_last_averaging < min_averaging_interval:
+        #                 remaining_time = min_averaging_interval - time_since_last_averaging
+        #                 log_info(self.user_id, f"⏳ Усреднение пропущено: нужно подождать ещё {remaining_time:.0f} сек", "SignalScalper")
+        #                 return
+        #
+        #             # Проверяем технические фильтры перед усреднением
+        #             filter_result = await self._check_averaging_filters()
+        #             if filter_result:
+        #                 next_level = self.averaging_count + 1
+        #                 level_price = self._get_averaging_level_price(next_level)
+        #                 log_info(self.user_id,
+        #                         f"🎯 ДОСТИГНУТ УРОВЕНЬ {next_level}: цена ${current_price:.4f} достигла ${level_price:.4f}",
+        #                         "SignalScalper")
+        #                 await self._execute_level_averaging(current_price, next_level)
+        #             else:
+        #                 log_info(self.user_id, f"❌ Усреднение пропущено: не прошел технические фильтры", "SignalScalper")
+        #         else:
+        #             next_level = self.averaging_count + 1
+        #             if next_level <= self.max_averaging_count:
+        #                 target_price = self._get_averaging_level_price(next_level)
+        #                 log_info(self.user_id, f"⏸️ Уровень {next_level} не достигнут: текущая ${current_price:.4f}, цель ${target_price:.4f}", "SignalScalper")
+        #     else:
+        #         if pnl >= 0:
+        #             log_info(self.user_id, f"✅ Усреднение пропущено: позиция в плюсе (${pnl:.2f})", "SignalScalper")
+        #         if self.averaging_count >= self.max_averaging_count:
+        #             log_info(self.user_id, f"🚫 Усреднение пропущено: достигнут лимит ({self.averaging_count}/{self.max_averaging_count})", "SignalScalper")
 
         # Обновляем пиковую прибыль
         if pnl > self.peak_profit_usd:

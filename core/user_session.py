@@ -353,18 +353,20 @@ class UserSession:
                 return True
 
             # СИСТЕМА УПРАВЛЕНИЯ СЛОТАМИ: Проверяем возможность запуска
-            slot_check_result = await self._check_strategy_slots(strategy_type, symbol)
+            # ВАЖНО: impulse_trailing использует собственную Redis-блокировку, слоты не проверяем
+            if strategy_type != "impulse_trailing":
+                slot_check_result = await self._check_strategy_slots(strategy_type, symbol)
 
-            if slot_check_result == "start_immediately":
-                log_info(self.user_id, f"✅ Есть свободный слот для {strategy_type}_{symbol}", module_name=__name__)
-            elif slot_check_result == "replaced_inactive":
-                log_info(self.user_id, f"🔄 Заменена неактивная стратегия для запуска {strategy_type}_{symbol}", module_name=__name__)
-            elif slot_check_result == "queued":
-                log_info(self.user_id, f"⏳ Стратегия {strategy_type}_{symbol} добавлена в очередь ожидания", module_name=__name__)
-                return True  # Стратегия добавлена в очередь, но не запущена
-            elif slot_check_result == "blocked":
-                log_warning(self.user_id, f"🚫 Запуск {strategy_type}_{symbol} заблокирован: все слоты заняты активными позициями", module_name=__name__)
-                return False
+                if slot_check_result == "start_immediately":
+                    log_info(self.user_id, f"✅ Есть свободный слот для {strategy_type}_{symbol}", module_name=__name__)
+                elif slot_check_result == "replaced_inactive":
+                    log_info(self.user_id, f"🔄 Заменена неактивная стратегия для запуска {strategy_type}_{symbol}", module_name=__name__)
+                elif slot_check_result == "queued":
+                    log_info(self.user_id, f"⏳ Стратегия {strategy_type}_{symbol} добавлена в очередь ожидания", module_name=__name__)
+                    return True  # Стратегия добавлена в очередь, но не запущена
+                elif slot_check_result == "blocked":
+                    log_warning(self.user_id, f"🚫 Запуск {strategy_type}_{symbol} заблокирован: все слоты заняты активными позициями", module_name=__name__)
+                    return False
 
             if not await self.risk_manager.can_open_new_trade(symbol):
                 log_warning(self.user_id, f"Открытие новой сделки для {symbol} отклонено риск-менеджером.",
@@ -392,6 +394,10 @@ class UserSession:
                 log_error(self.user_id, f"Не удалось создать стратегию типа: {strategy_type}", module_name=__name__)
                 return False
 
+            # ВАЖНО: Для impulse_trailing отправляем уведомление ДО запуска, т.к. она сразу входит в сделку
+            if strategy_type == "impulse_trailing":
+                await self._send_strategy_start_notification(strategy)
+
             # Запуск стратегии
             if await strategy.start():
                 self.active_strategies[strategy_id] = strategy
@@ -408,8 +414,9 @@ class UserSession:
                 )
                 await self.event_bus.publish(event)
 
-                # Отправка уведомления пользователю после УСПЕШНОГО запуска и добавления в active_strategies
-                await self._send_strategy_start_notification(strategy)
+                # Отправка уведомления пользователю ПОСЛЕ запуска (только для стратегий, которые не входят в сделку сразу)
+                if strategy_type != "impulse_trailing":
+                    await self._send_strategy_start_notification(strategy)
 
                 log_info(self.user_id, f"Стратегия {strategy_id} запущена", module_name=__name__)
                 return True
