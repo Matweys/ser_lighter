@@ -79,6 +79,10 @@ class UserSession:
         self.active_strategies: Dict[str, BaseStrategy] = {}
         self.strategy_tasks: Dict[str, asyncio.Task] = {}
 
+        # Система управления многосимвольными стратегиями
+        self.MAX_STRATEGY_SLOTS = 3  # Максимум символов для одной стратегии
+        self.strategy_queues: Dict[str, List[str]] = {}  # strategy_type -> [symbols] в очереди ожидания
+
         # Статистика сессии
         self.session_stats = {
             "start_time": datetime.now(),
@@ -347,6 +351,20 @@ class UserSession:
             if strategy_id in self.active_strategies:
                 log_warning(self.user_id, f"Стратегия {strategy_id} уже запущена", module_name=__name__)
                 return True
+
+            # СИСТЕМА УПРАВЛЕНИЯ СЛОТАМИ: Проверяем возможность запуска
+            slot_check_result = await self._check_strategy_slots(strategy_type, symbol)
+
+            if slot_check_result == "start_immediately":
+                log_info(self.user_id, f"✅ Есть свободный слот для {strategy_type}_{symbol}", module_name=__name__)
+            elif slot_check_result == "replaced_inactive":
+                log_info(self.user_id, f"🔄 Заменена неактивная стратегия для запуска {strategy_type}_{symbol}", module_name=__name__)
+            elif slot_check_result == "queued":
+                log_info(self.user_id, f"⏳ Стратегия {strategy_type}_{symbol} добавлена в очередь ожидания", module_name=__name__)
+                return True  # Стратегия добавлена в очередь, но не запущена
+            elif slot_check_result == "blocked":
+                log_warning(self.user_id, f"🚫 Запуск {strategy_type}_{symbol} заблокирован: все слоты заняты активными позициями", module_name=__name__)
+                return False
 
             if not await self.risk_manager.can_open_new_trade(symbol):
                 log_warning(self.user_id, f"Открытие новой сделки для {symbol} отклонено риск-менеджером.",
@@ -1106,6 +1124,166 @@ class UserSession:
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления о мониторинге позиции: {e}", module_name=__name__)
+
+    # ===============================================================================
+    # СИСТЕМА УПРАВЛЕНИЯ СЛОТАМИ МНОГОСИМВОЛЬНЫХ СТРАТЕГИЙ
+    # ===============================================================================
+
+    async def _check_strategy_slots(self, strategy_type: str, symbol: str) -> str:
+        """
+        Проверяет возможность запуска стратегии с учётом лимитов слотов.
+
+        Returns:
+            str: Одно из значений:
+                - "start_immediately" - есть свободный слот, можно запускать
+                - "replaced_inactive" - заменена неактивная стратегия того же типа
+                - "queued" - добавлено в очередь ожидания (все слоты заняты)
+                - "blocked" - запуск заблокирован (все слоты заняты активными позициями)
+        """
+        try:
+            # Получаем все стратегии данного типа
+            same_type_strategies = [
+                (sid, strategy) for sid, strategy in self.active_strategies.items()
+                if strategy.strategy_type.value == strategy_type
+            ]
+
+            log_info(self.user_id, f"🔍 Проверка слотов для {strategy_type}_{symbol}: найдено {len(same_type_strategies)} стратегий того же типа", module_name=__name__)
+
+            # Если меньше лимита - можно запускать сразу
+            if len(same_type_strategies) < self.MAX_STRATEGY_SLOTS:
+                log_info(self.user_id, f"✅ Есть свободный слот: {len(same_type_strategies)}/{self.MAX_STRATEGY_SLOTS}", module_name=__name__)
+                return "start_immediately"
+
+            # Все слоты заняты - ищем неактивные стратегии для замены
+            inactive_strategies = []
+            active_strategies = []
+
+            for strategy_id, strategy in same_type_strategies:
+                has_position = getattr(strategy, 'position_active', False)
+                if has_position:
+                    active_strategies.append((strategy_id, strategy))
+                else:
+                    inactive_strategies.append((strategy_id, strategy))
+
+            log_info(self.user_id, f"📊 Анализ слотов: активных {len(active_strategies)}, неактивных {len(inactive_strategies)}", module_name=__name__)
+
+            # Если есть неактивные стратегии - заменяем первую
+            if inactive_strategies:
+                strategy_to_replace_id, strategy_to_replace = inactive_strategies[0]
+                log_info(self.user_id, f"🔄 Заменяю неактивную стратегию {strategy_to_replace_id} на {strategy_type}_{symbol}", module_name=__name__)
+
+                # Останавливаем старую стратегию
+                await self.stop_strategy(strategy_to_replace_id, reason=f"replaced_by_{symbol}")
+                return "replaced_inactive"
+
+            # Все слоты заняты активными позициями - добавляем в очередь
+            log_info(self.user_id, f"⏳ Все слоты заняты активными позициями, добавляю {symbol} в очередь", module_name=__name__)
+            await self._add_to_strategy_queue(strategy_type, symbol)
+            return "queued"
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка проверки слотов стратегии: {e}", module_name=__name__)
+            return "blocked"
+
+    async def _add_to_strategy_queue(self, strategy_type: str, symbol: str):
+        """Добавляет символ в очередь ожидания для стратегии."""
+        try:
+            if strategy_type not in self.strategy_queues:
+                self.strategy_queues[strategy_type] = []
+
+            if symbol not in self.strategy_queues[strategy_type]:
+                self.strategy_queues[strategy_type].append(symbol)
+                log_info(self.user_id, f"📝 Символ {symbol} добавлен в очередь для {strategy_type}. Очередь: {self.strategy_queues[strategy_type]}", module_name=__name__)
+
+                # Отправляем уведомление пользователю
+                await self._send_queue_notification(strategy_type, symbol, len(self.strategy_queues[strategy_type]))
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка добавления в очередь: {e}", module_name=__name__)
+
+    async def _process_strategy_queue(self, strategy_type: str):
+        """Обрабатывает очередь ожидания при освобождении слота."""
+        try:
+            if strategy_type not in self.strategy_queues or not self.strategy_queues[strategy_type]:
+                return
+
+            # Проверяем, есть ли свободные слоты
+            same_type_strategies = [
+                strategy for strategy in self.active_strategies.values()
+                if strategy.strategy_type.value == strategy_type
+            ]
+
+            if len(same_type_strategies) >= self.MAX_STRATEGY_SLOTS:
+                log_debug(self.user_id, f"Слоты для {strategy_type} всё ещё заняты, очередь ожидает", module_name=__name__)
+                return
+
+            # Берём первый символ из очереди
+            next_symbol = self.strategy_queues[strategy_type].pop(0)
+            log_info(self.user_id, f"🎯 Обрабатываю очередь: запускаю {strategy_type} для {next_symbol}", module_name=__name__)
+
+            # Запускаем стратегию
+            success = await self.start_strategy(
+                strategy_type=strategy_type,
+                symbol=next_symbol,
+                analysis_data={'trigger': 'queue_processing'}
+            )
+
+            if success:
+                log_info(self.user_id, f"✅ Стратегия из очереди успешно запущена: {strategy_type}_{next_symbol}", module_name=__name__)
+                await self._send_queue_processed_notification(strategy_type, next_symbol)
+            else:
+                log_warning(self.user_id, f"⚠️ Не удалось запустить стратегию из очереди: {strategy_type}_{next_symbol}", module_name=__name__)
+                # Возвращаем символ в начало очереди для повторной попытки
+                self.strategy_queues[strategy_type].insert(0, next_symbol)
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка обработки очереди стратегий: {e}", module_name=__name__)
+
+    async def _send_queue_notification(self, strategy_type: str, symbol: str, queue_position: int):
+        """Отправляет уведомление о добавлении в очередь."""
+        try:
+            strategy_name = strategy_type.replace('_', ' ').title()
+            message = (
+                f"⏳ <b>СИМВОЛ ДОБАВЛЕН В ОЧЕРЕДЬ</b>\n\n"
+                f"▫️ Стратегия: {strategy_name}\n"
+                f"▫️ Символ: <code>{symbol}</code>\n"
+                f"▫️ Позиция в очереди: {queue_position}\n\n"
+                f"🔍 <b>Причина ожидания:</b>\n"
+                f"Все {self.MAX_STRATEGY_SLOTS} слота заняты активными позициями.\n\n"
+                f"✅ Символ автоматически запустится, как только освободится слот!"
+            )
+
+            if bot_manager and bot_manager.bot:
+                await bot_manager.bot.send_message(
+                    chat_id=self.user_id,
+                    text=message,
+                    parse_mode="HTML"
+                )
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка отправки уведомления об очереди: {e}", module_name=__name__)
+
+    async def _send_queue_processed_notification(self, strategy_type: str, symbol: str):
+        """Отправляет уведомление об обработке очереди."""
+        try:
+            strategy_name = strategy_type.replace('_', ' ').title()
+            message = (
+                f"🎯 <b>ОЧЕРЕДЬ ОБРАБОТАНА</b>\n\n"
+                f"▫️ Стратегия: {strategy_name}\n"
+                f"▫️ Символ: <code>{symbol}</code>\n\n"
+                f"✅ Слот освободился и символ автоматически запущен!\n"
+                f"🚀 Стратегия начала работу"
+            )
+
+            if bot_manager and bot_manager.bot:
+                await bot_manager.bot.send_message(
+                    chat_id=self.user_id,
+                    text=message,
+                    parse_mode="HTML"
+                )
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка отправки уведомления об обработке очереди: {e}", module_name=__name__)
 
     async def _handle_smart_symbol_replacement(self, new_watchlist: set, old_watchlist: set, added: set, removed: set):
         """

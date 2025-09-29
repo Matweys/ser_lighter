@@ -60,7 +60,7 @@ class SignalScalperStrategy(BaseStrategy):
         # СИСТЕМА КОНТРОЛЯ РЕВЕРСОВ
         self.last_reversal_time: Optional[float] = None  # Время последнего реверса
         self.reversal_cooldown_seconds = 60  # Кулдаун после реверса в секундах (1 минута)
-        self.reversal_required_confirmations = 2  # Требуемые подтверждения после реверса
+        self.reversal_required_confirmations = 3  # Требуемые подтверждения после реверса
         self.after_reversal_mode = False  # Флаг: находимся ли мы в режиме после реверса
 
         # НОВАЯ СИСТЕМА УСРЕДНЕНИЯ ПОЗИЦИИ
@@ -156,19 +156,14 @@ class SignalScalperStrategy(BaseStrategy):
 
         # --- Конечный автомат логики ---
         if self.position_active:
-            # Правило 4: Реверс позиции при смене сигнала (ТОЛЬКО при прибыли >= 0)
+            # Правило 4: Немедленный реверс позиции при смене сигнала (БЕЗ проверки PnL)
             if (signal == "LONG" and self.active_direction == "SHORT") or \
                     (signal == "SHORT" and self.active_direction == "LONG"):
                 current_pnl = await self._calculate_current_pnl(price)
-                if current_pnl >= 0:
-                    log_warning(self.user_id,
-                                f"СМЕНА СИГНАЛА! Реверс позиции по {self.symbol} с {self.active_direction} на {signal} при PnL={current_pnl:.2f}$.",
-                                "SignalScalper")
-                    await self._reverse_position(new_direction=signal)
-                else:
-                    log_info(self.user_id,
-                            f"Смена сигнала на {signal}, но позиция в убытке {current_pnl:.2f}$. Ждем восстановления или SL.",
+                log_warning(self.user_id,
+                            f"СМЕНА СИГНАЛА! Немедленный реверс позиции по {self.symbol} с {self.active_direction} на {signal} при PnL={current_pnl:.2f}$.",
                             "SignalScalper")
+                await self._reverse_position(new_direction=signal)
 
             # Правило 5: Закрытие при двух "HOLD" подряд (только при положительном PnL)
             elif signal == "HOLD":
@@ -252,47 +247,47 @@ class SignalScalperStrategy(BaseStrategy):
             pnl = (entry_price_to_use - current_price) * position_size_to_use
             loss_percent = ((current_price - entry_price_to_use) / entry_price_to_use * 100) if current_price > entry_price_to_use else 0
 
-        # НОВАЯ ЛОГИКА УСРЕДНЕНИЯ
-        if self.averaging_enabled:
-            # Детальное логирование для диагностики с ценами
-            entry_price_display = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
-            log_info(self.user_id, f"📊 Усреднение: pnl=${pnl:.2f}, loss%={loss_percent:.2f}, вход=${entry_price_display:.4f}, текущая=${current_price:.4f}, count={self.averaging_count}/{self.max_averaging_count}", "SignalScalper")
+        # НОВАЯ ЛОГИКА УСРЕДНЕНИЯ - ВРЕМЕННО ОТКЛЮЧЕНО
+        # if self.averaging_enabled:
+        #     # Детальное логирование для диагностики с ценами
+        #     entry_price_display = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
+        #     log_info(self.user_id, f"📊 Усреднение: pnl=${pnl:.2f}, loss%={loss_percent:.2f}, вход=${entry_price_display:.4f}, текущая=${current_price:.4f}, count={self.averaging_count}/{self.max_averaging_count}", "SignalScalper")
 
-            if (pnl < 0 and  # Позиция в убытке
-                self.averaging_count < self.max_averaging_count):
+        #     if (pnl < 0 and  # Позиция в убытке
+        #         self.averaging_count < self.max_averaging_count):
 
-                # Проверяем, достиг ли убыток нового порога для усреднения
-                next_trigger_percent = self.averaging_trigger_percent * (self.averaging_count + 1)
+        #         # Проверяем, достиг ли убыток нового порога для усреднения
+        #         next_trigger_percent = self.averaging_trigger_percent * (self.averaging_count + 1)
 
-                log_info(self.user_id, f"🔍 Проверка триггера: loss={loss_percent:.2f}% >= trigger={next_trigger_percent:.1f}%, last={self.last_averaging_percent:.2f}%", "SignalScalper")
+        #         log_info(self.user_id, f"🔍 Проверка триггера: loss={loss_percent:.2f}% >= trigger={next_trigger_percent:.1f}%, last={self.last_averaging_percent:.2f}%", "SignalScalper")
 
-                if loss_percent >= next_trigger_percent and loss_percent > self.last_averaging_percent:
-                    # ЗАЩИТА ОТ ЧАСТЫХ УСРЕДНЕНИЙ: проверяем временной интервал
-                    current_time = time.time()
-                    time_since_last_averaging = current_time - self.last_averaging_time
-                    min_averaging_interval = 30  # Минимум 30 секунд между усреднениями
+        #         if loss_percent >= next_trigger_percent and loss_percent > self.last_averaging_percent:
+        #             # ЗАЩИТА ОТ ЧАСТЫХ УСРЕДНЕНИЙ: проверяем временной интервал
+        #             current_time = time.time()
+        #             time_since_last_averaging = current_time - self.last_averaging_time
+        #             min_averaging_interval = 30  # Минимум 30 секунд между усреднениями
 
-                    if self.last_averaging_time > 0 and time_since_last_averaging < min_averaging_interval:
-                        remaining_time = min_averaging_interval - time_since_last_averaging
-                        log_info(self.user_id, f"⏳ Усреднение пропущено: нужно подождать ещё {remaining_time:.0f} сек", "SignalScalper")
-                        return
+        #             if self.last_averaging_time > 0 and time_since_last_averaging < min_averaging_interval:
+        #                 remaining_time = min_averaging_interval - time_since_last_averaging
+        #                 log_info(self.user_id, f"⏳ Усреднение пропущено: нужно подождать ещё {remaining_time:.0f} сек", "SignalScalper")
+        #                 return
 
-                    # Проверяем технические фильтры перед усреднением
-                    filter_result = await self._check_averaging_filters()
-                    if filter_result:
-                        log_info(self.user_id,
-                                f"🎯 ТРИГГЕР УСРЕДНЕНИЯ: убыток {loss_percent:.2f}% >= {next_trigger_percent:.1f}%",
-                                "SignalScalper")
-                        await self._execute_averaging(current_price)
-                    else:
-                        log_info(self.user_id, f"❌ Усреднение пропущено: не прошел технические фильтры", "SignalScalper")
-                else:
-                    log_info(self.user_id, f"⏸️ Триггер НЕ сработал: условие {loss_percent:.2f} >= {next_trigger_percent:.1f} and {loss_percent:.2f} > {self.last_averaging_percent:.2f}", "SignalScalper")
-            else:
-                if pnl >= 0:
-                    log_info(self.user_id, f"✅ Усреднение пропущено: позиция в плюсе (${pnl:.2f})", "SignalScalper")
-                if self.averaging_count >= self.max_averaging_count:
-                    log_info(self.user_id, f"🚫 Усреднение пропущено: достигнут лимит ({self.averaging_count}/{self.max_averaging_count})", "SignalScalper")
+        #             # Проверяем технические фильтры перед усреднением
+        #             filter_result = await self._check_averaging_filters()
+        #             if filter_result:
+        #                 log_info(self.user_id,
+        #                         f"🎯 ТРИГГЕР УСРЕДНЕНИЯ: убыток {loss_percent:.2f}% >= {next_trigger_percent:.1f}%",
+        #                         "SignalScalper")
+        #                 await self._execute_averaging(current_price)
+        #             else:
+        #                 log_info(self.user_id, f"❌ Усреднение пропущено: не прошел технические фильтры", "SignalScalper")
+        #         else:
+        #             log_info(self.user_id, f"⏸️ Триггер НЕ сработал: условие {loss_percent:.2f} >= {next_trigger_percent:.1f} and {loss_percent:.2f} > {self.last_averaging_percent:.2f}", "SignalScalper")
+        #     else:
+        #         if pnl >= 0:
+        #             log_info(self.user_id, f"✅ Усреднение пропущено: позиция в плюсе (${pnl:.2f})", "SignalScalper")
+        #         if self.averaging_count >= self.max_averaging_count:
+        #             log_info(self.user_id, f"🚫 Усреднение пропущено: достигнут лимит ({self.averaging_count}/{self.max_averaging_count})", "SignalScalper")
 
         # Обновляем пиковую прибыль
         if pnl > self.peak_profit_usd:
