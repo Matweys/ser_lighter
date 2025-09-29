@@ -42,8 +42,7 @@ class SignalScalperStrategy(BaseStrategy):
 
         # Настраиваемые параметры
         self.min_profit_usd: Decimal = Decimal('1.0')
-        self.trailing_pullback_usd: Decimal = Decimal('1.0')
-        self.max_loss_usd: Decimal = Decimal('15.0')
+        self.max_loss_usd: Decimal = Decimal('30.0')
 
         # Стоп-лосс управление
         self.stop_loss_order_id: Optional[str] = None
@@ -52,7 +51,7 @@ class SignalScalperStrategy(BaseStrategy):
         # Система подтверждения сигналов и кулдауна
         self.last_signal: Optional[str] = None  # Последний полученный сигнал
         self.signal_confirmation_count = 0  # Счетчик одинаковых сигналов подряд
-        self.required_confirmations = 2  # Требуемое количество подтверждений
+        self.required_confirmations = 3  # Требуемое количество подтверждений
         self.last_trade_close_time: Optional[float] = None  # Время закрытия последней сделки
         self.cooldown_seconds = 60  # Кулдаун в секундах (1 минута)
         self.last_trade_was_loss = False  # Была ли последняя сделка убыточной
@@ -103,8 +102,7 @@ class SignalScalperStrategy(BaseStrategy):
         if self.config:
             self.signal_analyzer = SignalAnalyzer(self.user_id, self.api, self.config)
             self.min_profit_usd = self._convert_to_decimal(self.config.get("min_profit_usd", "1.0"))
-            self.trailing_pullback_usd = self._convert_to_decimal(self.config.get("trailing_pullback_usd", "1.0"))
-            self.max_loss_usd = self._convert_to_decimal(self.config.get("max_loss_usd", "15.0"))
+            self.max_loss_usd = self._convert_to_decimal(self.config.get("max_loss_usd", "30.0"))
 
             # Сохраняем изначальный лимит убытка для интеллектуального SL
             self.original_max_loss_usd = self.max_loss_usd
@@ -122,7 +120,7 @@ class SignalScalperStrategy(BaseStrategy):
             # Параметры технических фильтров
             self.averaging_rsi_filter = self.config.get("averaging_rsi_filter", True)
             self.averaging_rsi_oversold = float(self.config.get("averaging_rsi_oversold", 60))
-            self.averaging_rsi_overbought = float(self.config.get("averaging_rsi_overbought", 35))
+            self.averaging_rsi_overbought = float(self.config.get("averaging_rsi_overbought", 40))
 
     async def start(self) -> bool:
         """Запуск стратегии и подписка на события свечей."""
@@ -156,14 +154,20 @@ class SignalScalperStrategy(BaseStrategy):
 
         # --- Конечный автомат логики ---
         if self.position_active:
-            # Правило 4: Немедленный реверс позиции при смене сигнала (БЕЗ проверки PnL)
+            # Правило 4: Реверс позиции при смене сигнала (только при PnL >= 0)
             if (signal == "LONG" and self.active_direction == "SHORT") or \
                     (signal == "SHORT" and self.active_direction == "LONG"):
                 current_pnl = await self._calculate_current_pnl(price)
-                log_warning(self.user_id,
-                            f"СМЕНА СИГНАЛА! Немедленный реверс позиции по {self.symbol} с {self.active_direction} на {signal} при PnL={current_pnl:.2f}$.",
+
+                if current_pnl >= 0:
+                    log_warning(self.user_id,
+                                f"СМЕНА СИГНАЛА! Реверс позиции по {self.symbol} с {self.active_direction} на {signal} при PnL={current_pnl:.2f}$.",
+                                "SignalScalper")
+                    await self._reverse_position(new_direction=signal)
+                else:
+                    log_info(self.user_id,
+                            f"Сигнал на реверс с {self.active_direction} на {signal}, но позиция в убытке {current_pnl:.2f} USDT. Ожидаем улучшения.",
                             "SignalScalper")
-                await self._reverse_position(new_direction=signal)
 
             # Правило 5: Закрытие при двух "HOLD" подряд (только при положительном PnL)
             elif signal == "HOLD":
@@ -801,7 +805,7 @@ class SignalScalperStrategy(BaseStrategy):
             order_amount = self._convert_to_decimal(self.get_config_value("order_amount", 50.0))
 
             # Настройки для расчета (реалистичные проценты)
-            base_profit_percent = Decimal('0.005')      # 0.5% от суммы ордера
+            base_profit_percent = Decimal('0.003')      # 0.5% от суммы ордера
             averaging_bonus_percent = Decimal('0.003')   # 0.3% за каждое усреднение
 
             # Базовый минимальный профит
@@ -1235,6 +1239,9 @@ class SignalScalperStrategy(BaseStrategy):
                     self.signal_analyzer = SignalAnalyzer(self.user_id, self.api, self.config)
                     log_info(self.user_id, f"📈 Инициализирован анализатор сигналов для неактивной позиции", "SignalScalper")
 
+            # КРИТИЧЕСКИ ВАЖНО: Принудительная синхронизация с биржей
+            await self._force_sync_with_exchange()
+
             # Проверяем синхронизацию с базой данных
             await self._sync_database_state()
 
@@ -1262,6 +1269,209 @@ class SignalScalperStrategy(BaseStrategy):
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка синхронизации с БД: {e}", "SignalScalper")
+
+    async def _force_sync_with_exchange(self):
+        """
+        КРИТИЧЕСКИ ВАЖНАЯ принудительная синхронизация состояния стратегии с биржей.
+        Восстанавливает состояние активных позиций и предотвращает дублирование ордеров.
+        """
+        try:
+            log_info(self.user_id, f"🔄 Принудительная синхронизация с биржей для {self.symbol}...", "SignalScalper")
+
+            # Получаем активные позиции с биржи
+            exchange_positions = await self.api.get_positions()
+            active_position = None
+
+            for position in exchange_positions:
+                if (position.get('symbol') == self.symbol and
+                    float(position.get('size', 0)) > 0):
+                    active_position = position
+                    break
+
+            if active_position:
+                # На бирже есть активная позиция по нашему символу
+                position_size = Decimal(str(active_position.get('size', 0)))
+                position_side = active_position.get('side', '').lower()
+                entry_price = Decimal(str(active_position.get('avgPrice', 0)))
+
+                log_warning(self.user_id,
+                          f"🚨 НАЙДЕНА АКТИВНАЯ ПОЗИЦИЯ на бирже: {self.symbol} {position_side.upper()} "
+                          f"размер={position_size}, вход=${entry_price:.4f}", "SignalScalper")
+
+                # ПРИНУДИТЕЛЬНО восстанавливаем состояние стратегии
+                if not self.position_active:
+                    log_warning(self.user_id,
+                              f"⚠️ Стратегия считала позицию НЕАКТИВНОЙ, но на бирже есть позиция! "
+                              f"ВОССТАНАВЛИВАЮ состояние...", "SignalScalper")
+
+                    # Восстанавливаем базовое состояние позиции
+                    self.position_active = True
+                    self.active_direction = "LONG" if position_side == "long" else "SHORT"
+                    self.entry_price = entry_price
+                    self.position_size = position_size
+                    self.peak_profit_usd = Decimal('0')
+                    self.hold_signal_counter = 0
+
+                    # Восстанавливаем подписку на события цены
+                    await self.event_bus.subscribe(EventType.PRICE_UPDATE, self.handle_price_update, user_id=self.user_id)
+                    log_info(self.user_id, f"✅ Восстановлена подписка на обновления цен", "SignalScalper")
+
+                    # Инициализируем переменные усреднения
+                    self.averaging_count = 0
+                    self.last_averaging_percent = Decimal('0')
+
+                    # Проверяем, было ли усреднение (размер больше базового)
+                    expected_base_size = await self._estimate_base_position_size()
+                    if expected_base_size and position_size > expected_base_size * Decimal('1.1'):
+                        # Похоже на усреднение, пытаемся восстановить состояние
+                        log_info(self.user_id,
+                               f"📊 Обнаружено возможное усреднение: биржа={position_size}, ожидаемый_базовый≈{expected_base_size:.0f}",
+                               "SignalScalper")
+
+                        # Устанавливаем усредненные значения
+                        self.total_position_size = position_size
+                        self.average_entry_price = entry_price
+
+                        # Оценочный расчет количества усреднений
+                        size_ratio = position_size / expected_base_size
+                        if size_ratio > Decimal('1.4'):  # Больше 1.4x - минимум 1 усреднение
+                            self.averaging_count = 1
+                        if size_ratio > Decimal('2.0'):  # Больше 2x - минимум 2 усреднения
+                            self.averaging_count = 2
+                        if size_ratio > Decimal('3.0'):  # Больше 3x - 3 усреднения
+                            self.averaging_count = 3
+
+                        log_info(self.user_id,
+                               f"📊 Восстановлено состояние усреднения: count={self.averaging_count}, "
+                               f"total_size={self.total_position_size}, avg_price={self.average_entry_price:.4f}",
+                               "SignalScalper")
+                    else:
+                        # Обычная позиция без усреднения
+                        self.total_position_size = Decimal('0')
+                        self.average_entry_price = Decimal('0')
+
+                    # Попытаемся восстановить стоп-лосс
+                    await self._restore_stop_loss_from_exchange()
+
+                    log_info(self.user_id,
+                           f"✅ Состояние стратегии ВОССТАНОВЛЕНО: {self.active_direction} позиция "
+                           f"размер={position_size}, вход=${entry_price:.4f}", "SignalScalper")
+
+                    # Отправляем уведомление пользователю
+                    recovery_message = (
+                        f"🔄 <b>ВОССТАНОВЛЕНИЕ ПОЗИЦИИ</b>\n\n"
+                        f"📊 <b>Символ:</b> {self.symbol}\n"
+                        f"📈 <b>Направление:</b> {self.active_direction}\n"
+                        f"📏 <b>Размер:</b> {position_size}\n"
+                        f"💰 <b>Цена входа:</b> {entry_price:.4f} USDT\n"
+                        f"🔄 <b>Усреднений:</b> {self.averaging_count}\n\n"
+                        f"Стратегия продолжит мониторинг восстановленной позиции."
+                    )
+
+                    if self.bot:
+                        await self.bot.send_message(self.user_id, recovery_message, parse_mode="HTML")
+
+                else:
+                    # Позиция была активна, проверяем соответствие размеров
+                    strategy_total_size = self.total_position_size if self.total_position_size > 0 else self.position_size
+
+                    if abs(strategy_total_size - position_size) > Decimal('1'):  # Допуск в 1 единицу
+                        log_warning(self.user_id,
+                                  f"⚠️ НЕСООТВЕТСТВИЕ РАЗМЕРОВ: стратегия={strategy_total_size}, биржа={position_size}. "
+                                  f"Синхронизирую...", "SignalScalper")
+
+                        # Принудительно синхронизируем размеры
+                        if self.total_position_size > 0:
+                            self.total_position_size = position_size
+                        else:
+                            self.position_size = position_size
+
+            else:
+                # На бирже НЕТ активных позиций по нашему символу
+                if self.position_active:
+                    log_warning(self.user_id,
+                              f"⚠️ Стратегия считала позицию АКТИВНОЙ, но на бирже позиции НЕТ! "
+                              f"Сбрасываю состояние...", "SignalScalper")
+
+                    # Принудительно сбрасываем состояние
+                    await self._force_reset_position_state()
+                else:
+                    log_info(self.user_id, f"✅ Синхронизация подтверждена: нет активных позиций", "SignalScalper")
+
+        except Exception as e:
+            log_error(self.user_id, f"❌ Критическая ошибка синхронизации с биржей: {e}", "SignalScalper")
+
+    async def _estimate_base_position_size(self) -> Optional[Decimal]:
+        """
+        Оценивает размер базовой позиции на основе текущих настроек.
+        Используется для определения усреднения.
+        """
+        try:
+            order_amount = self._convert_to_decimal(self.get_config_value("order_amount", 50.0))
+            leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
+
+            # Используем текущую цену для оценки
+            current_price = await self._get_current_market_price()
+            if current_price:
+                estimated_qty = await self.api.calculate_quantity_from_usdt(
+                    self.symbol, order_amount, leverage, price=current_price
+                )
+                return estimated_qty
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка оценки базового размера позиции: {e}", "SignalScalper")
+
+        return None
+
+    async def _get_current_market_price(self) -> Optional[Decimal]:
+        """Получает текущую рыночную цену символа."""
+        try:
+            ticker = await self.api.get_ticker(self.symbol)
+            if ticker and 'lastPrice' in ticker:
+                return Decimal(str(ticker['lastPrice']))
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка получения рыночной цены: {e}", "SignalScalper")
+        return None
+
+    async def _restore_stop_loss_from_exchange(self):
+        """Восстанавливает информацию о стоп-лоссе с биржи."""
+        try:
+            # Получаем информацию о торговых стопах
+            position_info = await self.api.get_position_info(self.symbol)
+            if position_info:
+                stop_loss_str = position_info.get('stopLoss', '0')
+                if stop_loss_str and stop_loss_str != '0':
+                    self.stop_loss_price = Decimal(str(stop_loss_str))
+                    self.stop_loss_order_id = f"restored_sl_{self.symbol}_{int(time.time())}"
+                    log_info(self.user_id, f"🛡️ Восстановлен стоп-лосс: ${self.stop_loss_price:.4f}", "SignalScalper")
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка восстановления стоп-лосса: {e}", "SignalScalper")
+
+    async def _force_reset_position_state(self):
+        """Принудительно сбрасывает состояние позиции."""
+        log_info(self.user_id, "🔄 Принудительный сброс состояния позиции...", "SignalScalper")
+
+        # Сбрасываем все переменные состояния
+        self.position_active = False
+        self.active_direction = None
+        self.entry_price = None
+        self.position_size = None
+        self.peak_profit_usd = Decimal('0')
+        self.hold_signal_counter = 0
+
+        # Сбрасываем переменные усреднения
+        self.averaging_count = 0
+        self.last_averaging_percent = Decimal('0')
+        self.total_position_size = Decimal('0')
+        self.average_entry_price = Decimal('0')
+
+        # Сбрасываем стоп-лосс
+        self.stop_loss_order_id = None
+        self.stop_loss_price = None
+
+        # Отписываемся от событий цены
+        await self.event_bus.unsubscribe(self._handle_price_update)
+
+        log_info(self.user_id, "✅ Состояние позиции сброшено", "SignalScalper")
 
     # ===============================================================================
     # НОВАЯ СИСТЕМА УСРЕДНЕНИЯ ПО УРОВНЯМ (ВХОД-SL)/3

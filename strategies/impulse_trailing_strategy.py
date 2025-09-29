@@ -185,10 +185,10 @@ class ImpulseTrailingStrategy(BaseStrategy):
                     await self.stop("Signal skipped: High friction")
                     return
 
-                log_info(self.user_id, f"LONG сигнал для {self.symbol}: {long_signal_reason}", "impulse_trailing")
-                self.position_side = "Buy"
-                # Для LONG позиции: SL должен быть ниже цены входа - используем точный расчет
-                self.stop_loss_price = BaseStrategy._calculate_precise_stop_loss(current_price, qty, initial_sl_usdt, True)
+                log_info(self.user_id, f"LONG сигнал для {self.symbol}: {long_signal_reason} (ИНВЕРТИРОВАНО В SHORT)", "impulse_trailing")
+                self.position_side = "Sell"  # ИНВЕРСИЯ: Сигнал LONG -> Вход SHORT
+                # Для SHORT позиции: SL должен быть выше цены входа - используем точный расчет
+                self.stop_loss_price = BaseStrategy._calculate_precise_stop_loss(current_price, qty, initial_sl_usdt, False)
 
                 log_info(self.user_id,
                          f"Точный расчет SL для LONG: Цена={current_price:.4f}, SL={self.stop_loss_price:.4f}, убыток={initial_sl_usdt} USDT",
@@ -241,10 +241,10 @@ class ImpulseTrailingStrategy(BaseStrategy):
                     await self.stop("Signal skipped: High friction")
                     return
 
-                log_info(self.user_id, f"SHORT сигнал для {self.symbol}: {short_signal_reason}", "impulse_trailing")
-                self.position_side = "Sell"
-                # Для SHORT позиции: SL должен быть выше цены входа - используем точный расчет
-                self.stop_loss_price = BaseStrategy._calculate_precise_stop_loss(current_price, qty, initial_sl_usdt, False)
+                log_info(self.user_id, f"SHORT сигнал для {self.symbol}: {short_signal_reason} (ИНВЕРТИРОВАНО В LONG)", "impulse_trailing")
+                self.position_side = "Buy"  # ИНВЕРСИЯ: Сигнал SHORT -> Вход LONG
+                # Для LONG позиции: SL должен быть ниже цены входа - используем точный расчет
+                self.stop_loss_price = BaseStrategy._calculate_precise_stop_loss(current_price, qty, initial_sl_usdt, True)
 
                 log_info(self.user_id,f"Точный расчет SL для SHORT: Цена={current_price:.4f}, SL={self.stop_loss_price:.4f}, убыток={initial_sl_usdt} USDT",
                          "impulse_trailing")

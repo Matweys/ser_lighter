@@ -77,13 +77,13 @@ class DefaultConfigs:
             "initial_sl_usdt": 20.91,  # SL при убытке в 1.5 USDT от суммы ордера
 
             # 2. Минимальная прибыль для активации трейлинга (в USDT)
-            "min_profit_activation_usdt": 5.0,  # Активация трейлинга при прибыли в +5.0 USDT
+            "min_profit_activation_usdt": 3.0,  # Активация трейлинга при прибыли в +5.0 USDT
 
             # 3. Расстояние трейлинг-стопа от пика (в USDT)
             "trailing_distance_usdt": 11.77,  # Стоп будет отставать от пика
 
             # 4. Порог отката от пика для закрытия (в USDT)
-            "pullback_close_usdt": 5.87,  # Закрытие, если цена откатила от пика
+            "pullback_close_usdt": 6.00,  # Закрытие, если цена откатила от пика
         }
 
     @staticmethod
@@ -97,8 +97,7 @@ class DefaultConfigs:
             "analysis_timeframe": "5m",
 
             # --- Управление выходом ---
-            "min_profit_usd": 1.5,
-            "trailing_pullback_usd": 1.0,  # Откат от пика прибыли для закрытия
+            "min_profit_usd": 1.2,
             "max_loss_usd": 15.0,  # Максимальный убыток в долларах (стоп-лосс)
 
             # --- НОВАЯ СИСТЕМА УСРЕДНЕНИЯ ---
@@ -118,7 +117,7 @@ class DefaultConfigs:
             "averaging_rsi_oversold": 60,        # RSI для LONG усреднения
 
             # - При RSI >= 35 продаем еще(усредняемся), потому что цена "дорогая"
-            "averaging_rsi_overbought": 35,         # RSI для SHORT усреднения
+            "averaging_rsi_overbought": 40,         # RSI для SHORT усреднения
 
 
 
@@ -126,8 +125,8 @@ class DefaultConfigs:
             "EMA_SHORT": 21,
             "EMA_LONG": 50,
             "RSI_PERIOD": 14,
-            "RSI_NEUTRAL_MIN": 30,      # Минимум нейтральной зоны RSI (расширено)
-            "RSI_NEUTRAL_MAX": 70       # Максимум нейтральной зоны RSI (расширено)
+            "RSI_NEUTRAL_MIN": 25,      # Минимум нейтральной зоны RSI (расширено) 30
+            "RSI_NEUTRAL_MAX": 75       # Максимум нейтральной зоны RSI (расширено) 70
         }
 
 
