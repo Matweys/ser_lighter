@@ -242,52 +242,52 @@ class SignalScalperStrategy(BaseStrategy):
         # Рассчитываем PnL относительно средней цены входа
         if self.active_direction == "LONG":
             pnl = (current_price - entry_price_to_use) * position_size_to_use
-            loss_percent = ((entry_price_to_use - current_price) / entry_price_to_use * 100) if current_price < entry_price_to_use else 0
         else:  # SHORT
             pnl = (entry_price_to_use - current_price) * position_size_to_use
-            loss_percent = ((current_price - entry_price_to_use) / entry_price_to_use * 100) if current_price > entry_price_to_use else 0
 
-        # НОВАЯ ЛОГИКА УСРЕДНЕНИЯ - ВРЕМЕННО ОТКЛЮЧЕНО
-        # if self.averaging_enabled:
-        #     # Детальное логирование для диагностики с ценами
-        #     entry_price_display = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
-        #     log_info(self.user_id, f"📊 Усреднение: pnl=${pnl:.2f}, loss%={loss_percent:.2f}, вход=${entry_price_display:.4f}, текущая=${current_price:.4f}, count={self.averaging_count}/{self.max_averaging_count}", "SignalScalper")
+        # УМНАЯ СИСТЕМА УСРЕДНЕНИЯ ПО УРОВНЯМ
+        if self.averaging_enabled:
+            entry_price_display = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
+            log_info(self.user_id, f"📊 Усреднение: pnl=${pnl:.2f}, вход=${entry_price_display:.4f}, текущая=${current_price:.4f}, count={self.averaging_count}/{self.max_averaging_count}", "SignalScalper")
 
-        #     if (pnl < 0 and  # Позиция в убытке
-        #         self.averaging_count < self.max_averaging_count):
+            if (pnl < 0 and  # Позиция в убытке
+                self.averaging_count < self.max_averaging_count):
 
-        #         # Проверяем, достиг ли убыток нового порога для усреднения
-        #         next_trigger_percent = self.averaging_trigger_percent * (self.averaging_count + 1)
+                # НОВАЯ ЛОГИКА: проверяем достижение уровней усреднения
+                averaging_level_reached = await self._check_averaging_level_reached(current_price)
 
-        #         log_info(self.user_id, f"🔍 Проверка триггера: loss={loss_percent:.2f}% >= trigger={next_trigger_percent:.1f}%, last={self.last_averaging_percent:.2f}%", "SignalScalper")
+                if averaging_level_reached:
+                    # ЗАЩИТА ОТ ЧАСТЫХ УСРЕДНЕНИЙ: проверяем временной интервал
+                    current_time = time.time()
+                    time_since_last_averaging = current_time - self.last_averaging_time
+                    min_averaging_interval = 30  # Минимум 30 секунд между усреднениями
 
-        #         if loss_percent >= next_trigger_percent and loss_percent > self.last_averaging_percent:
-        #             # ЗАЩИТА ОТ ЧАСТЫХ УСРЕДНЕНИЙ: проверяем временной интервал
-        #             current_time = time.time()
-        #             time_since_last_averaging = current_time - self.last_averaging_time
-        #             min_averaging_interval = 30  # Минимум 30 секунд между усреднениями
+                    if self.last_averaging_time > 0 and time_since_last_averaging < min_averaging_interval:
+                        remaining_time = min_averaging_interval - time_since_last_averaging
+                        log_info(self.user_id, f"⏳ Усреднение пропущено: нужно подождать ещё {remaining_time:.0f} сек", "SignalScalper")
+                        return
 
-        #             if self.last_averaging_time > 0 and time_since_last_averaging < min_averaging_interval:
-        #                 remaining_time = min_averaging_interval - time_since_last_averaging
-        #                 log_info(self.user_id, f"⏳ Усреднение пропущено: нужно подождать ещё {remaining_time:.0f} сек", "SignalScalper")
-        #                 return
-
-        #             # Проверяем технические фильтры перед усреднением
-        #             filter_result = await self._check_averaging_filters()
-        #             if filter_result:
-        #                 log_info(self.user_id,
-        #                         f"🎯 ТРИГГЕР УСРЕДНЕНИЯ: убыток {loss_percent:.2f}% >= {next_trigger_percent:.1f}%",
-        #                         "SignalScalper")
-        #                 await self._execute_averaging(current_price)
-        #             else:
-        #                 log_info(self.user_id, f"❌ Усреднение пропущено: не прошел технические фильтры", "SignalScalper")
-        #         else:
-        #             log_info(self.user_id, f"⏸️ Триггер НЕ сработал: условие {loss_percent:.2f} >= {next_trigger_percent:.1f} and {loss_percent:.2f} > {self.last_averaging_percent:.2f}", "SignalScalper")
-        #     else:
-        #         if pnl >= 0:
-        #             log_info(self.user_id, f"✅ Усреднение пропущено: позиция в плюсе (${pnl:.2f})", "SignalScalper")
-        #         if self.averaging_count >= self.max_averaging_count:
-        #             log_info(self.user_id, f"🚫 Усреднение пропущено: достигнут лимит ({self.averaging_count}/{self.max_averaging_count})", "SignalScalper")
+                    # Проверяем технические фильтры перед усреднением
+                    filter_result = await self._check_averaging_filters()
+                    if filter_result:
+                        next_level = self.averaging_count + 1
+                        level_price = self._get_averaging_level_price(next_level)
+                        log_info(self.user_id,
+                                f"🎯 ДОСТИГНУТ УРОВЕНЬ {next_level}: цена ${current_price:.4f} достигла ${level_price:.4f}",
+                                "SignalScalper")
+                        await self._execute_level_averaging(current_price, next_level)
+                    else:
+                        log_info(self.user_id, f"❌ Усреднение пропущено: не прошел технические фильтры", "SignalScalper")
+                else:
+                    next_level = self.averaging_count + 1
+                    if next_level <= self.max_averaging_count:
+                        target_price = self._get_averaging_level_price(next_level)
+                        log_info(self.user_id, f"⏸️ Уровень {next_level} не достигнут: текущая ${current_price:.4f}, цель ${target_price:.4f}", "SignalScalper")
+            else:
+                if pnl >= 0:
+                    log_info(self.user_id, f"✅ Усреднение пропущено: позиция в плюсе (${pnl:.2f})", "SignalScalper")
+                if self.averaging_count >= self.max_averaging_count:
+                    log_info(self.user_id, f"🚫 Усреднение пропущено: достигнут лимит ({self.averaging_count}/{self.max_averaging_count})", "SignalScalper")
 
         # Обновляем пиковую прибыль
         if pnl > self.peak_profit_usd:
@@ -510,8 +510,8 @@ class SignalScalperStrategy(BaseStrategy):
                     f"[УСРЕДНЕНИЕ] Усреднение #{self.averaging_count} выполнено. Новая средняя цена: {self.average_entry_price:.4f}, размер: {self.total_position_size}",
                     "SignalScalper")
 
-            # ДИНАМИЧЕСКАЯ КОРРЕКТИРОВКА СТОП-ЛОССА после усреднения
-            await self._update_stop_loss_after_averaging()
+            # ДИНАМИЧЕСКАЯ КОРРЕКТИРОВКА СТОП-ЛОССА после усреднения - ОТКЛЮЧЕНО для новой системы
+            # await self._update_stop_loss_after_averaging()
 
             # Отправляем уведомление об усреднении
             await self._send_averaging_notification(
@@ -1262,3 +1262,124 @@ class SignalScalperStrategy(BaseStrategy):
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка синхронизации с БД: {e}", "SignalScalper")
+
+    # ===============================================================================
+    # НОВАЯ СИСТЕМА УСРЕДНЕНИЯ ПО УРОВНЯМ (ВХОД-SL)/3
+    # ===============================================================================
+
+    def _get_averaging_level_price(self, level: int) -> Decimal:
+        """
+        Рассчитывает цену усреднения для указанного уровня.
+        Делит дистанцию между входом и SL на 3 равные части.
+
+        Args:
+            level: Уровень усреднения (1, 2, 3)
+
+        Returns:
+            Decimal: Цена для усреднения на данном уровне
+        """
+        if level < 1 or level > 3:
+            return Decimal('0')
+
+        # Используем текущую среднюю цену входа если есть усреднения
+        entry_price = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
+
+        if not entry_price or not self.stop_loss_price:
+            return Decimal('0')
+
+        # Рассчитываем дистанцию между входом и SL
+        if self.active_direction == "LONG":
+            # Для LONG: SL ниже входа, усреднения идут вниз
+            distance = entry_price - self.stop_loss_price
+            step = distance / Decimal('3')
+            level_price = entry_price - (step * level)
+        else:  # SHORT
+            # Для SHORT: SL выше входа, усреднения идут вверх
+            distance = self.stop_loss_price - entry_price
+            step = distance / Decimal('3')
+            level_price = entry_price + (step * level)
+
+        return level_price
+
+    async def _check_averaging_level_reached(self, current_price: Decimal) -> bool:
+        """
+        Проверяет, достигнут ли следующий уровень усреднения.
+
+        Args:
+            current_price: Текущая цена
+
+        Returns:
+            bool: True если уровень достигнут
+        """
+        next_level = self.averaging_count + 1
+        if next_level > self.max_averaging_count:
+            return False
+
+        target_price = self._get_averaging_level_price(next_level)
+        if target_price <= 0:
+            return False
+
+        # Проверяем достижение уровня
+        if self.active_direction == "LONG":
+            # Для LONG: цена должна упасть до уровня или ниже
+            level_reached = current_price <= target_price
+        else:  # SHORT
+            # Для SHORT: цена должна подняться до уровня или выше
+            level_reached = current_price >= target_price
+
+        if level_reached:
+            log_info(self.user_id,
+                    f"🎯 УРОВЕНЬ {next_level} ДОСТИГНУТ: текущая ${current_price:.4f} {'<=' if self.active_direction == 'LONG' else '>='} цель ${target_price:.4f}",
+                    "SignalScalper")
+
+        return level_reached
+
+    async def _execute_level_averaging(self, current_price: Decimal, level: int):
+        """
+        Выполняет усреднение на указанном уровне с прогрессивным объемом (+50%).
+
+        Args:
+            current_price: Текущая цена
+            level: Уровень усреднения (1, 2, 3)
+        """
+        if not self.averaging_enabled or level > self.max_averaging_count:
+            return
+
+        try:
+            self.is_waiting_for_trade = True
+
+            # Используем ЗАМОРОЖЕННУЮ конфигурацию активной сделки
+            order_amount = self._convert_to_decimal(self._get_frozen_config_value("order_amount", 50.0))
+            leverage = self._convert_to_decimal(self._get_frozen_config_value("leverage", 1.0))
+
+            # ПРОГРЕССИВНОЕ УВЕЛИЧЕНИЕ ОБЪЕМА +50% для каждого уровня
+            # Уровень 1: +50% = 1.5x
+            # Уровень 2: +50% от предыдущего = 1.5^2 = 2.25x
+            # Уровень 3: +50% от предыдущего = 1.5^3 = 3.375x
+            progressive_multiplier = Decimal('1.5') ** level
+            averaging_amount = order_amount * progressive_multiplier
+
+            log_info(self.user_id,
+                    f"📊 Усреднение уровня {level}: {order_amount} × {progressive_multiplier:.3f} = {averaging_amount:.2f} USDT",
+                    "SignalScalper")
+
+            qty = await self.api.calculate_quantity_from_usdt(self.symbol, averaging_amount, leverage, price=current_price)
+
+            if qty <= 0:
+                log_error(self.user_id, f"Не удалось рассчитать количество для усреднения уровня {level}", "SignalScalper")
+                self.is_waiting_for_trade = False
+                return
+
+            # Размещаем усредняющий ордер
+            side = "Buy" if self.active_direction == "LONG" else "Sell"
+            order_id = await self._place_order(side=side, order_type="Market", qty=qty)
+
+            if order_id:
+                self.current_order_id = order_id
+                await self._await_order_fill(order_id, side=side, qty=qty)
+
+            self.is_waiting_for_trade = False
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка при усреднении уровня {level}: {e}", "SignalScalper")
+            self.is_waiting_for_trade = False

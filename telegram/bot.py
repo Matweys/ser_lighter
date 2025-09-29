@@ -145,11 +145,12 @@ class TelegramBotManager:
     async def _register_handlers(self) -> None:
         """Регистрация обработчиков команд"""
         try:
-            from .handlers.basic import router as basic_router, set_event_bus
-            from .handlers.callback import router as callback_router
+            from .handlers.basic import router as basic_router, set_event_bus as set_event_bus_basic
+            from .handlers.callback import router as callback_router, set_event_bus as set_event_bus_callback
 
             # Устанавливаем EventBus для обработчиков
-            set_event_bus(self.event_bus)
+            set_event_bus_basic(self.event_bus)
+            set_event_bus_callback(self.event_bus)
 
             # Регистрируем роутеры
             self.dp.include_router(basic_router)
