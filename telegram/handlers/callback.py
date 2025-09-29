@@ -1190,7 +1190,10 @@ async def callback_toggle_symbol(callback: CallbackQuery, state: FSMContext):
                 changed_settings=["watchlist_symbols"],
                 config_type="global"
             )
+            log_info(user_id, f"🔄 Публикую событие изменения символов: {symbol_to_toggle}, новый список: {list(selected_symbols)}", "callback")
             await callback_handler.event_bus.publish(settings_event)
+        else:
+            log_error(user_id, "❌ EventBus недоступен для публикации события изменения настроек!", "callback")
 
         # Обновляем клавиатуру, чтобы показать изменение
         await send_or_edit_symbol_selection_menu(callback, state, is_edit=True)

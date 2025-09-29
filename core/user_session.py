@@ -742,10 +742,42 @@ class UserSession:
         try:
             strategy_ids = list(self.active_strategies.keys())
 
-            for strategy_id in strategy_ids:
-                await self.stop_strategy(strategy_id, reason)
+            # Для manual_stop_command используем мягкую остановку
+            if reason == "manual_stop_command":
+                # Анализируем активные стратегии для определения мягкой остановки
+                active_strategies_analysis = await self._analyze_active_strategies()
+                strategies_with_positions = []
+                strategies_without_positions = []
 
-            log_info(self.user_id, f"Остановлено {len(strategy_ids)} стратегий", module_name=__name__)
+                for strategy_id in strategy_ids:
+                    analysis = active_strategies_analysis.get(strategy_id, {})
+                    if analysis.get('has_active_position', False):
+                        strategies_with_positions.append(strategy_id)
+                    else:
+                        strategies_without_positions.append(strategy_id)
+
+                # Стратегии с активными позициями - мягкая остановка
+                for strategy_id in strategies_with_positions:
+                    strategy = self.active_strategies.get(strategy_id)
+                    if strategy and hasattr(strategy, 'mark_for_deferred_stop'):
+                        await strategy.mark_for_deferred_stop(reason=reason)
+                        log_info(self.user_id, f"🔄 Стратегия {strategy_id} помечена для мягкой остановки (есть позиция)", module_name=__name__)
+                    else:
+                        await self.stop_strategy(strategy_id, reason)
+
+                # Стратегии без позиций - обычная остановка
+                for strategy_id in strategies_without_positions:
+                    await self.stop_strategy(strategy_id, reason)
+                    log_info(self.user_id, f"⏹️ Стратегия {strategy_id} остановлена немедленно (нет позиции)", module_name=__name__)
+
+                log_info(self.user_id, f"Применена мягкая остановка: {len(strategies_with_positions)} с позициями, {len(strategies_without_positions)} без позиций", module_name=__name__)
+
+            else:
+                # Для остальных причин - обычная остановка
+                for strategy_id in strategy_ids:
+                    await self.stop_strategy(strategy_id, reason)
+
+                log_info(self.user_id, f"Остановлено {len(strategy_ids)} стратегий", module_name=__name__)
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка остановки всех стратегий: {e}", module_name=__name__)
