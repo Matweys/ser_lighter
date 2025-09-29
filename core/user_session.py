@@ -920,8 +920,8 @@ class UserSession:
         """Отправка уведомления о запуске стратегии пользователю"""
         try:
             strategy_display_names = {
-                "signal_scalper": "Signal Scalper",
-                "impulse_trailing": "Impulse Trailing"
+                "signal_scalper": "Signal Scalper"
+                #"impulse_trailing": "Impulse Trailing"
             }
 
             strategy_name = strategy_display_names.get(strategy.strategy_type.value, strategy.strategy_type.value)
