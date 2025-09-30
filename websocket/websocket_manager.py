@@ -179,10 +179,10 @@ class GlobalWebSocketManager:
             }
             await self.public_connection.send(json.dumps(ticker_msg))
 
-            # Подписка на свечи 1m
+            # Подписка на свечи 5m (для стратегий на 5-минутном таймфрейме)
             candle_msg = {
                 "op": "subscribe",
-                "args": [f"kline.1.{symbol}"]
+                "args": [f"kline.5.{symbol}"]  # 5-минутные свечи
             }
             await self.public_connection.send(json.dumps(candle_msg))
 
@@ -204,10 +204,10 @@ class GlobalWebSocketManager:
             }
             await self.public_connection.send(json.dumps(ticker_msg))
 
-            # Отписка от свечей
+            # Отписка от свечей 5m
             candle_msg = {
                 "op": "unsubscribe",
-                "args": [f"kline.1.{symbol}"]
+                "args": [f"kline.5.{symbol}"]  # 5-минутные свечи
             }
             await self.public_connection.send(json.dumps(candle_msg))
 

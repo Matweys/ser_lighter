@@ -1024,7 +1024,7 @@ class BaseStrategy(ABC):
             log_error(self.user_id, f"Ошибка отправки уведомления о запуске стратегии: {e}", "base_strategy")
 
     async def _send_trade_open_notification(self, side: str, price: Decimal, quantity: Decimal,
-                                            intended_amount: Optional[Decimal] = None):
+                                            intended_amount: Optional[Decimal] = None, signal_price: Optional[Decimal] = None):
         """Отправляет уведомление и СОЗДАЕТ запись о сделке в БД."""
         try:
             # --- БЛОК ДЛЯ ЗАПИСИ В БД ПРИ ОТКРЫТИИ ---
@@ -1061,14 +1061,26 @@ class BaseStrategy(ABC):
             # Получаем информацию о SL
             sl_price, sl_loss = self._get_stop_loss_info(side, price, quantity)
 
+            # Формируем блок с ценой сигнала если она передана
+            signal_price_text = ""
+            if signal_price:
+                slippage = price - signal_price if side.lower() == 'buy' else signal_price - price
+                slippage_percent = (slippage / signal_price * 100) if signal_price > 0 else Decimal('0')
+                signal_price_text = (
+                    f"\n📊 {hbold('Цены:')}\n"
+                    f"▫️ {hbold('Цена сигнала:')} {hcode(f'{signal_price:.4f} USDT')}\n"
+                    f"▫️ {hbold('Фактическая цена:')} {hcode(f'{price:.4f} USDT')}\n"
+                    f"▫️ {hbold('Проскальзывание:')} {hcode(f'{slippage:.4f} USDT ({slippage_percent:.3f}%)')}\n"
+                )
+
             text = (
                 f"📈 {hbold('ОТКРЫТА НОВАЯ СДЕЛКА')} 📈\n\n"
                 f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
                 f"▫️ {hbold('Символ:')} {hcode(self.symbol)}\n"
                 f"▫️ {hbold('Направление:')} {side_text}\n"
-                f"▫️ {hbold('Цена входа:')} {hcode(f'{price:.4f} USDT')}\n"
                 f"▫️ {hbold('Объем:')} {hcode(str(quantity))}\n"
-                f"▫️ {hbold('Стоимость позиции:')} {hcode(f'{actual_amount:.2f} USDT')}\n\n"
+                f"▫️ {hbold('Стоимость позиции:')} {hcode(f'{actual_amount:.2f} USDT')}"
+                f"{signal_price_text}\n"
                 f"🛡️ {hbold('Stop Loss:')}\n"
                 f"▫️ {hbold('SL цена:')} {hcode(f'{sl_price:.4f} USDT')}\n"
                 f"▫️ {hbold('Ожидаемый убыток:')} {hcode(f'-{sl_loss:.2f} USDT')}"

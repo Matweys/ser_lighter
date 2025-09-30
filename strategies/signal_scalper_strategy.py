@@ -51,7 +51,7 @@ class SignalScalperStrategy(BaseStrategy):
         # Система подтверждения сигналов и кулдауна
         self.last_signal: Optional[str] = None  # Последний полученный сигнал
         self.signal_confirmation_count = 0  # Счетчик одинаковых сигналов подряд
-        self.required_confirmations = 3  # Требуемое количество подтверждений
+        self.required_confirmations = 1  # Требуемое количество подтверждений
         self.last_trade_close_time: Optional[float] = None  # Время закрытия последней сделки
         self.cooldown_seconds = 60  # Кулдаун в секундах (1 минута)
         self.last_trade_was_loss = False  # Была ли последняя сделка убыточной
@@ -59,7 +59,7 @@ class SignalScalperStrategy(BaseStrategy):
         # СИСТЕМА КОНТРОЛЯ РЕВЕРСОВ
         self.last_reversal_time: Optional[float] = None  # Время последнего реверса
         self.reversal_cooldown_seconds = 60  # Кулдаун после реверса в секундах (1 минута)
-        self.reversal_required_confirmations = 3  # Требуемые подтверждения после реверса
+        self.reversal_required_confirmations = 2  # Требуемые подтверждения после реверса
         self.after_reversal_mode = False  # Флаг: находимся ли мы в режиме после реверса
 
         # НОВАЯ СИСТЕМА УСРЕДНЕНИЯ ПОЗИЦИИ
@@ -140,7 +140,12 @@ class SignalScalperStrategy(BaseStrategy):
         if event.symbol != self.symbol or self.is_waiting_for_trade:
             return
 
-        log_debug(self.user_id, f"SignalScalper ({self.symbol}) получил новую свечу.", "SignalScalper")
+        # ВАЖНО: Обрабатываем только 5-минутные свечи согласно конфигурации
+        config_timeframe = self.get_config_value('analysis_timeframe', '5m')
+        if event.interval != config_timeframe:
+            return
+
+        log_debug(self.user_id, f"SignalScalper ({self.symbol}) получил новую {event.interval} свечу.", "SignalScalper")
         analysis_result = await self.signal_analyzer.get_analysis(self.symbol)
 
         if not analysis_result:
@@ -322,6 +327,9 @@ class SignalScalperStrategy(BaseStrategy):
         """Логика входа в позицию."""
         self.is_waiting_for_trade = True
 
+        # Сохраняем цену сигнала для передачи в уведомление
+        self.signal_price = signal_price
+
         # Получаем актуальные данные ТОЛЬКО ОДИН РАЗ перед созданием ордера
         await self._force_config_reload()
 
@@ -470,7 +478,9 @@ class SignalScalperStrategy(BaseStrategy):
             self.peak_profit_usd = Decimal('0')
             self.hold_signal_counter = 0
             await self.event_bus.subscribe(EventType.PRICE_UPDATE, self.handle_price_update, user_id=self.user_id)
-            await self._send_trade_open_notification(event.side, event.price, event.qty, self.intended_order_amount)
+            # Передаем сохраненную цену сигнала в уведомление
+            signal_price = getattr(self, 'signal_price', None)
+            await self._send_trade_open_notification(event.side, event.price, event.qty, self.intended_order_amount, signal_price)
 
             # Инициализируем счетчики усреднения
             self.averaging_count = 0

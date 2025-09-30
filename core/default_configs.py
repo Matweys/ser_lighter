@@ -78,7 +78,7 @@ class DefaultConfigs:
             "trailing_distance_usdt": 11.77,  # Стоп будет отставать от пика
 
             # 4. Порог отката от пика для закрытия (в USDT)
-            "pullback_close_usdt": 6.00,  # Закрытие, если цена откатила от пика
+            "pullback_close_usdt": 3.00,  # Закрытие, если цена откатила от пика
         }
 
     @staticmethod
@@ -92,7 +92,7 @@ class DefaultConfigs:
             "analysis_timeframe": "5m",
 
             # --- Управление выходом ---
-            "min_profit_usd": 1.2,
+            "min_profit_usd": 1.0,
             "max_loss_usd": 15.0,  # Максимальный убыток в долларах (стоп-лосс)
 
             # --- НОВАЯ СИСТЕМА УСРЕДНЕНИЯ ---
@@ -120,8 +120,8 @@ class DefaultConfigs:
             "EMA_SHORT": 21,
             "EMA_LONG": 50,
             "RSI_PERIOD": 14,
-            "RSI_NEUTRAL_MIN": 25,      # Минимум нейтральной зоны RSI (расширено) 30
-            "RSI_NEUTRAL_MAX": 75       # Максимум нейтральной зоны RSI (расширено) 70
+            "RSI_NEUTRAL_MIN": 30,      # Минимум нейтральной зоны RSI (расширено) 30
+            "RSI_NEUTRAL_MAX": 70       # Максимум нейтральной зоны RSI (расширено) 70
         }
 
 

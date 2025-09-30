@@ -352,7 +352,9 @@ class ImpulseTrailingStrategy(BaseStrategy):
             except Exception as e:
                 log_error(self.user_id, f"Не удалось обновить данные блокировки в Redis: {e}", "impulse_trailing")
 
-            await self._send_trade_open_notification(event.side, event.price, event.qty, self.intended_order_amount)
+            # Получаем цену сигнала из signal_data
+            signal_price = self._convert_to_decimal(self.signal_data.get('current_price', event.price))
+            await self._send_trade_open_notification(event.side, event.price, event.qty, self.intended_order_amount, signal_price)
             return
 
         # --- Сценарий: Закрытие позиции ---
