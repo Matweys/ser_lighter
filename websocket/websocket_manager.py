@@ -172,12 +172,13 @@ class GlobalWebSocketManager:
             return
 
         try:
-            # Подписка на тикер (цена)
-            ticker_msg = {
+            # МГНОВЕННАЯ ПОДПИСКА: publicTrade - реальные сделки в режиме реального времени
+            # Обновления приходят при КАЖДОЙ сделке на бирже (самый быстрый поток!)
+            trade_msg = {
                 "op": "subscribe",
-                "args": [f"tickers.{symbol}"]
+                "args": [f"publicTrade.{symbol}"]
             }
-            await self.public_connection.send(json.dumps(ticker_msg))
+            await self.public_connection.send(json.dumps(trade_msg))
 
             # Подписка на свечи 5m (для стратегий на 5-минутном таймфрейме)
             candle_msg = {
@@ -186,7 +187,7 @@ class GlobalWebSocketManager:
             }
             await self.public_connection.send(json.dumps(candle_msg))
 
-            log_info(0, f"Подписка на {symbol} отправлена", module_name=__name__)
+            log_info(0, f"⚡ МГНОВЕННАЯ подписка на {symbol} (publicTrade + kline.5) отправлена", module_name=__name__)
 
         except Exception as e:
             log_error(0, f"Ошибка подписки на {symbol}: {e}", module_name=__name__)
@@ -197,12 +198,12 @@ class GlobalWebSocketManager:
             return
 
         try:
-            # Отписка от тикера
-            ticker_msg = {
+            # Отписка от мгновенных обновлений
+            trade_msg = {
                 "op": "unsubscribe",
-                "args": [f"tickers.{symbol}"]
+                "args": [f"publicTrade.{symbol}"]
             }
-            await self.public_connection.send(json.dumps(ticker_msg))
+            await self.public_connection.send(json.dumps(trade_msg))
 
             # Отписка от свечей 5m
             candle_msg = {
@@ -226,8 +227,13 @@ class GlobalWebSocketManager:
 
             topic = data["topic"]
 
-            # Обработка тикеров (цены)
-            if topic.startswith("tickers."):
+            # Обработка публичных сделок (МГНОВЕННЫЕ обновления цен!)
+            if topic.startswith("publicTrade."):
+                symbol = topic.split(".")[1]
+                await self._handle_public_trade(symbol, data["data"])
+
+            # Обработка тикеров (медленные обновления - deprecated)
+            elif topic.startswith("tickers."):
                 symbol = topic.split(".")[1]
                 await self._handle_ticker_update(symbol, data["data"])
 
@@ -241,8 +247,37 @@ class GlobalWebSocketManager:
         except Exception as e:
             log_error(0, f"Ошибка парсинга публичного сообщения: {e}", module_name=__name__)
 
+    async def _handle_public_trade(self, symbol: str, trade_data: List[Dict[str, Any]]):
+        """
+        Обработка публичных сделок (МГНОВЕННЫЕ обновления!)
+        Это самый быстрый способ получать обновления цен в реальном времени.
+        """
+        try:
+            if not trade_data:
+                return
+
+            # Берем последнюю сделку из массива (самая свежая цена)
+            latest_trade = trade_data[-1]
+            price = Decimal(str(latest_trade.get("p", "0")))
+
+            if price <= 0:
+                return
+
+            # Отправка события всем подписчикам символа
+            if symbol in self.symbol_subscribers:
+                for user_id in self.symbol_subscribers[symbol]:
+                    price_event = PriceUpdateEvent(
+                        user_id=user_id,
+                        symbol=symbol,
+                        price=price
+                    )
+                    await self.event_bus.publish(price_event)
+
+        except Exception as e:
+            log_error(0, f"Ошибка обработки публичной сделки {symbol}: {e}", module_name=__name__)
+
     async def _handle_ticker_update(self, symbol: str, ticker_data: Dict[str, Any]):
-        """Обработка обновления тикера"""
+        """Обработка обновления тикера (медленный fallback)"""
         try:
             # Данные тикера приходят как объект, а не список
             if not ticker_data:

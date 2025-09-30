@@ -51,7 +51,7 @@ class SignalScalperStrategy(BaseStrategy):
         # Система подтверждения сигналов и кулдауна
         self.last_signal: Optional[str] = None  # Последний полученный сигнал
         self.signal_confirmation_count = 0  # Счетчик одинаковых сигналов подряд
-        self.required_confirmations = 1  # Требуемое количество подтверждений
+        self.required_confirmations = 2  # Требуемое количество подтверждений
         self.last_trade_close_time: Optional[float] = None  # Время закрытия последней сделки
         self.cooldown_seconds = 60  # Кулдаун в секундах (1 минута)
         self.last_trade_was_loss = False  # Была ли последняя сделка убыточной
@@ -689,7 +689,7 @@ class SignalScalperStrategy(BaseStrategy):
 
         # После убыточной сделки требуем больше подтверждений
         if self.last_trade_was_loss:
-            required = max(required, 3)  # После убытка требуем минимум 3 подтверждения
+            required = max(required, 2)  # После убытка требуем минимум 3 подтверждения
 
         # НОВАЯ ЛОГИКА: После реверса требуем специальное количество подтверждений
         if self.after_reversal_mode:
