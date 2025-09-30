@@ -394,12 +394,12 @@ class UserSession:
                 log_error(self.user_id, f"Не удалось создать стратегию типа: {strategy_type}", module_name=__name__)
                 return False
 
-            # ВАЖНО: Для impulse_trailing отправляем уведомление ДО запуска, т.к. она сразу входит в сделку
-            if strategy_type == "impulse_trailing":
-                await self._send_strategy_start_notification(strategy)
-
             # Запуск стратегии
             if await strategy.start():
+                # ВАЖНО: Отправляем уведомление СРАЗУ после start(), когда strategy_id уже создан
+                # но ДО добавления в active_strategies (чтобы пользователь получил уведомление раньше)
+                await self._send_strategy_start_notification(strategy)
+
                 self.active_strategies[strategy_id] = strategy
 
                 # Обновление статистики
@@ -413,10 +413,6 @@ class UserSession:
                     strategy_id=strategy.strategy_id  # <-- Добавлен обязательный параметр
                 )
                 await self.event_bus.publish(event)
-
-                # Отправка уведомления пользователю ПОСЛЕ запуска (только для стратегий, которые не входят в сделку сразу)
-                if strategy_type != "impulse_trailing":
-                    await self._send_strategy_start_notification(strategy)
 
                 log_info(self.user_id, f"Стратегия {strategy_id} запущена", module_name=__name__)
                 return True
@@ -920,8 +916,8 @@ class UserSession:
         """Отправка уведомления о запуске стратегии пользователю"""
         try:
             strategy_display_names = {
-                "signal_scalper": "Signal Scalper"
-                #"impulse_trailing": "Impulse Trailing"
+                "signal_scalper": "Signal Scalper",
+                "impulse_trailing": "Impulse Trailing"
             }
 
             strategy_name = strategy_display_names.get(strategy.strategy_type.value, strategy.strategy_type.value)

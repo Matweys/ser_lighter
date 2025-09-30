@@ -66,12 +66,6 @@ class DefaultConfigs:
 
             # --- Риск-менеджмент (на основе ATR) ---
             "risk_atr_len": 14,
-            "long_sl_atr": 1.2,  # SL для лонга = цена - (ATR * N)
-            "long_tp_atr": 1.8,  # TP для лонга = цена + (ATR * N)
-            "short_sl_atr": 0.8,  # SL для шорта = цена + (ATR * N)
-            "short_tp_atr": 0.8,  # TP для шорта = цена - (ATR * N)
-            "trailing_sl_atr": 1.5,  # Трейлинг SL = пик - (ATR * N)
-
 
             # --- НОВЫЕ ПАРАМЕТРЫ АГРЕССИВНОГО ТРЕЙЛИНГА (В USDT) ---
             # 1. Начальный стоп-лосс (в USDT)
