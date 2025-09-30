@@ -671,9 +671,9 @@ class BotApplication:
                         continue
 
             # КРИТИЧЕСКИ ВАЖНО: Если у пользователя активна автоторговля, но не было сохранённых стратегий,
-            # запускаем автоторговлю ТОЛЬКО по символам БЕЗ активных позиций
+            # СНАЧАЛА восстанавливаем мониторинг для символов с позициями, ПОТОМ запускаем для остальных
             if not restored_strategies:
-                log_info(user_id, "Сохранённые стратегии не найдены, но автоторговля активна - проверяю символы без активных позиций", "BotApplication")
+                log_info(user_id, "Сохранённые стратегии не найдены, но автоторговля активна - восстанавливаю мониторинг позиций", "BotApplication")
 
                 # Получаем список символов БЕЗ активных позиций
                 symbols_with_positions = {pos['symbol'] for pos in active_positions_info}
@@ -681,6 +681,28 @@ class BotApplication:
 
                 log_info(user_id, f"Символы с позициями: {symbols_with_positions}, для запуска: {symbols_to_start}", "BotApplication")
 
+                # ПЕРВЫЙ ПРИОРИТЕТ: Восстанавливаем мониторинг для символов С ПОЗИЦИЯМИ
+                monitoring_strategies = []
+                if symbols_with_positions:
+                    log_info(user_id, f"Восстанавливаю мониторинг для {len(symbols_with_positions)} символов с активными позициями...", "BotApplication")
+                    for position_info in active_positions_info:
+                        try:
+                            # Создаём стратегию мониторинга для каждой активной позиции
+                            success = await session.create_strategy_from_active_position(
+                                position_info=position_info,
+                                strategy_type=StrategyType.SIGNAL_SCALPER
+                            )
+
+                            if success:
+                                monitoring_strategies.append(f"SignalScalper({position_info['symbol']})")
+                                log_info(user_id, f"✅ Создана стратегия мониторинга для {position_info['symbol']}", "BotApplication")
+                            else:
+                                log_error(user_id, f"❌ Не удалось создать стратегию мониторинга для {position_info['symbol']}", "BotApplication")
+
+                        except Exception as monitor_error:
+                            log_error(user_id, f"Ошибка создания мониторинга для {position_info.get('symbol', 'unknown')}: {monitor_error}", "BotApplication")
+
+                # ВТОРОЙ ПРИОРИТЕТ: Запускаем автоторговлю для символов БЕЗ позиций
                 if symbols_to_start:
                     # Запускаем автоторговлю только для символов без активных позиций
                     try:
