@@ -291,10 +291,12 @@ class GlobalWebSocketManager:
             # Отправка события всем подписчикам символа
             if symbol in self.symbol_subscribers:
                 for user_id in self.symbol_subscribers[symbol]:
+                    # Bybit присылает интервал как "5", нужно конвертировать в "5m"
+                    interval_formatted = f"{interval}m"
                     candle_event = NewCandleEvent(
                         user_id=user_id,
                         symbol=symbol,
-                        interval=interval,
+                        interval=interval_formatted,
                         candle_data=candle_decimal
                     )
                     await self.event_bus.publish(candle_event)
