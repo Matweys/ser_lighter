@@ -703,7 +703,44 @@ class _DatabaseManager:
         except Exception as e:
             log_error(0, f"Ошибка обновления сделки {trade_id} в БД: {e}", module_name='database')
             return False
-    
+
+    async def update_trade_on_averaging(self, trade_id: int, new_entry_price: Decimal, new_quantity: Decimal) -> bool:
+        """Обновление записи о сделке при усреднении (изменение entry_price и quantity)."""
+        try:
+            moscow_tz = timezone(timedelta(hours=3))
+            current_moscow_time = datetime.now(moscow_tz)
+
+            query = """
+                UPDATE trades
+                SET
+                    entry_price = $1,
+                    quantity = $2,
+                    updated_at = $4
+                WHERE id = $3
+            """
+            await self._execute_query(query, (new_entry_price, new_quantity, trade_id, current_moscow_time))
+            log_info(0, f"Сделка с ID {trade_id} обновлена при усреднении. Новая цена входа: {new_entry_price:.4f}, количество: {new_quantity}", module_name='database')
+            return True
+        except Exception as e:
+            log_error(0, f"Ошибка обновления сделки {trade_id} при усреднении: {e}", module_name='database')
+            return False
+
+    async def get_active_trade(self, user_id: int, symbol: str) -> Optional[Dict]:
+        """Получение активной сделки пользователя по символу."""
+        try:
+            query = """
+                SELECT id, entry_price, quantity, side, leverage
+                FROM trades
+                WHERE user_id = $1 AND symbol = $2 AND status = 'ACTIVE'
+                ORDER BY entry_time DESC
+                LIMIT 1
+            """
+            result = await self._execute_query(query, (user_id, symbol), fetch_one=True)
+            return dict(result) if result else None
+        except Exception as e:
+            log_error(user_id, f"Ошибка получения активной сделки для {symbol}: {e}", module_name='database')
+            return None
+
     async def get_user_trades(self, user_id: int, limit: int = 100, offset: int = 0) -> List[TradeRecord]:
         """Получение сделок пользователя"""
         try:

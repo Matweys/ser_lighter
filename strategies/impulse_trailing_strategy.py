@@ -187,8 +187,8 @@ class ImpulseTrailingStrategy(BaseStrategy):
 
                 log_info(self.user_id, f"⚠️ ИНВЕРСИЯ: Сигнал LONG -> Вход SHORT для {self.symbol}: {long_signal_reason}", "impulse_trailing")
                 self.position_side = "Sell"  # ИНВЕРСИЯ: Сигнал LONG -> Вход SHORT
-                # Для LONG позиции: SL должен быть ниже цены входа - используем точный расчет
-                self.stop_loss_price = BaseStrategy._calculate_precise_stop_loss(current_price, qty, initial_sl_usdt, True)
+                # Для SHORT позиции: SL должен быть ВЫШЕ цены входа - используем точный расчет
+                self.stop_loss_price = BaseStrategy._calculate_precise_stop_loss(current_price, qty, initial_sl_usdt, False)
 
                 log_info(self.user_id,
                          f"⚠️ ИНВЕРСИЯ: Точный расчет SL для SHORT (на сигнал LONG): Цена={current_price:.4f}, SL={self.stop_loss_price:.4f}, убыток={initial_sl_usdt} USDT",
@@ -325,9 +325,9 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 await db_manager.update_order_status(
                     order_id=event.order_id,
                     status="FILLED",
-                    filled_price=event.price,
-                    filled_qty=event.qty,
-                    fee=getattr(event, 'fee', Decimal('0'))
+                    filled_quantity=event.qty,
+                    average_price=event.price,
+                    filled_price=event.price
                 )
                 log_debug(self.user_id, f"Статус ордера {event.order_id} обновлён в БД: FILLED", "impulse_trailing")
             except Exception as db_error:
@@ -365,9 +365,9 @@ class ImpulseTrailingStrategy(BaseStrategy):
                 await db_manager.update_order_status(
                     order_id=event.order_id,
                     status="FILLED",
-                    filled_price=event.price,
-                    filled_qty=event.qty,
-                    fee=getattr(event, 'fee', Decimal('0'))
+                    filled_quantity=event.qty,
+                    average_price=event.price,
+                    filled_price=event.price
                 )
                 log_debug(self.user_id, f"Статус ордера {event.order_id} обновлён в БД: FILLED", "impulse_trailing")
             except Exception as db_error:

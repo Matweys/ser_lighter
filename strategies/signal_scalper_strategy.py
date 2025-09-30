@@ -78,6 +78,15 @@ class SignalScalperStrategy(BaseStrategy):
         self.sl_extended = False  # Флаг: был ли SL расширен для усреднения
         self.sl_extension_notified = False  # Флаг: было ли отправлено уведомление о расширении SL
 
+        # ============================================================================
+        # ЭКСТРЕННОЕ УСРЕДНЕНИЕ ПРИ 5% УБЫТКЕ (НЕЗАВИСИМОЕ ОТ ОСНОВНОЙ ЛОГИКИ)
+        # Чтобы ОТКЛЮЧИТЬ этот функционал - закомментируйте блоки кода с меткой:
+        # [EMERGENCY_AVERAGING_5PCT]
+        # ============================================================================
+        self.emergency_averaging_enabled = True  # Включено ли экстренное усреднение при 5%
+        self.emergency_averaging_executed = False  # Флаг: было ли выполнено экстренное усреднение
+        self.emergency_averaging_trigger_percent = Decimal('5.0')  # Триггер 5% убытка
+
         # ИЗОЛЯЦИЯ НАСТРОЕК ДЛЯ АКТИВНОЙ СДЕЛКИ
         self.active_trade_config = None  # Конфигурация, зафиксированная при входе в сделку
         self.config_frozen = False  # Флаг: заморожены ли настройки для активной сделки
@@ -230,6 +239,10 @@ class SignalScalperStrategy(BaseStrategy):
 
     async def handle_price_update(self, event: PriceUpdateEvent):
         """Обработка тиков цены для усреднения и динамического тейк-профита."""
+        # КРИТИЧЕСКИ ВАЖНО: Проверяем что это цена НАШЕГО символа!
+        if event.symbol != self.symbol:
+            return
+
         if not self.position_active or not self.entry_price or self.is_waiting_for_trade:
             return
 
@@ -253,6 +266,32 @@ class SignalScalperStrategy(BaseStrategy):
             pnl = (current_price - entry_price_to_use) * position_size_to_use
         else:  # SHORT
             pnl = (entry_price_to_use - current_price) * position_size_to_use
+
+        # ============================================================================
+        # [EMERGENCY_AVERAGING_5PCT] - БЛОК 1: ПРОВЕРКА ЭКСТРЕННОГО УСРЕДНЕНИЯ
+        # Закомментируйте этот блок для отключения экстренного усреднения при 5%
+        # ============================================================================
+        if (self.emergency_averaging_enabled and
+            not self.emergency_averaging_executed and
+            pnl < 0):
+
+            # Рассчитываем процент убытка от ИЗНАЧАЛЬНОЙ цены входа (не средней!)
+            original_entry = self.entry_price  # Используем ТОЛЬКО изначальную цену входа
+            if self.active_direction == "LONG":
+                loss_percent = ((original_entry - current_price) / original_entry * 100)
+            else:  # SHORT
+                loss_percent = ((current_price - original_entry) / original_entry * 100)
+
+            # Проверяем достижение 5% убытка
+            if loss_percent >= self.emergency_averaging_trigger_percent:
+                log_info(self.user_id,
+                        f"🚨 ЭКСТРЕННОЕ УСРЕДНЕНИЕ! Убыток {loss_percent:.2f}% >= {self.emergency_averaging_trigger_percent}% (вход={original_entry:.4f}, текущая={current_price:.4f})",
+                        "SignalScalper")
+                await self._execute_emergency_averaging(current_price)
+                return  # Прерываем дальнейшую обработку на этом тике
+        # ============================================================================
+        # КОНЕЦ [EMERGENCY_AVERAGING_5PCT] - БЛОК 1
+        # ============================================================================
 
         # УМНАЯ СИСТЕМА УСРЕДНЕНИЯ ПО УРОВНЯМ - ВРЕМЕННО ОТКЛЮЧЕНА
         if self.averaging_enabled:
@@ -326,6 +365,31 @@ class SignalScalperStrategy(BaseStrategy):
 
     async def _enter_position(self, direction: str, signal_price: Decimal):
         """Логика входа в позицию."""
+
+        # КРИТИЧЕСКАЯ ПРОВЕРКА: Проверяем есть ли уже активная позиция на бирже
+        try:
+            exchange_positions = await self.api.get_positions()
+            for position in exchange_positions:
+                if (position.get('symbol') == self.symbol and
+                    float(position.get('size', 0)) > 0):
+                    # НА БИРЖЕ УЖЕ ЕСТЬ АКТИВНАЯ ПОЗИЦИЯ!
+                    position_side = position.get('side', '').lower()
+                    expected_side = "long" if direction == "LONG" else "short"
+
+                    if position_side == expected_side:
+                        log_warning(self.user_id,
+                                  f"⚠️ ПРЕДОТВРАЩЕНО ДУБЛИРОВАНИЕ! На бирже уже есть позиция {self.symbol} {position_side.upper()}. "
+                                  f"Пропускаю открытие новой позиции.",
+                                  "SignalScalper")
+                        return
+                    else:
+                        log_warning(self.user_id,
+                                  f"⚠️ На бирже есть позиция {self.symbol} в противоположном направлении ({position_side.upper()}). "
+                                  f"Сигнал {direction} будет обработан как реверс.",
+                                  "SignalScalper")
+        except Exception as check_error:
+            log_error(self.user_id, f"Ошибка проверки позиций перед входом: {check_error}", "SignalScalper")
+
         self.is_waiting_for_trade = True
 
         # Сохраняем цену сигнала для передачи в уведомление
@@ -478,7 +542,17 @@ class SignalScalperStrategy(BaseStrategy):
             self.position_size = event.qty
             self.peak_profit_usd = Decimal('0')
             self.hold_signal_counter = 0
+
+            # КРИТИЧЕСКИ ВАЖНО: Подписываемся на события цены для усреднения и трейлинга
             await self.event_bus.subscribe(EventType.PRICE_UPDATE, self.handle_price_update, user_id=self.user_id)
+
+            # НОВОЕ: Подписываемся на WebSocket для получения обновлений цен в реальном времени
+            try:
+                from websocket.websocket_manager import global_ws_manager
+                await global_ws_manager.subscribe_symbol(self.user_id, self.symbol)
+                log_info(self.user_id, f"[WEBSOCKET] Подписка на {self.symbol} для мгновенных обновлений цен", "SignalScalper")
+            except Exception as ws_error:
+                log_error(self.user_id, f"[WEBSOCKET] Ошибка подписки на WebSocket: {ws_error}", "SignalScalper")
             # Передаем сохраненную цену сигнала в уведомление
             signal_price = getattr(self, 'signal_price', None)
             await self._send_trade_open_notification(event.side, event.price, event.qty, self.intended_order_amount, signal_price)
@@ -488,6 +562,15 @@ class SignalScalperStrategy(BaseStrategy):
             self.last_averaging_percent = Decimal('0')
             self.total_position_size = Decimal('0')
             self.average_entry_price = Decimal('0')
+
+            # ============================================================================
+            # [EMERGENCY_AVERAGING_5PCT] - БЛОК 3: ИНИЦИАЛИЗАЦИЯ ПРИ ОТКРЫТИИ ПОЗИЦИИ
+            # Закомментируйте эту строку для отключения экстренного усреднения при 5%
+            # ============================================================================
+            self.emergency_averaging_executed = False  # Сброс флага для новой позиции
+            # ============================================================================
+            # КОНЕЦ [EMERGENCY_AVERAGING_5PCT] - БЛОК 3
+            # ============================================================================
 
             # ВСЕГДА устанавливаем стоп-лосс для защиты (даже при усреднении)
             await self._place_stop_loss_order(self.active_direction, self.entry_price, self.position_size)
@@ -525,6 +608,16 @@ class SignalScalperStrategy(BaseStrategy):
                     f"[УСРЕДНЕНИЕ] Усреднение #{self.averaging_count} выполнено. Новая средняя цена: {self.average_entry_price:.4f}, размер: {self.total_position_size}",
                     "SignalScalper")
 
+            # ОБНОВЛЯЕМ БД: сохраняем новую среднюю цену входа и общий размер позиции
+            if hasattr(self, 'active_trade_db_id') and self.active_trade_db_id:
+                from database.db_trades import db_manager
+                await db_manager.update_trade_on_averaging(
+                    trade_id=self.active_trade_db_id,
+                    new_entry_price=self.average_entry_price,
+                    new_quantity=self.total_position_size
+                )
+                log_info(self.user_id, f"[БД] Сделка {self.active_trade_db_id} обновлена в БД после усреднения", "SignalScalper")
+
             # ДИНАМИЧЕСКАЯ КОРРЕКТИРОВКА СТОП-ЛОССА после усреднения - ОТКЛЮЧЕНО для новой системы
             # await self._update_stop_loss_after_averaging()
 
@@ -538,13 +631,38 @@ class SignalScalperStrategy(BaseStrategy):
             # Ордер на закрытие позиции
             log_info(self.user_id, f"[ЗАКРЫТИЕ] Обрабатываем ордер закрытия: {event.order_id}", "SignalScalper")
 
-            # ИСПРАВЛЕННЫЙ РАСЧЕТ PnL с учетом усреднения
-            entry_price_for_pnl = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
-            position_size_for_pnl = self.total_position_size if self.total_position_size > 0 else self.position_size
+            # ПРАВИЛЬНЫЙ РАСЧЕТ PnL: Берём данные из БД если они есть, иначе из локальных переменных
+            from database.db_trades import db_manager
+
+            # Пытаемся получить актуальные данные из БД
+            trade_from_db = None
+            if hasattr(self, 'active_trade_db_id') and self.active_trade_db_id:
+                try:
+                    trade_from_db = await db_manager.get_active_trade(self.user_id, self.symbol)
+                    if trade_from_db:
+                        log_info(self.user_id, f"[БД] Получены данные из БД: entry_price={trade_from_db['entry_price']}, quantity={trade_from_db['quantity']}", "SignalScalper")
+                except Exception as db_error:
+                    log_warning(self.user_id, f"[БД] Не удалось получить данные из БД: {db_error}, используем локальные", "SignalScalper")
+
+            # Используем данные из БД если они есть, иначе локальные
+            if trade_from_db:
+                entry_price_for_pnl = Decimal(str(trade_from_db['entry_price']))
+                position_size_for_pnl = Decimal(str(trade_from_db['quantity']))
+                log_info(self.user_id, f"[БД] Используем данные из БД для расчёта PnL", "SignalScalper")
+            else:
+                entry_price_for_pnl = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
+                position_size_for_pnl = self.total_position_size if self.total_position_size > 0 else self.position_size
+                log_info(self.user_id, f"[ЛОКАЛЬНО] Используем локальные данные для расчёта PnL", "SignalScalper")
 
             pnl_gross = (event.price - entry_price_for_pnl) * position_size_for_pnl if self.active_direction == "LONG" else (
                 entry_price_for_pnl - event.price) * position_size_for_pnl
             pnl_net = pnl_gross - event.fee
+
+            log_info(self.user_id,
+                    f"[PNL_CALC] entry_price={entry_price_for_pnl:.4f}, position_size={position_size_for_pnl}, "
+                    f"exit_price={event.price:.4f}, fee={event.fee:.4f}, direction={self.active_direction}, "
+                    f"pnl_gross={pnl_gross:.4f}, pnl_net={pnl_net:.4f}",
+                    "SignalScalper")
 
             self.last_closed_direction = self.active_direction
 
@@ -578,6 +696,15 @@ class SignalScalperStrategy(BaseStrategy):
             # СБРОС ФЛАГОВ ИНТЕЛЛЕКТУАЛЬНОГО SL
             self.sl_extended = False
             self.sl_extension_notified = False
+
+            # ============================================================================
+            # [EMERGENCY_AVERAGING_5PCT] - БЛОК 4: СБРОС ФЛАГА ПРИ ЗАКРЫТИИ ПОЗИЦИИ
+            # Закомментируйте эту строку для отключения экстренного усреднения при 5%
+            # ============================================================================
+            self.emergency_averaging_executed = False  # Сброс для следующей позиции
+            # ============================================================================
+            # КОНЕЦ [EMERGENCY_AVERAGING_5PCT] - БЛОК 4
+            # ============================================================================
 
             # КРИТИЧЕСКИ ВАЖНО: СБРОС РЕЖИМА РЕВЕРСА
             # Сбрасываем ТОЛЬКО если это НЕ реверс (при реверсе флаг уже установлен)
@@ -1642,3 +1769,73 @@ class SignalScalperStrategy(BaseStrategy):
         except Exception as e:
             log_error(self.user_id, f"Ошибка при усреднении уровня {level}: {e}", "SignalScalper")
             self.is_waiting_for_trade = False
+
+    # ============================================================================
+    # [EMERGENCY_AVERAGING_5PCT] - БЛОК 2: МЕТОД ВЫПОЛНЕНИЯ ЭКСТРЕННОГО УСРЕДНЕНИЯ
+    # Закомментируйте этот блок для отключения экстренного усреднения при 5%
+    # ============================================================================
+    async def _execute_emergency_averaging(self, current_price: Decimal):
+        """
+        Выполняет ЭКСТРЕННОЕ усреднение при убытке 5% от изначальной цены входа.
+
+        ВАЖНО: Это НЕЗАВИСИМОЕ усреднение, которое НЕ влияет на основную логику:
+        - Выполняется ОДИН раз на фиксированную сумму (без прогрессии)
+        - Сумма = начальный order_amount (та же, что и при открытии позиции)
+        - НЕ увеличивает счетчик averaging_count основной системы усреднения
+        - Срабатывает ДО основной системы усреднения по уровням
+        """
+        if not self.emergency_averaging_enabled or self.emergency_averaging_executed:
+            return
+
+        try:
+            self.is_waiting_for_trade = True
+
+            log_info(self.user_id,
+                    f"🚨 ЗАПУСК ЭКСТРЕННОГО УСРЕДНЕНИЯ ПРИ 5% УБЫТКЕ",
+                    "SignalScalper")
+
+            # Используем ЗАМОРОЖЕННУЮ конфигурацию активной сделки
+            order_amount = self._convert_to_decimal(self._get_frozen_config_value("order_amount", 50.0))
+            leverage = self._convert_to_decimal(self._get_frozen_config_value("leverage", 1.0))
+
+            # ФИКСИРОВАННАЯ СУММА - такая же как начальный ордер (НЕ прогрессивная!)
+            averaging_amount = order_amount  # БЕЗ множителей!
+
+            log_info(self.user_id,
+                    f"💰 Экстренное усреднение: ФИКСИРОВАННАЯ сумма = {averaging_amount:.2f} USDT (= начальный ордер)",
+                    "SignalScalper")
+
+            qty = await self.api.calculate_quantity_from_usdt(
+                self.symbol, averaging_amount, leverage, price=current_price
+            )
+
+            if qty <= 0:
+                log_error(self.user_id, "Не удалось рассчитать количество для экстренного усреднения", "SignalScalper")
+                self.is_waiting_for_trade = False
+                return
+
+            # Размещаем экстренный усредняющий ордер
+            side = "Buy" if self.active_direction == "LONG" else "Sell"
+            order_id = await self._place_order(side=side, order_type="Market", qty=qty)
+
+            if order_id:
+                self.current_order_id = order_id
+
+                # Отмечаем что экстренное усреднение было выполнено
+                self.emergency_averaging_executed = True
+
+                log_info(self.user_id,
+                        f"✅ Экстренный ордер размещен: ID={order_id}, сумма={averaging_amount:.2f} USDT",
+                        "SignalScalper")
+
+                # Ждем исполнения ордера
+                await self._await_order_fill(order_id, side=side, qty=qty)
+
+            self.is_waiting_for_trade = False
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка при экстренном усреднении: {e}", "SignalScalper")
+            self.is_waiting_for_trade = False
+    # ============================================================================
+    # КОНЕЦ [EMERGENCY_AVERAGING_5PCT] - БЛОК 2
+    # ============================================================================
