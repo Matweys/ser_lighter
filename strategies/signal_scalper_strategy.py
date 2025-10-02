@@ -404,16 +404,32 @@ class SignalScalperStrategy(BaseStrategy):
             log_debug(self.user_id, f"[ДУПЛИКАТ] Ордер {event.order_id} уже обработан, игнорируем EventBus дубликат.", "SignalScalper")
             return
 
-        # Проверяем, что это ожидаемый ордер ИЛИ связанный с нашей позицией
-        is_our_order = (
-            # Ожидаемый ордер
-            (self.current_order_id and event.order_id == self.current_order_id) or
-            # Или ордер по нашему символу (для SL и других системных ордеров)
-            (not self.current_order_id and hasattr(event, 'symbol') and event.symbol == self.symbol)
-        )
+        # КРИТИЧЕСКИ ВАЖНО: Проверяем что ордер принадлежит БОТУ (есть в БД)
+        from database.db_trades import db_manager
+        try:
+            order_in_db = await db_manager.get_order_by_id(event.order_id)
 
-        if not is_our_order:
-            log_debug(self.user_id, f"[НЕ НАШ] Ордер {event.order_id} не относится к этой стратегии.", "SignalScalper")
+            if not order_in_db:
+                log_warning(self.user_id,
+                           f"⚠️ [НЕ НАШ ОРДЕР] Ордер {event.order_id} НЕ найден в БД бота! "
+                           f"Это РУЧНОЙ ордер пользователя или внешний. ИГНОРИРУЮ.",
+                           "SignalScalper")
+                return
+
+            # Проверяем что ордер принадлежит ЭТОЙ стратегии (symbol и user_id)
+            if order_in_db['symbol'] != self.symbol or order_in_db['user_id'] != self.user_id:
+                log_debug(self.user_id,
+                         f"[НЕ НАШ] Ордер {event.order_id} принадлежит другой стратегии или пользователю. ИГНОРИРУЮ.",
+                         "SignalScalper")
+                return
+
+            log_info(self.user_id, f"✅ [НАША СДЕЛКА] Ордер {event.order_id} подтверждён в БД, обрабатываем.", "SignalScalper")
+
+        except Exception as db_check_error:
+            log_error(self.user_id,
+                     f"❌ Ошибка проверки ордера {event.order_id} в БД: {db_check_error}. "
+                     f"НЕ МОГУ ПОДТВЕРДИТЬ ПРИНАДЛЕЖНОСТЬ - ИГНОРИРУЮ из безопасности!",
+                     "SignalScalper")
             return
 
         # НЕМЕДЛЕННО добавляем ордер в обработанные чтобы блокировать повторную обработку
@@ -468,6 +484,33 @@ class SignalScalperStrategy(BaseStrategy):
             log_info(self.user_id, f"[УСРЕДНЕНИЕ] Проверка: expected_side={expected_averaging_side}, actual_side={event.side}, is_averaging={is_averaging_order}", "SignalScalper")
 
         if not is_closing_order and not self.position_active:
+            # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: Убедимся, что на бирже действительно нет позиции
+            try:
+                exchange_positions = await self.api.get_positions()
+                for position in exchange_positions:
+                    if (position.get('symbol') == self.symbol and
+                        float(position.get('size', 0)) > 0):
+                        # НА БИРЖЕ УЖЕ ЕСТЬ ПОЗИЦИЯ! Это усреднение или ошибка
+                        position_side = position.get('side', '').lower()
+                        expected_side = "long" if event.side == "Buy" else "short"
+
+                        if position_side == expected_side:
+                            # Это усреднение позиции
+                            log_warning(self.user_id,
+                                      f"⚠️ ПЕРЕОПРЕДЕЛЕНИЕ: Ордер {event.order_id} переопределён как УСРЕДНЕНИЕ (на бирже уже есть {position_side.upper()})",
+                                      "SignalScalper")
+                            # Обрабатываем как усреднение
+                            is_averaging_order = True
+                            break
+                        else:
+                            log_error(self.user_id,
+                                    f"🚨 КРИТИЧЕСКАЯ ОШИБКА: Попытка открыть {expected_side.upper()}, но на бирже уже {position_side.upper()}! Пропускаю ордер.",
+                                    "SignalScalper")
+                            self.is_waiting_for_trade = False
+                            return
+            except Exception as check_error:
+                log_error(self.user_id, f"Ошибка проверки позиций при обработке ордера: {check_error}", "SignalScalper")
+
             # Ордер на открытие позиции
             log_info(self.user_id, f"[ОТКРЫТИЕ] Обрабатываем ордер открытия: {event.order_id}", "SignalScalper")
             self.position_active = True
@@ -480,13 +523,6 @@ class SignalScalperStrategy(BaseStrategy):
             # КРИТИЧЕСКИ ВАЖНО: Подписываемся на события цены для усреднения и трейлинга
             await self.event_bus.subscribe(EventType.PRICE_UPDATE, self.handle_price_update, user_id=self.user_id)
 
-            # НОВОЕ: Подписываемся на WebSocket для получения обновлений цен в реальном времени
-            try:
-                from websocket.websocket_manager import global_ws_manager
-                await global_ws_manager.subscribe_symbol(self.user_id, self.symbol)
-                log_info(self.user_id, f"[WEBSOCKET] Подписка на {self.symbol} для мгновенных обновлений цен", "SignalScalper")
-            except Exception as ws_error:
-                log_error(self.user_id, f"[WEBSOCKET] Ошибка подписки на WebSocket: {ws_error}", "SignalScalper")
             # Передаем сохраненную цену сигнала в уведомление
             signal_price = getattr(self, 'signal_price', None)
             await self._send_trade_open_notification(event.side, event.price, event.qty, self.intended_order_amount, signal_price)

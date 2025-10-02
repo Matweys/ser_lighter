@@ -1339,7 +1339,9 @@ class UserSession:
 
             # Анализируем текущие активные стратегии
             active_strategies_analysis = await self._analyze_active_strategies()
-            current_trading_count = len([s for s in active_strategies_analysis.values() if s['has_active_position']])
+            # ИСПРАВЛЕНО: Считаем ВСЕ активные стратегии, а не только с открытыми позициями
+            # Стратегия занимает слот, даже если просто ждёт сигнал без позиции
+            current_trading_count = len(active_strategies_analysis)
 
             log_info(self.user_id, f"📊 Анализ активных стратегий: всего {len(active_strategies_analysis)}, с позициями {current_trading_count}/{max_concurrent_trades}", module_name=__name__)
 

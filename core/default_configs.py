@@ -14,7 +14,7 @@ class DefaultConfigs:
             "enable_notifications": True,
             "notify_on_trade_open": True,
             "notify_on_trade_close": True,
-            "config_version": "2.2.0" # Обновляем версию
+            "config_version": "2.2.1" # Обновлена: исправлен множитель усреднения на 2.0
         }
 
 
@@ -41,6 +41,7 @@ class DefaultConfigs:
     def get_impulse_trailing_config() -> Dict[str, Any]:
         """Конфигурация для асимметричной стратегии 'Риск-Реверсал'."""
         return {
+            "config_version": "2.2.1",  # Версия конфигурации стратегии
             # --- Общие настройки, видимые пользователю ---
             "is_enabled": True,
             "leverage": 2,
@@ -85,6 +86,7 @@ class DefaultConfigs:
     def get_signal_scalper_config() -> Dict[str, Any]:
         """Конфигурация для Signal Scalper Strategy (бывший Grid Scalping)."""
         return {
+            "config_version": "2.2.1",  # Версия конфигурации стратегии
             # --- Основные ---
             "is_enabled": True,
             "order_amount": 100.0,
