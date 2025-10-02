@@ -25,8 +25,8 @@ DEFAULT_SYMBOLS = [
 # Комиссии бирж для внутреннего расчета PnL
 EXCHANGE_FEES = {
     ExchangeType.BYBIT: {
-        'maker': Decimal('0.02'),    # 0.02%
-        'taker': Decimal('0.055'),   # 0.055%
+        'maker': Decimal('0.036'),    # 0.036% (Maker)
+        'taker': Decimal('0.1'),      # 0.1% (Taker)
     },
     # Можно добавить другие биржи в будущем
 }
