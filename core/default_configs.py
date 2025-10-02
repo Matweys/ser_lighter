@@ -99,10 +99,10 @@ class DefaultConfigs:
 
             # --- НОВАЯ СИСТЕМА УСРЕДНЕНИЯ (ОДИНОЧНОЕ УДВОЕНИЕ) ---
             "enable_averaging": True,                    # Включить усреднение позиции
-            "averaging_trigger_loss_percent": 10.0,       # Триггер усреднения: убыток -3% от маржи
+            "averaging_trigger_loss_percent": 15.0,       # Триггер усреднения: убыток -3% от маржи
             "averaging_multiplier": 2.0,                 # Удвоение суммы при усреднении
             "max_averaging_count": 1,                    # Только ОДНО усреднение
-            "averaging_stop_loss_percent": 11.0,          # Программный SL после усреднения: -4% от маржи (на 1% выше триггера)
+            "averaging_stop_loss_percent": 16.0,          # Программный SL после усреднения: -4% от маржи (на 1% выше триггера)
 
 
 

@@ -65,9 +65,9 @@ class SignalScalperStrategy(BaseStrategy):
         # НОВАЯ СИСТЕМА УСРЕДНЕНИЯ (ОДИНОЧНОЕ УДВОЕНИЕ)
         self.averaging_enabled = False  # Включена ли система усреднения
         self.averaging_executed = False  # Флаг: было ли выполнено усреднение
-        self.averaging_trigger_loss_percent = Decimal('3.0')  # Триггер: убыток -3% от маржи
+        self.averaging_trigger_loss_percent = Decimal('15.0')  # Триггер: убыток от маржи
         self.averaging_multiplier = Decimal('2.0')  # Удвоение суммы
-        self.averaging_stop_loss_percent = Decimal('4.0')  # Программный SL: -4% от маржи
+        self.averaging_stop_loss_percent = Decimal('16.0')  # Программный SL: от маржи
         self.total_position_size = Decimal('0')  # Общий размер позиции после усреднения
         self.average_entry_price = Decimal('0')  # Средняя цена входа после усреднения
         self.initial_margin_usd = Decimal('0')  # Начальная маржа для расчета % убытка
@@ -101,9 +101,9 @@ class SignalScalperStrategy(BaseStrategy):
 
             # Загружаем параметры НОВОЙ системы усреднения (одиночное удвоение)
             self.averaging_enabled = self.config.get("enable_averaging", True)
-            self.averaging_trigger_loss_percent = self._convert_to_decimal(self.config.get("averaging_trigger_loss_percent", "3.0"))
+            self.averaging_trigger_loss_percent = self._convert_to_decimal(self.config.get("averaging_trigger_loss_percent", "15.0"))
             self.averaging_multiplier = self._convert_to_decimal(self.config.get("averaging_multiplier", "2.0"))
-            self.averaging_stop_loss_percent = self._convert_to_decimal(self.config.get("averaging_stop_loss_percent", "4.0"))
+            self.averaging_stop_loss_percent = self._convert_to_decimal(self.config.get("averaging_stop_loss_percent", "16.0"))
 
     async def start(self) -> bool:
         """Запуск стратегии и подписка на события свечей."""
@@ -500,6 +500,10 @@ class SignalScalperStrategy(BaseStrategy):
                                 await self._place_stop_loss_order(self.active_direction, self.entry_price, self.position_size)
 
                                 log_info(self.user_id, "✅ Состояние стратегии восстановлено из позиции на бирже", "SignalScalper")
+
+                                # КРИТИЧНО: Завершаем обработку после восстановления состояния
+                                self.is_waiting_for_trade = False
+                                return
                             else:
                                 # Позиция уже активна - это усреднение
                                 is_averaging_order = True
