@@ -40,10 +40,6 @@ class SignalScalperStrategy(BaseStrategy):
         self.intended_order_amount: Optional[Decimal] = None  # Запрошенная сумма ордера
         self.close_reason: Optional[str] = None  # Причина закрытия позиции для передачи в _handle_order_filled
 
-        # Настраиваемые параметры
-        self.min_profit_usd: Decimal = Decimal('1.0')
-        self.max_loss_usd: Decimal = Decimal('30.0')
-
         # Стоп-лосс управление
         self.stop_loss_order_id: Optional[str] = None
         self.stop_loss_price: Optional[Decimal] = None
@@ -96,8 +92,6 @@ class SignalScalperStrategy(BaseStrategy):
         await super()._load_strategy_config()
         if self.config:
             self.signal_analyzer = SignalAnalyzer(self.user_id, self.api, self.config)
-            self.min_profit_usd = self._convert_to_decimal(self.config.get("min_profit_usd", "1.0"))
-            self.max_loss_usd = self._convert_to_decimal(self.config.get("max_loss_usd", "30.0"))
 
             # Загружаем параметры НОВОЙ системы усреднения (одиночное удвоение)
             self.averaging_enabled = self.config.get("enable_averaging", True)
@@ -726,22 +720,29 @@ class SignalScalperStrategy(BaseStrategy):
 
     def _calculate_stop_loss_price(self, entry_price: Decimal, direction: str, position_size: Decimal) -> Decimal:
         """
-        Рассчитывает цену стоп-лосса с учетом комиссий и буфера для точности.
+        Рассчитывает цену стоп-лосса на основе процента от маржи.
+
+        НОВАЯ СИСТЕМА: SL ставится так, чтобы убыток = averaging_stop_loss_percent от начальной маржи
 
         Формула:
-        LONG: SL = entry_price - (adjusted_max_loss_usd / position_size)
-        SHORT: SL = entry_price + (adjusted_max_loss_usd / position_size)
+        max_loss_usd = initial_margin_usd * (averaging_stop_loss_percent / 100)
+        LONG: SL = entry_price - (max_loss_usd / position_size)
+        SHORT: SL = entry_price + (max_loss_usd / position_size)
         """
         if position_size <= 0:
             log_error(self.user_id, "Невозможно рассчитать стоп-лосс: размер позиции равен нулю", "SignalScalper")
             return entry_price  # Возвращаем цену входа как fallback
 
-        # Используем новый точный метод расчета
+        # Рассчитываем максимальный убыток в USDT на основе процента от маржи
+        max_loss_usd = self.initial_margin_usd * (self.averaging_stop_loss_percent / Decimal('100'))
+
+        # Используем точный метод расчета
         is_long = (direction == "LONG")
-        stop_loss_price = BaseStrategy._calculate_precise_stop_loss(entry_price, position_size, self.max_loss_usd, is_long)
+        stop_loss_price = BaseStrategy._calculate_precise_stop_loss(entry_price, position_size, max_loss_usd, is_long)
 
         log_info(self.user_id,
-                f"Точный расчет стоп-лосса для {direction}: вход=${entry_price:.4f}, SL=${stop_loss_price:.4f}, макс. убыток=${self.max_loss_usd:.2f}",
+                f"Точный расчет стоп-лосса для {direction}: вход=${entry_price:.4f}, SL=${stop_loss_price:.4f}, "
+                f"макс. убыток=${max_loss_usd:.2f} ({self.averaging_stop_loss_percent}% от маржи ${self.initial_margin_usd:.2f})",
                 "SignalScalper")
 
         return stop_loss_price
