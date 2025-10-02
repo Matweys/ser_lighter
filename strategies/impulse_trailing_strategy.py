@@ -319,19 +319,19 @@ class ImpulseTrailingStrategy(BaseStrategy):
             self.position_initiated = True
             # === КОНЕЦ БЛОКА ЗАЩИТЫ ===
 
-            # КРИТИЧЕСКИ ВАЖНО: Обновляем статус ордера в БД как FILLED
+            # КРИТИЧЕСКИ ВАЖНО: Обновляем ордер при исполнении через новый метод
             try:
                 from database.db_trades import db_manager
-                await db_manager.update_order_status(
+                await db_manager.update_order_on_fill(
                     order_id=event.order_id,
-                    status="FILLED",
                     filled_quantity=event.qty,
                     average_price=event.price,
-                    filled_price=event.price
+                    commission=event.fee,
+                    profit=None  # Для OPEN ордера profit = None
                 )
-                log_debug(self.user_id, f"Статус ордера {event.order_id} обновлён в БД: FILLED", "impulse_trailing")
+                log_debug(self.user_id, f"Ордер {event.order_id} обновлён в БД через update_order_on_fill", "impulse_trailing")
             except Exception as db_error:
-                log_error(self.user_id, f"Ошибка обновления статуса ордера {event.order_id} в БД: {db_error}", "impulse_trailing")
+                log_error(self.user_id, f"Ошибка обновления ордера {event.order_id} в БД: {db_error}", "impulse_trailing")
 
             self.entry_price = event.price
             self.position_size = event.qty
@@ -359,22 +359,24 @@ class ImpulseTrailingStrategy(BaseStrategy):
 
         # --- Сценарий: Закрытие позиции ---
         if self.position_side and event.side != self.position_side:
-            # КРИТИЧЕСКИ ВАЖНО: Обновляем статус ордера в БД как FILLED
-            try:
-                from database.db_trades import db_manager
-                await db_manager.update_order_status(
-                    order_id=event.order_id,
-                    status="FILLED",
-                    filled_quantity=event.qty,
-                    average_price=event.price,
-                    filled_price=event.price
-                )
-                log_debug(self.user_id, f"Статус ордера {event.order_id} обновлён в БД: FILLED", "impulse_trailing")
-            except Exception as db_error:
-                log_error(self.user_id, f"Ошибка обновления статуса ордера {event.order_id} в БД: {db_error}", "impulse_trailing")
-
+            # Рассчитываем PnL для CLOSE ордера
             pnl_gross = (event.price - self.entry_price) * self.position_size if self.position_side == "Buy" else (self.entry_price - event.price) * self.position_size
             pnl_net = pnl_gross - event.fee
+
+            # КРИТИЧЕСКИ ВАЖНО: Обновляем ордер при исполнении с profit для CLOSE ордера
+            try:
+                from database.db_trades import db_manager
+                await db_manager.update_order_on_fill(
+                    order_id=event.order_id,
+                    filled_quantity=event.qty,
+                    average_price=event.price,
+                    commission=event.fee,
+                    profit=pnl_net  # Для CLOSE ордера передаём рассчитанный profit
+                )
+                log_debug(self.user_id, f"Ордер {event.order_id} обновлён в БД с profit={pnl_net:.2f}$", "impulse_trailing")
+            except Exception as db_error:
+                log_error(self.user_id, f"Ошибка обновления ордера {event.order_id} в БД: {db_error}", "impulse_trailing")
+
             await self._send_trade_close_notification(pnl_net, event.fee)
             await self.stop("Position closed by TP/SL")
 

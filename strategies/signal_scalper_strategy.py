@@ -436,20 +436,6 @@ class SignalScalperStrategy(BaseStrategy):
         self.processed_orders.add(event.order_id)
         self.current_order_id = None  # Сбрасываем ожидаемый ордер
 
-        # КРИТИЧЕСКИ ВАЖНО: Обновляем статус ордера в БД как FILLED
-        try:
-            from database.db_trades import db_manager
-            await db_manager.update_order_status(
-                order_id=event.order_id,
-                status="FILLED",
-                filled_quantity=event.qty,
-                average_price=event.price,
-                filled_price=event.price
-            )
-            log_debug(self.user_id, f"Статус ордера {event.order_id} обновлён в БД: FILLED", "SignalScalper")
-        except Exception as db_error:
-            log_error(self.user_id, f"Ошибка обновления статуса ордера {event.order_id} в БД: {db_error}", "SignalScalper")
-
         log_info(self.user_id, f"[ОБРАБОТКА] Обрабатываем ордер {event.order_id} ({event.side} {event.qty} {self.symbol})", "SignalScalper")
 
         # УМНАЯ МНОГОУРОВНЕВАЯ ЛОГИКА ОПРЕДЕЛЕНИЯ ТИПА ОРДЕРА
@@ -618,6 +604,19 @@ class SignalScalperStrategy(BaseStrategy):
                     f"exit_price={event.price:.4f}, fee={event.fee:.4f}, direction={self.active_direction}, "
                     f"pnl_gross={pnl_gross:.4f}, pnl_net={pnl_net:.4f}",
                     "SignalScalper")
+
+            # КРИТИЧЕСКИ ВАЖНО: Обновляем ордер CLOSE в БД с profit
+            try:
+                await db_manager.update_order_on_fill(
+                    order_id=event.order_id,
+                    filled_quantity=event.qty,
+                    average_price=event.price,
+                    commission=event.fee,
+                    profit=pnl_net  # Для CLOSE ордера передаём рассчитанный profit
+                )
+                log_debug(self.user_id, f"✅ Ордер CLOSE {event.order_id} обновлён в БД с profit={pnl_net:.2f}$", "SignalScalper")
+            except Exception as db_error:
+                log_error(self.user_id, f"❌ Ошибка обновления CLOSE ордера {event.order_id} в БД: {db_error}", "SignalScalper")
 
             self.last_closed_direction = self.active_direction
 

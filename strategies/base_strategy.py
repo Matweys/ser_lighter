@@ -667,10 +667,29 @@ class BaseStrategy(ABC):
             if order_id:
                 self.active_orders[order_id] = {"order_id": order_id, "status": "New"}
 
-                # КРИТИЧЕСКИ ВАЖНО: Сохраняем ордер в БД для системы восстановления
+                # КРИТИЧЕСКИ ВАЖНО: Сохраняем ордер в БД с ПОЛНОЙ информацией через новый метод
                 try:
                     from database.db_trades import db_manager
-                    await db_manager.save_order(
+
+                    # Определяем order_purpose
+                    if reduce_only:
+                        order_purpose = 'CLOSE'
+                    else:
+                        # Проверяем, является ли это усреднением (есть активная позиция в том же направлении)
+                        has_active_position = getattr(self, 'position_active', False)
+                        if has_active_position:
+                            order_purpose = 'AVERAGING'
+                        else:
+                            order_purpose = 'OPEN'
+
+                    # Получаем leverage из конфигурации
+                    leverage = int(self.get_config_value("leverage", 1))
+
+                    # Получаем trade_id если есть активная сделка
+                    trade_id = getattr(self, 'active_trade_db_id', None)
+
+                    # Используем новый полный метод сохранения
+                    await db_manager.save_order_full(
                         user_id=self.user_id,
                         symbol=self.symbol,
                         side=side,
@@ -679,6 +698,9 @@ class BaseStrategy(ABC):
                         price=price or Decimal('0'),
                         order_id=order_id,
                         strategy_type=self.strategy_type.value,
+                        order_purpose=order_purpose,
+                        leverage=leverage,
+                        trade_id=trade_id,
                         metadata={
                             "stop_loss": str(stop_loss) if stop_loss else None,
                             "take_profit": str(take_profit) if take_profit else None,
@@ -686,7 +708,7 @@ class BaseStrategy(ABC):
                             "created_by": "base_strategy_place_order"
                         }
                     )
-                    log_debug(self.user_id, f"Ордер {order_id} сохранён в БД", module_name=__name__)
+                    log_debug(self.user_id, f"Ордер {order_id} сохранён в БД с purpose={order_purpose}, leverage={leverage}", module_name=__name__)
                 except Exception as db_error:
                     log_error(self.user_id, f"Ошибка сохранения ордера в БД: {db_error}", module_name=__name__)
 

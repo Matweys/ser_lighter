@@ -233,6 +233,44 @@ class _DatabaseManager:
                     await conn.execute("CREATE INDEX idx_trades_order_id ON trades(order_id);")
                     log_info(0, "Индекс 'idx_trades_order_id' успешно добавлен.", 'database')
 
+                # Миграция 4: Добавление новых полей в таблицу orders
+                orders_fields_to_add = [
+                    ("order_purpose", "VARCHAR(20)"),
+                    ("leverage", "INTEGER DEFAULT 1"),
+                    ("profit", "DECIMAL(20,8) DEFAULT 0"),
+                    ("commission", "DECIMAL(20,8) DEFAULT 0"),
+                    ("filled_at", "TIMESTAMPTZ"),
+                    ("trade_id", "INTEGER"),
+                    ("is_active", "BOOLEAN DEFAULT TRUE")
+                ]
+
+                for field_name, field_definition in orders_fields_to_add:
+                    check_field_query = """
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='orders' AND column_name=$1
+                    """
+                    field_exists = await conn.fetchval(check_field_query, field_name)
+                    if not field_exists:
+                        log_warning(0, f"Колонка '{field_name}' отсутствует в таблице 'orders'. Добавляю...", 'database')
+                        await conn.execute(f"ALTER TABLE orders ADD COLUMN {field_name} {field_definition};")
+                        log_info(0, f"Колонка '{field_name}' успешно добавлена в orders.", 'database')
+
+                # Добавляем индексы для новых полей
+                orders_indexes = [
+                    ("idx_orders_is_active", "CREATE INDEX IF NOT EXISTS idx_orders_is_active ON orders(is_active)"),
+                    ("idx_orders_order_purpose", "CREATE INDEX IF NOT EXISTS idx_orders_order_purpose ON orders(order_purpose)"),
+                    ("idx_orders_trade_id", "CREATE INDEX IF NOT EXISTS idx_orders_trade_id ON orders(trade_id)")
+                ]
+
+                for index_name, index_query in orders_indexes:
+                    index_exists = await conn.fetchval(f"""
+                        SELECT 1 FROM pg_indexes WHERE tablename='orders' AND indexname='{index_name}'
+                    """)
+                    if not index_exists:
+                        log_warning(0, f"Индекс '{index_name}' отсутствует. Добавляю...", 'database')
+                        await conn.execute(index_query)
+                        log_info(0, f"Индекс '{index_name}' успешно добавлен.", 'database')
+
             log_info(0, "Миграции базы данных завершены.", 'database')
         except Exception as e:
             log_error(0, f"Ошибка во время выполнения миграций: {e}", 'database')
@@ -384,7 +422,7 @@ class _DatabaseManager:
                 )
             """)
             
-            # Таблица ордеров
+            # Таблица ордеров (ПОЛНАЯ СТРУКТУРА)
             await self._execute_query("""
                 CREATE TABLE IF NOT EXISTS orders (
                     id SERIAL PRIMARY KEY,
@@ -400,6 +438,16 @@ class _DatabaseManager:
                     order_id VARCHAR(100) NOT NULL,
                     client_order_id VARCHAR(100),
                     strategy_type VARCHAR(50),
+
+                    -- НОВЫЕ ПОЛЯ ДЛЯ ПОЛНОЙ ИНФОРМАЦИИ
+                    order_purpose VARCHAR(20),              -- 'OPEN', 'CLOSE', 'AVERAGING', 'STOPLOSS'
+                    leverage INTEGER DEFAULT 1,             -- Плечо
+                    profit DECIMAL(20,8) DEFAULT 0,         -- PnL при закрытии (для CLOSE ордеров)
+                    commission DECIMAL(20,8) DEFAULT 0,     -- Комиссия
+                    filled_at TIMESTAMPTZ,                  -- Время исполнения (МСК)
+                    trade_id INTEGER,                       -- Связь со сделкой
+                    is_active BOOLEAN DEFAULT TRUE,         -- Активен ли ордер (для подсчета слотов)
+
                     metadata JSONB DEFAULT '{}'::jsonb,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -1264,17 +1312,15 @@ class _DatabaseManager:
     async def update_order_status(self, order_id: str, status: str,
                                 filled_quantity: Decimal = None,
                                 average_price: Decimal = None,
-                                filled_price: Decimal = None,
                                 metadata: Dict[str, Any] = None) -> bool:
         """
-        Обновляет статус ордера в БД
+        Обновляет статус ордера в БД (УСТАРЕВШИЙ МЕТОД - используйте update_order_on_fill)
 
         Args:
             order_id: ID ордера на бирже
             status: Новый статус
             filled_quantity: Исполненное количество
             average_price: Средняя цена исполнения
-            filled_price: Цена исполнения (для обратной совместимости)
             metadata: Дополнительные данные
 
         Returns:
@@ -1368,6 +1414,223 @@ class _DatabaseManager:
         except Exception as e:
             log_error(0, f"Ошибка получения ордера {order_id}: {e}", module_name='database')
             return None
+
+    # Алиас для обратной совместимости
+    async def get_order_by_id(self, order_id: str) -> Optional[Dict[str, Any]]:
+        """Алиас для get_order_by_exchange_id"""
+        return await self.get_order_by_exchange_id(order_id)
+
+    # ===============================================================================
+    # УЛУЧШЕННЫЕ МЕТОДЫ ДЛЯ РАБОТЫ С ОРДЕРАМИ (С ПОЛНОЙ ИНФОРМАЦИЕЙ)
+    # ===============================================================================
+
+    async def save_order_full(self, user_id: int, symbol: str, side: str, order_type: str,
+                             quantity: Decimal, price: Decimal, order_id: str,
+                             strategy_type: str, order_purpose: str, leverage: int,
+                             trade_id: int = None, client_order_id: str = None,
+                             metadata: Dict[str, Any] = None) -> Optional[int]:
+        """
+        Сохраняет ордер в БД с ПОЛНОЙ информацией
+
+        Args:
+            user_id: ID пользователя
+            symbol: Символ
+            side: Сторона (Buy/Sell)
+            order_type: Тип ордера (Market/Limit)
+            quantity: Количество
+            price: Цена
+            order_id: ID ордера на бирже
+            strategy_type: Тип стратегии ('signal_scalper', 'impulse_trailing')
+            order_purpose: Назначение ('OPEN', 'CLOSE', 'AVERAGING', 'STOPLOSS')
+            leverage: Плечо
+            trade_id: ID связанной сделки
+            client_order_id: Клиентский ID
+            metadata: Дополнительные данные
+
+        Returns:
+            Optional[int]: ID записи в БД или None
+        """
+        try:
+            moscow_tz = timezone(timedelta(hours=3))
+            current_time = datetime.now(moscow_tz)
+
+            query = """
+            INSERT INTO orders (
+                user_id, symbol, side, order_type, quantity, price,
+                order_id, client_order_id, strategy_type, order_purpose,
+                leverage, trade_id, is_active, status,
+                metadata, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16)
+            RETURNING id
+            """
+
+            metadata_json = json.dumps(metadata or {}, cls=DecimalEncoder)
+
+            result = await self._execute_query(
+                query,
+                (user_id, symbol, side, order_type, quantity, price,
+                 order_id, client_order_id, strategy_type, order_purpose,
+                 leverage, trade_id, True, 'PENDING',
+                 metadata_json, current_time),
+                fetch_one=True
+            )
+
+            if result:
+                log_info(user_id,
+                        f"📝 Ордер сохранён в БД: {order_id} | {order_purpose} {side} {quantity} {symbol} @ {price} | ID в БД: {result['id']}",
+                        module_name='database')
+                return result['id']
+            return None
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка сохранения ордера {order_id}: {e}", module_name='database')
+            return None
+
+    async def update_order_on_fill(self, order_id: str, filled_quantity: Decimal,
+                                  average_price: Decimal, commission: Decimal,
+                                  profit: Decimal = None) -> bool:
+        """
+        Обновляет ордер при исполнении
+
+        Args:
+            order_id: ID ордера на бирже
+            filled_quantity: Исполненное количество
+            average_price: Средняя цена исполнения
+            commission: Комиссия
+            profit: PnL (для CLOSE ордеров)
+
+        Returns:
+            bool: True если обновление успешно
+        """
+        try:
+            moscow_tz = timezone(timedelta(hours=3))
+            filled_at = datetime.now(moscow_tz)
+
+            query = """
+            UPDATE orders
+            SET
+                filled_quantity = $2,
+                average_price = $3,
+                commission = $4,
+                profit = $5,
+                filled_at = $6,
+                status = 'FILLED',
+                is_active = FALSE,
+                updated_at = $6
+            WHERE order_id = $1
+            RETURNING user_id, symbol, side, order_purpose
+            """
+
+            result = await self._execute_query(
+                query,
+                (order_id, filled_quantity, average_price, commission,
+                 profit or Decimal('0'), filled_at),
+                fetch_one=True
+            )
+
+            if result:
+                profit_str = f"{profit:.2f}$" if profit is not None else "N/A"
+                log_info(result['user_id'],
+                        f"✅ Ордер исполнен: {order_id} | {result['order_purpose']} {result['side']} {result['symbol']} | "
+                        f"Комиссия: {commission:.4f}$ | PnL: {profit_str} | {filled_at.strftime('%H:%M:%S')} МСК",
+                        module_name='database')
+                return True
+            return False
+
+        except Exception as e:
+            log_error(0, f"Ошибка обновления ордера {order_id} при исполнении: {e}", module_name='database')
+            return False
+
+    async def get_active_orders_count(self, user_id: int, strategy_type: str = None) -> int:
+        """
+        Получает количество АКТИВНЫХ ордеров пользователя
+
+        Args:
+            user_id: ID пользователя
+            strategy_type: Тип стратегии (опционально)
+
+        Returns:
+            int: Количество активных ордеров
+        """
+        try:
+            conditions = ["user_id = $1", "is_active = TRUE"]
+            params = [user_id]
+
+            if strategy_type:
+                conditions.append("strategy_type = $2")
+                params.append(strategy_type)
+
+            query = f"""
+            SELECT COUNT(*) as count
+            FROM orders
+            WHERE {' AND '.join(conditions)}
+            """
+
+            result = await self._execute_query(query, tuple(params), fetch_one=True)
+            return result['count'] if result else 0
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка подсчета активных ордеров: {e}", module_name='database')
+            return 0
+
+    async def get_active_positions_from_orders(self, user_id: int, strategy_type: str = None) -> List[Dict[str, Any]]:
+        """
+        Получает список активных позиций через таблицу ORDERS (не positions!)
+
+        Позиция считается активной, если есть OPEN ордер и НЕТ соответствующего CLOSE ордера
+
+        Args:
+            user_id: ID пользователя
+            strategy_type: Тип стратегии (опционально)
+
+        Returns:
+            List[Dict]: Список активных позиций с символами
+        """
+        try:
+            conditions = ["user_id = $1"]
+            params = [user_id]
+
+            if strategy_type:
+                conditions.append("strategy_type = $2")
+                params.append(strategy_type)
+
+            # Ищем OPEN ордера, для которых НЕТ CLOSE ордеров
+            query = f"""
+            SELECT DISTINCT ON (symbol, strategy_type)
+                symbol,
+                strategy_type,
+                side,
+                quantity,
+                average_price,
+                leverage,
+                filled_at,
+                trade_id
+            FROM orders
+            WHERE {' AND '.join(conditions)}
+                AND order_purpose = 'OPEN'
+                AND status = 'FILLED'
+                AND is_active = FALSE
+                AND NOT EXISTS (
+                    SELECT 1 FROM orders AS close_orders
+                    WHERE close_orders.user_id = orders.user_id
+                        AND close_orders.symbol = orders.symbol
+                        AND close_orders.strategy_type = orders.strategy_type
+                        AND close_orders.order_purpose = 'CLOSE'
+                        AND close_orders.status = 'FILLED'
+                        AND close_orders.trade_id = orders.trade_id
+                )
+            ORDER BY symbol, strategy_type, filled_at DESC
+            """
+
+            results = await self._execute_query(query, tuple(params), fetch_all=True)
+
+            log_info(user_id, f"📊 Найдено {len(results)} активных позиций в БД", module_name='database')
+            return results
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка получения активных позиций: {e}", module_name='database')
+            return []
 
 # Глобальный экземпляр менеджера базы данных
 db_manager = _DatabaseManager()
