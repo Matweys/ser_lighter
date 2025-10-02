@@ -1139,8 +1139,26 @@ class BaseStrategy(ABC):
             log_error(self.user_id, f"Состояние бота: {'инициализирован' if self.bot else 'не инициализирован'}", "base_strategy")
 
     async def _send_averaging_notification(self, price: Decimal, quantity: Decimal, new_avg_price: Decimal,
-                                           new_total_size: Decimal, side: Optional[str] = None):
-        """Отправляет уведомление об усреднении позиции."""
+                                           new_total_size: Decimal, side: Optional[str] = None,
+                                           old_entry_price: Optional[Decimal] = None, old_size: Optional[Decimal] = None,
+                                           current_pnl: Optional[Decimal] = None, loss_percent: Optional[Decimal] = None,
+                                           trigger_percent: Optional[Decimal] = None, averaging_amount: Optional[Decimal] = None):
+        """
+        Отправляет МАКСИМАЛЬНО ИНФОРМАТИВНОЕ уведомление об усреднении позиции.
+
+        Параметры:
+            price: Цена усреднения
+            quantity: Добавленный объем
+            new_avg_price: Новая средняя цена входа
+            new_total_size: Новый общий размер позиции
+            side: Направление ("Buy"/"Sell")
+            old_entry_price: Старая цена входа ДО усреднения
+            old_size: Старый размер позиции ДО усреднения
+            current_pnl: Текущий PnL на момент усреднения
+            loss_percent: Процент убытка от маржи
+            trigger_percent: Триггер усреднения (процент)
+            averaging_amount: Сумма добавленной маржи в USDT
+        """
         try:
             # Проверяем, что бот инициализирован
             if not self.bot:
@@ -1148,6 +1166,13 @@ class BaseStrategy(ABC):
                 return
 
             strategy_name = self.strategy_type.value.replace('_', ' ').title()
+            side_text = "LONG 🟢" if side and side.lower() == 'buy' else "SHORT 🔴"
+
+            # Рассчитываем общую маржу
+            leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
+            old_margin = (old_entry_price * old_size) / leverage if old_entry_price and old_size else Decimal('0')
+            new_margin = (new_avg_price * new_total_size) / leverage
+            total_margin = old_margin + (averaging_amount if averaging_amount else Decimal('0'))
 
             # Получаем информацию о SL для новой позиции
             if side:
@@ -1171,30 +1196,63 @@ class BaseStrategy(ABC):
                 # Если side не передан, используем значения по умолчанию
                 sl_price, sl_loss = new_avg_price, Decimal('15.0')
 
+            # Формируем блок "ПОЧЕМУ произошло усреднение"
+            trigger_reason = ""
+            if loss_percent and trigger_percent and current_pnl:
+                trigger_reason = (
+                    f"⚠️ {hbold('ПРИЧИНА УСРЕДНЕНИЯ:')}\n"
+                    f"▫️ {hbold('Убыток достиг:')} {hcode(f'{loss_percent:.2f}% от маржи')}\n"
+                    f"▫️ {hbold('Триггер установлен на:')} {hcode(f'{trigger_percent:.2f}%')}\n"
+                    f"▫️ {hbold('PnL на момент триггера:')} {hcode(f'{current_pnl:.2f} USDT')}\n\n"
+                )
+
+            # Формируем блок "ДО усреднения"
+            before_block = ""
+            if old_entry_price and old_size:
+                before_block = (
+                    f"📊 {hbold('ДО УСРЕДНЕНИЯ:')}\n"
+                    f"▫️ {hbold('Цена входа:')} {hcode(f'{old_entry_price:.4f} USDT')}\n"
+                    f"▫️ {hbold('Размер позиции:')} {hcode(str(old_size))}\n"
+                    f"▫️ {hbold('Маржа:')} {hcode(f'{old_margin:.2f} USDT')}\n\n"
+                )
+
+            # Формируем блок "Операция усреднения"
+            averaging_block = (
+                f"➕ {hbold('ОПЕРАЦИЯ УСРЕДНЕНИЯ:')}\n"
+                f"▫️ {hbold('Цена добавления:')} {hcode(f'{price:.4f} USDT')}\n"
+                f"▫️ {hbold('Добавленный объем:')} {hcode(str(quantity))}\n"
+            )
+            if averaging_amount:
+                averaging_block += f"▫️ {hbold('Добавленная маржа:')} {hcode(f'{averaging_amount:.2f} USDT')}\n"
+            averaging_block += "\n"
+
+            # Формируем блок "ПОСЛЕ усреднения"
+            after_block = (
+                f"📈 {hbold('ПОСЛЕ УСРЕДНЕНИЯ:')}\n"
+                f"▫️ {hbold('Новая ср. цена:')} {hcode(f'{new_avg_price:.4f} USDT')}\n"
+                f"▫️ {hbold('Новый общий размер:')} {hcode(str(new_total_size))}\n"
+                f"▫️ {hbold('Общая маржа:')} {hcode(f'{total_margin:.2f} USDT')}\n\n"
+            )
+
+            # Собираем финальное уведомление
             text = (
                 f"🔄 {hbold('ПОЗИЦИЯ УСРЕДНЕНА')} 🔄\n\n"
                 f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
                 f"▫️ {hbold('Символ:')} {hcode(self.symbol)}\n"
-                f"▫️ {hbold('Цена усреднения:')} {hcode(f'{price:.4f} USDT')}\n"
-                f"▫️ {hbold('Добавленный объем:')} {hcode(str(quantity))}\n\n"
-                f"ℹ️ {hbold('Новые параметры позиции:')}\n"
-                f"▫️ {hbold('Новая ср. цена:')} {hcode(f'{new_avg_price:.4f} USDT')}\n"
-                f"▫️ {hbold('Новый общий объем:')} {hcode(str(new_total_size))}\n\n"
-                f"🛡️ {hbold('Обновленный Stop Loss:')}\n"
+                f"▫️ {hbold('Направление:')} {side_text}\n\n"
+                f"{trigger_reason}"
+                f"{before_block}"
+                f"{averaging_block}"
+                f"{after_block}"
+                f"🛡️ {hbold('ОБНОВЛЕННЫЙ STOP LOSS:')}\n"
                 f"▫️ {hbold('SL цена:')} {hcode(f'{sl_price:.4f} USDT')}\n"
                 f"▫️ {hbold('Ожидаемый убыток:')} {hcode(f'-{sl_loss:.2f} USDT')}"
             )
-            # Финальная диагностика
-            log_info(self.user_id,
-                     f"[TRACE] Проверка перед отправкой (усреднение): self.bot существует? {'Да' if self.bot else 'Нет'}",
-                     "base_strategy")
 
             await self.bot.send_message(self.user_id, text, parse_mode="HTML")
-            log_info(self.user_id, "[TRACE] Уведомление об усреднении отправлено успешно.", "base_strategy")
+            log_info(self.user_id, "✅ Максимально информативное уведомление об усреднении отправлено успешно.", "base_strategy")
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления об усреднении: {e}", "base_strategy")
-            # Дополнительное логирование для диагностики
-            log_error(self.user_id, f"Состояние бота: {'инициализирован' if self.bot else 'не инициализирован'}", "base_strategy")
 
 
     # strategies/base_strategy.py -> _send_trade_close_notification

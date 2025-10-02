@@ -300,29 +300,12 @@ class SignalScalperStrategy(BaseStrategy):
     async def _enter_position(self, direction: str, signal_price: Decimal):
         """Логика входа в позицию."""
 
-        # КРИТИЧЕСКАЯ ПРОВЕРКА: Проверяем есть ли уже активная позиция на бирже
-        try:
-            exchange_positions = await self.api.get_positions()
-            for position in exchange_positions:
-                if (position.get('symbol') == self.symbol and
-                    float(position.get('size', 0)) > 0):
-                    # НА БИРЖЕ УЖЕ ЕСТЬ АКТИВНАЯ ПОЗИЦИЯ!
-                    position_side = position.get('side', '').lower()
-                    expected_side = "long" if direction == "LONG" else "short"
-
-                    if position_side == expected_side:
-                        log_warning(self.user_id,
-                                  f"⚠️ ПРЕДОТВРАЩЕНО ДУБЛИРОВАНИЕ! На бирже уже есть позиция {self.symbol} {position_side.upper()}. "
-                                  f"Пропускаю открытие новой позиции.",
-                                  "SignalScalper")
-                        return
-                    else:
-                        log_warning(self.user_id,
-                                  f"⚠️ На бирже есть позиция {self.symbol} в противоположном направлении ({position_side.upper()}). "
-                                  f"Сигнал {direction} будет обработан как реверс.",
-                                  "SignalScalper")
-        except Exception as check_error:
-            log_error(self.user_id, f"Ошибка проверки позиций перед входом: {check_error}", "SignalScalper")
+        # ЗАЩИТА: Если позиция уже активна в стратегии - не открываем новую
+        if self.position_active:
+            log_warning(self.user_id,
+                      f"⚠️ Позиция уже активна ({self.active_direction}). Новый сигнал {direction} ИГНОРИРУЕТСЯ.",
+                      "SignalScalper")
+            return
 
         self.is_waiting_for_trade = True
 
@@ -477,20 +460,53 @@ class SignalScalperStrategy(BaseStrategy):
                     if (position.get('symbol') == self.symbol and
                         float(position.get('size', 0)) > 0):
                         # НА БИРЖЕ УЖЕ ЕСТЬ ПОЗИЦИЯ! Это усреднение или ошибка
-                        position_side = position.get('side', '').lower()
-                        expected_side = "long" if event.side == "Buy" else "short"
+                        position_side = position.get('side', '').lower()  # "buy" или "sell" от Bybit
+                        # Нормализуем для сравнения: Buy->buy/long, Sell->sell/short
+                        expected_side = "buy" if event.side == "Buy" else "sell"
 
                         if position_side == expected_side:
-                            # Это усреднение позиции
+                            # Это усреднение позиции ИЛИ дубликат открытия
                             log_warning(self.user_id,
-                                      f"⚠️ ПЕРЕОПРЕДЕЛЕНИЕ: Ордер {event.order_id} переопределён как УСРЕДНЕНИЕ (на бирже уже есть {position_side.upper()})",
+                                      f"⚠️ ОБНАРУЖЕНА ПОЗИЦИЯ на бирже! Ордер {event.order_id} будет обработан как часть существующей позиции {position_side.upper()}",
                                       "SignalScalper")
-                            # Обрабатываем как усреднение
-                            is_averaging_order = True
+
+                            # ВАЖНО: Восстанавливаем состояние стратегии если оно потеряно
+                            if not self.position_active:
+                                log_warning(self.user_id,
+                                          f"⚠️ Стратегия не знала о позиции! Восстанавливаю состояние...",
+                                          "SignalScalper")
+                                self.position_active = True
+                                self.active_direction = "LONG" if position_side == "buy" else "SHORT"
+                                self.entry_price = event.price
+                                self.position_size = event.qty
+                                self.peak_profit_usd = Decimal('0')
+                                self.hold_signal_counter = 0
+
+                                # Подписываемся на события цены
+                                await self.event_bus.subscribe(EventType.PRICE_UPDATE, self.handle_price_update, user_id=self.user_id)
+
+                                # Отправляем уведомление об открытии
+                                signal_price = getattr(self, 'signal_price', None)
+                                await self._send_trade_open_notification(event.side, event.price, event.qty, self.intended_order_amount, signal_price)
+
+                                # Инициализируем переменные усреднения
+                                self.averaging_executed = False
+                                self.total_position_size = Decimal('0')
+                                self.average_entry_price = Decimal('0')
+                                self.initial_margin_usd = self.intended_order_amount
+                                self.total_fees_paid = event.fee
+
+                                # Устанавливаем стоп-лосс
+                                await self._place_stop_loss_order(self.active_direction, self.entry_price, self.position_size)
+
+                                log_info(self.user_id, "✅ Состояние стратегии восстановлено из позиции на бирже", "SignalScalper")
+                            else:
+                                # Позиция уже активна - это усреднение
+                                is_averaging_order = True
                             break
                         else:
                             log_error(self.user_id,
-                                    f"🚨 КРИТИЧЕСКАЯ ОШИБКА: Попытка открыть {expected_side.upper()}, но на бирже уже {position_side.upper()}! Пропускаю ордер.",
+                                    f"🚨 КРИТИЧЕСКАЯ ОШИБКА: Попытка открыть {expected_side.upper()}, но на бирже уже {position_side.upper()}! Это конфликт направлений.",
                                     "SignalScalper")
                             self.is_waiting_for_trade = False
                             return
@@ -529,6 +545,22 @@ class SignalScalperStrategy(BaseStrategy):
             # Ордер на усреднение позиции
             log_info(self.user_id, f"[УСРЕДНЕНИЕ] Обрабатываем ордер усреднения: {event.order_id}", "SignalScalper")
 
+            # СОХРАНЯЕМ данные ДО усреднения для уведомления
+            old_entry_price = self.entry_price
+            old_size = self.position_size
+
+            # Рассчитываем текущий PnL и процент убытка для уведомления
+            if self.active_direction == "LONG":
+                current_pnl = (event.price - self.entry_price) * self.position_size
+            else:  # SHORT
+                current_pnl = (self.entry_price - event.price) * self.position_size
+
+            loss_percent = (abs(current_pnl) / self.initial_margin_usd) * Decimal('100') if self.initial_margin_usd > 0 and current_pnl < 0 else Decimal('0')
+
+            # Рассчитываем добавленную маржу
+            leverage = self._convert_to_decimal(self._get_frozen_config_value("leverage", 1.0))
+            averaging_amount = (event.price * event.qty) / leverage
+
             # НЕ ОБНОВЛЯЕМ position_active, так как позиция остается активной
             # Обновляем размер позиции и среднюю цену напрямую в этом методе
             if self.total_position_size == 0:
@@ -562,10 +594,19 @@ class SignalScalperStrategy(BaseStrategy):
             # ДИНАМИЧЕСКАЯ КОРРЕКТИРОВКА СТОП-ЛОССА после усреднения - ОТКЛЮЧЕНО для новой системы
             # await self._update_stop_loss_after_averaging()
 
-            # Отправляем уведомление об усреднении
+            # Отправляем МАКСИМАЛЬНО ИНФОРМАТИВНОЕ уведомление об усреднении
             await self._send_averaging_notification(
-                event.price, event.qty, self.average_entry_price, self.total_position_size,
-                side=event.side
+                price=event.price,
+                quantity=event.qty,
+                new_avg_price=self.average_entry_price,
+                new_total_size=self.total_position_size,
+                side=event.side,
+                old_entry_price=old_entry_price,
+                old_size=old_size,
+                current_pnl=current_pnl,
+                loss_percent=loss_percent,
+                trigger_percent=self.averaging_trigger_loss_percent,
+                averaging_amount=averaging_amount
             )
 
         elif is_closing_order and self.position_active:

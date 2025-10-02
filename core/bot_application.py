@@ -521,6 +521,33 @@ class BotApplication:
             session_data['autotrade_enabled'] = True
             await redis_manager.create_user_session(user_id, session_data)
             log_info(user_id, "Статус авто-торговли установлен в 'active' в Redis.", module_name=__name__)
+
+            # КРИТИЧЕСКИ ВАЖНО: Запускаем стратегии для всех символов из watchlist
+            global_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+            if global_config:
+                watchlist_symbols = global_config.get("watchlist_symbols", [])
+                if watchlist_symbols:
+                    log_info(user_id, f"🚀 Запуск стратегий для {len(watchlist_symbols)} символов из watchlist: {watchlist_symbols}", module_name=__name__)
+
+                    # Запускаем стратегии для каждого символа
+                    from core.enums import StrategyType
+                    for symbol in watchlist_symbols:
+                        try:
+                            success = await session.start_strategy(
+                                strategy_type=StrategyType.SIGNAL_SCALPER.value,
+                                symbol=symbol,
+                                analysis_data={'trigger': 'autotrade_start'}
+                            )
+                            if success:
+                                log_info(user_id, f"✅ Стратегия для {symbol} успешно запущена", module_name=__name__)
+                            else:
+                                log_warning(user_id, f"⚠️ Не удалось запустить стратегию для {symbol}", module_name=__name__)
+                        except Exception as e:
+                            log_error(user_id, f"❌ Ошибка запуска стратегии для {symbol}: {e}", module_name=__name__)
+                else:
+                    log_warning(user_id, "⚠️ Список watchlist_symbols пуст, стратегии не запущены", module_name=__name__)
+            else:
+                log_error(user_id, "❌ Не удалось получить global_config для запуска стратегий", module_name=__name__)
         else:
             log_error(user_id, "Не удалось получить сессию после попытки создания.", module_name=__name__)
 

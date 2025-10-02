@@ -10,7 +10,7 @@ class DefaultConfigs:
         return {
             "max_simultaneous_trades": 3,
             "max_daily_loss_usdt": 10.0,
-            "watchlist_symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+            "watchlist_symbols": ["BTCUSDT"],
             "enable_notifications": True,
             "notify_on_trade_open": True,
             "notify_on_trade_close": True,
