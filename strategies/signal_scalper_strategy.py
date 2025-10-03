@@ -683,12 +683,17 @@ class SignalScalperStrategy(BaseStrategy):
 
             pnl_gross = (event.price - entry_price_for_pnl) * position_size_for_pnl if self.active_direction == "LONG" else (
                 entry_price_for_pnl - event.price) * position_size_for_pnl
-            pnl_net = pnl_gross - event.fee
+
+            # НАКОПЛЕНИЕ КОМИССИИ ЗАКРЫТИЯ
+            self.total_fees_paid += event.fee
+
+            # ПРАВИЛЬНЫЙ РАСЧЁТ: Вычитаем ВСЕ накопленные комиссии (открытие + усреднение + закрытие)
+            pnl_net = pnl_gross - self.total_fees_paid
 
             log_info(self.user_id,
                     f"[PNL_CALC] entry_price={entry_price_for_pnl:.4f}, position_size={position_size_for_pnl}, "
-                    f"exit_price={event.price:.4f}, fee={event.fee:.4f}, direction={self.active_direction}, "
-                    f"pnl_gross={pnl_gross:.4f}, pnl_net={pnl_net:.4f}",
+                    f"exit_price={event.price:.4f}, close_fee={event.fee:.4f}, total_fees={self.total_fees_paid:.4f}, "
+                    f"direction={self.active_direction}, pnl_gross={pnl_gross:.4f}, pnl_net={pnl_net:.4f}",
                     "SignalScalper")
 
             # КРИТИЧЕСКИ ВАЖНО: Обновляем ордер CLOSE в БД с profit

@@ -146,6 +146,7 @@ async def _generate_stats_report(user_id: int, start_date: Optional[datetime] = 
     total_trades = user_stats['total_trades']
     winning_trades = user_stats['winning_trades']
     net_profit = user_stats['net_profit']
+    total_commission = user_stats['total_commission']
     win_rate = user_stats['win_rate']
     profit_percentage = user_stats['profit_percentage']
 
@@ -160,6 +161,7 @@ async def _generate_stats_report(user_id: int, start_date: Optional[datetime] = 
         f"🎯 <b>Успешных сделок:</b> {winning_trades}\n"
         f"🏆 <b>Win Rate:</b> {format_percentage(win_rate)}\n"
         f"📊 <b>Доходность к депозиту:</b> {profit_emoji} {profit_sign}{format_percentage(profit_percentage)}\n"
+        f"💸 <b>Комиссии биржи:</b> {format_currency(total_commission)}\n"
     )
 
     if strategy_stats:
