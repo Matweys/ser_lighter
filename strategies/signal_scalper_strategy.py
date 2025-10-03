@@ -562,6 +562,11 @@ class SignalScalperStrategy(BaseStrategy):
 
             log_info(self.user_id, f"💰 Начальная маржа для усреднения: ${self.initial_margin_usd:.2f}", "SignalScalper")
 
+            # КРИТИЧНО: Используем параметры из ЗАМОРОЖЕННОЙ конфигурации для расчета SL
+            if self.active_trade_config:
+                self.averaging_stop_loss_percent = self._convert_to_decimal(self.active_trade_config.get("averaging_stop_loss_percent", "16.0"))
+                log_info(self.user_id, f"🔧 SL процент для этой сделки: {self.averaging_stop_loss_percent}%", "SignalScalper")
+
             # ВСЕГДА устанавливаем стоп-лосс для защиты (даже при усреднении)
             await self._place_stop_loss_order(self.active_direction, self.entry_price, self.position_size)
 

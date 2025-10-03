@@ -14,7 +14,7 @@ class DefaultConfigs:
             "enable_notifications": True,
             "notify_on_trade_open": True,
             "notify_on_trade_close": True,
-            "config_version": "2.2.1" # Обновлена: исправлен множитель усреднения на 2.0
+            "config_version": "2.2.1" # Обновление
         }
 
 
