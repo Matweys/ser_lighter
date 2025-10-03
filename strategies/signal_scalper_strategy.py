@@ -62,9 +62,9 @@ class SignalScalperStrategy(BaseStrategy):
         self.averaging_enabled = False  # Включена ли система усреднения
         self.averaging_count = 0  # Счетчик выполненных усреднений
         self.max_averaging_count = 1  # Максимальное количество усреднений (из конфигурации)
-        self.averaging_trigger_loss_percent = Decimal('15.0')  # Триггер: убыток от маржи
+        self.averaging_trigger_loss_percent = Decimal('32.0')  # Триггер: убыток от маржи
         self.averaging_multiplier = Decimal('2.0')  # Удвоение суммы
-        self.averaging_stop_loss_percent = Decimal('16.0')  # Программный SL: от маржи
+        self.averaging_stop_loss_percent = Decimal('35.0')  # Программный SL: от маржи
         self.total_position_size = Decimal('0')  # Общий размер позиции после усреднения
         self.average_entry_price = Decimal('0')  # Средняя цена входа после усреднения
         self.initial_margin_usd = Decimal('0')  # Начальная маржа для расчета % убытка
