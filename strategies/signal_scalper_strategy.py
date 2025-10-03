@@ -60,6 +60,7 @@ class SignalScalperStrategy(BaseStrategy):
 
         # НОВАЯ СИСТЕМА УСРЕДНЕНИЯ (ОДИНОЧНОЕ УДВОЕНИЕ)
         self.averaging_enabled = False  # Включена ли система усреднения
+        self.averaging_executed = False  # Флаг: было ли выполнено усреднение
         self.averaging_count = 0  # Счетчик выполненных усреднений
         self.max_averaging_count = 1  # Максимальное количество усреднений (из конфигурации)
         self.averaging_trigger_loss_percent = Decimal('15.0')  # Триггер: убыток от маржи
@@ -258,17 +259,21 @@ class SignalScalperStrategy(BaseStrategy):
                                "SignalScalper")
                     await self._execute_averaging(current_price)
 
-        # Программный стоп-лосс после усреднения
-        if self.averaging_executed and self.initial_margin_usd > 0:
-            loss_percent_from_margin = (abs(pnl) / self.initial_margin_usd) * Decimal('100') if pnl < 0 else Decimal('0')
+        # АВАРИЙНОЕ БЫСТРОЕ ЗАКРЫТИЕ после усреднения при достижении фиксированного убытка -4 USDT
+        # (Основной SL уже выставлен на бирже, это дополнительная защита)
+        if self.averaging_executed:
+            # Учитываем накопленные комиссии в расчёте убытка
+            pnl_with_fees = pnl - self.total_fees_paid
 
-            # Проверяем программный SL: убыток >= 4% от маржи
-            if loss_percent_from_margin >= self.averaging_stop_loss_percent:
+            # Фиксированный порог: -4.0 USDT с учётом комиссий
+            emergency_loss_threshold = Decimal('-4.0')
+
+            if pnl_with_fees <= emergency_loss_threshold:
                 log_error(self.user_id,
-                         f"🚨 ПРОГРАММНЫЙ SL! Убыток {loss_percent_from_margin:.2f}% >= {self.averaging_stop_loss_percent}% от маржи. "
-                         f"Закрываю позицию!",
+                         f"🚨 АВАРИЙНОЕ ЗАКРЫТИЕ! Убыток {pnl_with_fees:.2f} USDT (с комиссиями) достиг порога {emergency_loss_threshold} USDT. "
+                         f"Молниеносно закрываю позицию!",
                          "SignalScalper")
-                await self._close_position("averaging_stop_loss")
+                await self._close_position("emergency_loss_after_averaging")
                 return
 
         # Обновляем пиковую прибыль
@@ -588,7 +593,11 @@ class SignalScalperStrategy(BaseStrategy):
             old_entry_price = self.entry_price
             old_size = self.position_size
 
-            # Рассчитываем текущий PnL и процент убытка для уведомления
+            # Рассчитываем добавленную маржу
+            leverage = self._convert_to_decimal(self._get_frozen_config_value("leverage", 1.0))
+            averaging_amount = (event.price * event.qty) / leverage
+
+            # Рассчитываем текущий PnL ДО усреднения (для информирования о причине усреднения)
             if self.active_direction == "LONG":
                 current_pnl = (event.price - self.entry_price) * self.position_size
             else:  # SHORT
@@ -596,10 +605,6 @@ class SignalScalperStrategy(BaseStrategy):
 
             loss_percent = ((abs(current_pnl) / self.initial_margin_usd) * Decimal('100')) if (
                         self.initial_margin_usd > 0 > current_pnl) else Decimal('0')
-
-            # Рассчитываем добавленную маржу
-            leverage = self._convert_to_decimal(self._get_frozen_config_value("leverage", 1.0))
-            averaging_amount = (event.price * event.qty) / leverage
 
             # НЕ ОБНОВЛЯЕМ position_active, так как позиция остается активной
             # Обновляем размер позиции и среднюю цену напрямую в этом методе
