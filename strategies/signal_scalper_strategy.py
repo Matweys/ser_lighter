@@ -60,7 +60,8 @@ class SignalScalperStrategy(BaseStrategy):
 
         # НОВАЯ СИСТЕМА УСРЕДНЕНИЯ (ОДИНОЧНОЕ УДВОЕНИЕ)
         self.averaging_enabled = False  # Включена ли система усреднения
-        self.averaging_executed = False  # Флаг: было ли выполнено усреднение
+        self.averaging_count = 0  # Счетчик выполненных усреднений
+        self.max_averaging_count = 1  # Максимальное количество усреднений (из конфигурации)
         self.averaging_trigger_loss_percent = Decimal('15.0')  # Триггер: убыток от маржи
         self.averaging_multiplier = Decimal('2.0')  # Удвоение суммы
         self.averaging_stop_loss_percent = Decimal('16.0')  # Программный SL: от маржи
@@ -72,6 +73,9 @@ class SignalScalperStrategy(BaseStrategy):
         # ИЗОЛЯЦИЯ НАСТРОЕК ДЛЯ АКТИВНОЙ СДЕЛКИ
         self.active_trade_config = None  # Конфигурация, зафиксированная при входе в сделку
         self.config_frozen = False  # Флаг: заморожены ли настройки для активной сделки
+
+        # РЕЖИМ ВОССТАНОВЛЕНИЯ - УДАЛЕНО!
+        # Теперь используется is_bot_restart_recovery из базового класса BaseStrategy
 
 
     def _get_strategy_type(self) -> StrategyType:
@@ -95,6 +99,7 @@ class SignalScalperStrategy(BaseStrategy):
 
             # Загружаем параметры НОВОЙ системы усреднения (одиночное удвоение)
             self.averaging_enabled = self.config.get("enable_averaging", True)
+            self.max_averaging_count = int(self.config.get("max_averaging_count", 1))
             self.averaging_trigger_loss_percent = self._convert_to_decimal(self.config.get("averaging_trigger_loss_percent", "15.0"))
             self.averaging_multiplier = self._convert_to_decimal(self.config.get("averaging_multiplier", "2.0"))
             self.averaging_stop_loss_percent = self._convert_to_decimal(self.config.get("averaging_stop_loss_percent", "16.0"))
@@ -447,69 +452,79 @@ class SignalScalperStrategy(BaseStrategy):
             log_info(self.user_id, f"[УСРЕДНЕНИЕ] Проверка: expected_side={expected_averaging_side}, actual_side={event.side}, is_averaging={is_averaging_order}", "SignalScalper")
 
         if not is_closing_order and not self.position_active:
-            # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: Убедимся, что на бирже действительно нет позиции
-            try:
-                exchange_positions = await self.api.get_positions()
-                for position in exchange_positions:
-                    if (position.get('symbol') == self.symbol and
-                        float(position.get('size', 0)) > 0):
-                        # НА БИРЖЕ УЖЕ ЕСТЬ ПОЗИЦИЯ! Это усреднение или ошибка
-                        position_side = position.get('side', '').lower()  # "buy" или "sell" от Bybit
-                        # Нормализуем для сравнения: Buy->buy/long, Sell->sell/short
-                        expected_side = "buy" if event.side == "Buy" else "sell"
+            # ПРОВЕРКА БИРЖИ ТОЛЬКО ПРИ ВОССТАНОВЛЕНИИ ПОСЛЕ КРАХА
+            # В нормальном режиме работы эта проверка НЕ НУЖНА - она вызывает лишние API запросы
+            if self.is_bot_restart_recovery:
+                log_info(self.user_id, f"[RECOVERY MODE] Проверяю биржу для восстановления состояния...", "SignalScalper")
+                try:
+                    exchange_positions = await self.api.get_positions()
+                    for position in exchange_positions:
+                        if (position.get('symbol') == self.symbol and
+                            float(position.get('size', 0)) > 0):
+                            # НА БИРЖЕ УЖЕ ЕСТЬ ПОЗИЦИЯ! Восстанавливаем состояние
+                            position_side = position.get('side', '').lower()  # "buy" или "sell" от Bybit
+                            # Нормализуем для сравнения: Buy->buy/long, Sell->sell/short
+                            expected_side = "buy" if event.side == "Buy" else "sell"
 
-                        if position_side == expected_side:
-                            # Это усреднение позиции ИЛИ дубликат открытия
-                            log_warning(self.user_id,
-                                      f"⚠️ ОБНАРУЖЕНА ПОЗИЦИЯ на бирже! Ордер {event.order_id} будет обработан как часть существующей позиции {position_side.upper()}",
-                                      "SignalScalper")
-
-                            # ВАЖНО: Восстанавливаем состояние стратегии если оно потеряно
-                            if not self.position_active:
+                            if position_side == expected_side:
+                                # Восстановление состояния после краша
                                 log_warning(self.user_id,
-                                          f"⚠️ Стратегия не знала о позиции! Восстанавливаю состояние...",
+                                          f"⚠️ ВОССТАНОВЛЕНИЕ: Обнаружена позиция на бирже! Ордер {event.order_id} будет обработан как часть существующей позиции {position_side.upper()}",
                                           "SignalScalper")
-                                self.position_active = True
-                                self.active_direction = "LONG" if position_side == "buy" else "SHORT"
-                                self.entry_price = event.price
-                                self.position_size = event.qty
-                                self.peak_profit_usd = Decimal('0')
-                                self.hold_signal_counter = 0
 
-                                # Подписываемся на события цены
-                                await self.event_bus.subscribe(EventType.PRICE_UPDATE, self.handle_price_update, user_id=self.user_id)
+                                if not self.position_active:
+                                    log_warning(self.user_id,
+                                              f"⚠️ Стратегия не знала о позиции! Восстанавливаю состояние...",
+                                              "SignalScalper")
+                                    self.position_active = True
+                                    self.active_direction = "LONG" if position_side == "buy" else "SHORT"
+                                    self.entry_price = event.price
+                                    self.position_size = event.qty
+                                    self.peak_profit_usd = Decimal('0')
+                                    self.hold_signal_counter = 0
 
-                                # Отправляем уведомление об открытии
-                                signal_price = getattr(self, 'signal_price', None)
-                                await self._send_trade_open_notification(event.side, event.price, event.qty, self.intended_order_amount, signal_price)
+                                    # Подписываемся на события цены
+                                    await self.event_bus.subscribe(EventType.PRICE_UPDATE, self.handle_price_update, user_id=self.user_id)
 
-                                # Инициализируем переменные усреднения
-                                self.averaging_executed = False
-                                self.total_position_size = Decimal('0')
-                                self.average_entry_price = Decimal('0')
-                                self.initial_margin_usd = self.intended_order_amount
-                                self.total_fees_paid = event.fee
+                                    # Рассчитываем начальную маржу из фактических данных позиции
+                                    # Формула: margin = (entry_price * position_size) / leverage
+                                    leverage = self._convert_to_decimal(self._get_frozen_config_value("leverage", 1.0))
+                                    calculated_margin = (event.price * event.qty) / leverage
 
-                                # Устанавливаем стоп-лосс
-                                await self._place_stop_loss_order(self.active_direction, self.entry_price, self.position_size)
+                                    # Отправляем уведомление об открытии
+                                    signal_price = getattr(self, 'signal_price', None)
+                                    await self._send_trade_open_notification(event.side, event.price, event.qty, calculated_margin, signal_price)
 
-                                log_info(self.user_id, "✅ Состояние стратегии восстановлено из позиции на бирже", "SignalScalper")
+                                    # Инициализируем переменные усреднения
+                                    self.averaging_executed = False
+                                    self.total_position_size = Decimal('0')
+                                    self.average_entry_price = Decimal('0')
+                                    self.initial_margin_usd = calculated_margin  # Используем рассчитанную маржу
+                                    self.total_fees_paid = event.fee
 
-                                # КРИТИЧНО: Завершаем обработку после восстановления состояния
+                                    # Устанавливаем стоп-лосс
+                                    await self._place_stop_loss_order(self.active_direction, self.entry_price, self.position_size)
+
+                                    log_info(self.user_id, "✅ Состояние стратегии восстановлено из позиции на бирже", "SignalScalper")
+
+                                    # Сбрасываем режим восстановления
+                                    self.is_bot_restart_recovery = False
+
+                                    # КРИТИЧНО: Завершаем обработку после восстановления состояния
+                                    self.is_waiting_for_trade = False
+                                    return
+                                else:
+                                    # Позиция уже активна - это усреднение
+                                    is_averaging_order = True
+                                break
+                            else:
+                                log_error(self.user_id,
+                                        f"🚨 КРИТИЧЕСКАЯ ОШИБКА: Попытка открыть {expected_side.upper()}, но на бирже уже {position_side.upper()}! Это конфликт направлений.",
+                                        "SignalScalper")
                                 self.is_waiting_for_trade = False
                                 return
-                            else:
-                                # Позиция уже активна - это усреднение
-                                is_averaging_order = True
-                            break
-                        else:
-                            log_error(self.user_id,
-                                    f"🚨 КРИТИЧЕСКАЯ ОШИБКА: Попытка открыть {expected_side.upper()}, но на бирже уже {position_side.upper()}! Это конфликт направлений.",
-                                    "SignalScalper")
-                            self.is_waiting_for_trade = False
-                            return
-            except Exception as check_error:
-                log_error(self.user_id, f"Ошибка проверки позиций при обработке ордера: {check_error}", "SignalScalper")
+                except Exception as check_error:
+                    log_error(self.user_id, f"Ошибка проверки позиций при обработке ордера: {check_error}", "SignalScalper")
 
             # Ордер на открытие позиции
             log_info(self.user_id, f"[ОТКРЫТИЕ] Обрабатываем ордер открытия: {event.order_id}", "SignalScalper")
@@ -553,7 +568,8 @@ class SignalScalperStrategy(BaseStrategy):
             else:  # SHORT
                 current_pnl = (self.entry_price - event.price) * self.position_size
 
-            loss_percent = (abs(current_pnl) / self.initial_margin_usd) * Decimal('100') if self.initial_margin_usd > 0 and current_pnl < 0 else Decimal('0')
+            loss_percent = ((abs(current_pnl) / self.initial_margin_usd) * Decimal('100')) if (
+                        self.initial_margin_usd > 0 > current_pnl) else Decimal('0')
 
             # Рассчитываем добавленную маржу
             leverage = self._convert_to_decimal(self._get_frozen_config_value("leverage", 1.0))
@@ -682,6 +698,7 @@ class SignalScalperStrategy(BaseStrategy):
 
             # СБРОС ПЕРЕМЕННЫХ НОВОЙ СИСТЕМЫ УСРЕДНЕНИЯ (ОДИНОЧНОЕ УДВОЕНИЕ)
             self.averaging_executed = False
+            self.averaging_count = 0  # Сброс счетчика усреднений
             self.initial_margin_usd = Decimal('0')
             self.total_fees_paid = Decimal('0')
             self.total_position_size = Decimal('0')
@@ -882,7 +899,8 @@ class SignalScalperStrategy(BaseStrategy):
         Выполняет ОДИНОЧНОЕ УДВОЕНИЕ позиции при достижении триггера убытка.
         После выполнения устанавливается флаг averaging_executed = True.
         """
-        if not self.averaging_enabled or self.averaging_executed:
+        # ПРОВЕРКА: отключено или достигнут лимит усреднений
+        if not self.averaging_enabled or self.averaging_count >= self.max_averaging_count:
             return
 
         try:
@@ -912,9 +930,11 @@ class SignalScalperStrategy(BaseStrategy):
 
             if order_id:
                 self.current_order_id = order_id
-                # Устанавливаем флаг ПЕРЕД ожиданием исполнения
+                # Увеличиваем счетчик усреднений
+                self.averaging_count += 1
+                # Устанавливаем флаг (для обратной совместимости)
                 self.averaging_executed = True
-                log_info(self.user_id, "✅ Флаг averaging_executed установлен. Второе усреднение невозможно.", "SignalScalper")
+                log_info(self.user_id, f"✅ Усреднение #{self.averaging_count} выполнено. Лимит: {self.averaging_count}/{self.max_averaging_count}", "SignalScalper")
 
                 # Ждем исполнения ордера
                 # Вся логика обновления статистики будет в _handle_order_filled()
@@ -960,7 +980,7 @@ class SignalScalperStrategy(BaseStrategy):
         ✅ Автоматическая адаптация под размер депозита
         ✅ Быстрый выход (0.20% от номинала)
         ✅ 6 уровней для плавных переходов
-        ✅ НЕТ зависимости от min_profit_usd
+
 
         Returns:
             Dict[int, Decimal]: Словарь с уровнями {уровень: прибыль_в_USDT}
@@ -1078,6 +1098,11 @@ class SignalScalperStrategy(BaseStrategy):
         """
         try:
             log_info(self.user_id, f"🔧 Специфичное восстановление SignalScalper для {self.symbol}...", "SignalScalper")
+
+            # УСТАНАВЛИВАЕМ РЕЖИМ ВОССТАНОВЛЕНИЯ
+            # Этот флаг указывает, что мы восстанавливаемся после краша
+            # и позволяет проверять биржу при обработке ордеров
+            # is_bot_restart_recovery уже установлен из базового класса BaseStrategy
 
             # Проверяем, была ли активна позиция на момент сохранения
             if hasattr(self, 'position_active') and self.position_active:
@@ -1341,6 +1366,7 @@ class SignalScalperStrategy(BaseStrategy):
 
         # Сбрасываем переменные НОВОЙ системы усреднения (одиночное удвоение)
         self.averaging_executed = False
+        self.averaging_count = 0  # Сброс счетчика усреднений
         self.initial_margin_usd = Decimal('0')
         self.total_fees_paid = Decimal('0')
         self.total_position_size = Decimal('0')

@@ -68,6 +68,11 @@ class UserSession:
         self.bot = bot
         self.running = False
 
+        # КРИТИЧНО: Флаг восстановления после перезапуска бота
+        # True = бот перезапущен, нужна проверка БД и биржи
+        # False = обычный запуск пользователем, проверка НЕ нужна
+        self.is_bot_restart = False
+
         # API клиент сессии
         self.api: Optional[BybitAPI] = None
         # Основные компоненты
@@ -393,6 +398,11 @@ class UserSession:
             if not strategy:
                 log_error(self.user_id, f"Не удалось создать стратегию типа: {strategy_type}", module_name=__name__)
                 return False
+
+            # КРИТИЧНО: Передаём флаг восстановления в стратегию
+            if hasattr(self, 'is_bot_restart') and self.is_bot_restart:
+                strategy.is_bot_restart_recovery = True
+                log_info(self.user_id, f"🔄 Флаг восстановления передан стратегии {strategy_type}_{symbol}", module_name=__name__)
 
             # Запуск стратегии
             if await strategy.start():

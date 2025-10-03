@@ -56,6 +56,12 @@ class BaseStrategy(ABC):
         self.event_bus = event_bus
         self.bot = bot
         self.config: Dict[str, Any] = config or {}
+
+        # КРИТИЧНО: Флаг восстановления после перезапуска бота
+        # True = бот перезапущен, проверка БД/биржи РАЗРЕШЕНА
+        # False = обычный старт, проверка БД/биржи ЗАПРЕЩЕНА
+        self.is_bot_restart_recovery = False
+
         # Добавлена проверка для раннего обнаружения проблем временно потом удалить
         if not self.bot:
             log_warning(self.user_id,

@@ -93,10 +93,6 @@ class DefaultConfigs:
             "leverage": 2,
             "analysis_timeframe": "5m",
 
-            # --- Управление выходом ---
-            "min_profit_usd": 1.0,
-            "max_loss_usd": 15.0,  # Максимальный убыток в долларах (стоп-лосс)
-
             # --- НОВАЯ СИСТЕМА УСРЕДНЕНИЯ (ОДИНОЧНОЕ УДВОЕНИЕ) ---
             "enable_averaging": True,                    # Включить усреднение позиции
             "averaging_trigger_loss_percent": 15.0,       # Триггер усреднения: убыток -3% от маржи
