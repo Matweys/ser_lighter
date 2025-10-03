@@ -62,9 +62,9 @@ class SignalScalperStrategy(BaseStrategy):
         self.averaging_enabled = False  # Включена ли система усреднения
         self.averaging_count = 0  # Счетчик выполненных усреднений
         self.max_averaging_count = 1  # Максимальное количество усреднений (из конфигурации)
-        self.averaging_trigger_loss_percent = Decimal('32.0')  # Триггер: убыток от маржи
+        self.averaging_trigger_loss_percent = Decimal('15.0')  # Триггер: убыток от маржи
         self.averaging_multiplier = Decimal('2.0')  # Удвоение суммы
-        self.averaging_stop_loss_percent = Decimal('35.0')  # Программный SL: от маржи
+        self.averaging_stop_loss_percent = Decimal('16.0')  # Программный SL: от маржи
         self.total_position_size = Decimal('0')  # Общий размер позиции после усреднения
         self.average_entry_price = Decimal('0')  # Средняя цена входа после усреднения
         self.initial_margin_usd = Decimal('0')  # Начальная маржа для расчета % убытка
@@ -497,10 +497,11 @@ class SignalScalperStrategy(BaseStrategy):
                                     # Подписываемся на события цены
                                     await self.event_bus.subscribe(EventType.PRICE_UPDATE, self.handle_price_update, user_id=self.user_id)
 
-                                    # Рассчитываем начальную маржу из фактических данных позиции
+                                    # ПРАВИЛЬНЫЙ расчет начальной маржи из фактических данных позиции
                                     # Формула: margin = (entry_price * position_size) / leverage
                                     leverage = self._convert_to_decimal(self._get_frozen_config_value("leverage", 1.0))
-                                    calculated_margin = (event.price * event.qty) / leverage
+                                    position_value = event.price * event.qty
+                                    calculated_margin = position_value / leverage
 
                                     # Отправляем уведомление об открытии
                                     signal_price = getattr(self, 'signal_price', None)
@@ -512,6 +513,8 @@ class SignalScalperStrategy(BaseStrategy):
                                     self.average_entry_price = Decimal('0')
                                     self.initial_margin_usd = calculated_margin  # Используем рассчитанную маржу
                                     self.total_fees_paid = event.fee
+
+                                    log_info(self.user_id, f"💰 Начальная маржа (recovery): ${self.initial_margin_usd:.2f} (position_value=${position_value:.2f}, leverage={leverage})", "SignalScalper")
 
                                     # Устанавливаем стоп-лосс
                                     await self._place_stop_loss_order(self.active_direction, self.entry_price, self.position_size)
@@ -557,15 +560,22 @@ class SignalScalperStrategy(BaseStrategy):
             self.averaging_executed = False  # Флаг: было ли выполнено усреднение
             self.total_position_size = Decimal('0')  # Сброс размера усредненной позиции
             self.average_entry_price = Decimal('0')  # Сброс средней цены
-            self.initial_margin_usd = self.intended_order_amount  # Сохраняем начальную маржу для расчета % убытка
             self.total_fees_paid = event.fee  # Начальная комиссия
+
+            # ПРАВИЛЬНЫЙ расчет начальной маржи: order_amount УЖЕ является маржой пользователя
+            self.initial_margin_usd = self.intended_order_amount
 
             log_info(self.user_id, f"💰 Начальная маржа для усреднения: ${self.initial_margin_usd:.2f}", "SignalScalper")
 
-            # КРИТИЧНО: Используем параметры из ЗАМОРОЖЕННОЙ конфигурации для расчета SL
+            # КРИТИЧНО: Загружаем параметры усреднения из ЗАМОРОЖЕННОЙ конфигурации
             if self.active_trade_config:
+                self.averaging_trigger_loss_percent = self._convert_to_decimal(self.active_trade_config.get("averaging_trigger_loss_percent", "15.0"))
                 self.averaging_stop_loss_percent = self._convert_to_decimal(self.active_trade_config.get("averaging_stop_loss_percent", "16.0"))
-                log_info(self.user_id, f"🔧 SL процент для этой сделки: {self.averaging_stop_loss_percent}%", "SignalScalper")
+                self.averaging_multiplier = self._convert_to_decimal(self.active_trade_config.get("averaging_multiplier", "2.0"))
+                log_info(self.user_id,
+                        f"🔧 Параметры усреднения: триггер={self.averaging_trigger_loss_percent}%, "
+                        f"SL={self.averaging_stop_loss_percent}%, множитель={self.averaging_multiplier}x",
+                        "SignalScalper")
 
             # ВСЕГДА устанавливаем стоп-лосс для защиты (даже при усреднении)
             await self._place_stop_loss_order(self.active_direction, self.entry_price, self.position_size)
@@ -751,6 +761,47 @@ class SignalScalperStrategy(BaseStrategy):
 
         self.is_waiting_for_trade = False
 
+    def _get_stop_loss_info(self, side: str, price: Decimal, quantity: Decimal) -> tuple[Decimal, Decimal]:
+        """
+        ПЕРЕОПРЕДЕЛЕНИЕ для Signal Scalper: рассчитывает SL на основе процента от маржи.
+
+        Returns:
+            tuple[Decimal, Decimal]: (цена_SL, ожидаемый_убыток_USDT)
+        """
+        try:
+            # Используем маржу пользователя (initial_margin_usd) и процент SL
+            if self.initial_margin_usd > 0:
+                max_loss_usd = self.initial_margin_usd * (self.averaging_stop_loss_percent / Decimal('100'))
+            else:
+                # Если маржа еще не установлена, рассчитываем её (для уведомления ДО установки initial_margin_usd)
+                order_amount = self._convert_to_decimal(self.get_config_value("order_amount", 50.0))
+                max_loss_usd = order_amount * (self.averaging_stop_loss_percent / Decimal('100'))
+
+            # Определяем направление позиции
+            is_long = side.lower() == 'buy'
+
+            # Рассчитываем цену стоп-лосса
+            sl_price = BaseStrategy._calculate_precise_stop_loss(price, quantity, max_loss_usd, is_long)
+
+            # ТОЧНЫЙ расчёт реального убытка при срабатывании SL
+            if is_long:
+                actual_loss = (price - sl_price) * quantity
+            else:
+                actual_loss = (sl_price - price) * quantity
+
+            # Добавляем комиссию при закрытии (используем реальное значение из конфига)
+            from core.settings_config import EXCHANGE_FEES
+            from core.enums import ExchangeType
+            taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')  # Конвертируем из % в десятичное
+            estimated_close_fee = sl_price * quantity * taker_fee_rate
+            total_expected_loss = actual_loss + estimated_close_fee
+
+            return sl_price, total_expected_loss
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка расчёта SL для уведомления: {e}", "SignalScalper")
+            return price, Decimal('0')  # Fallback
+
     def _calculate_stop_loss_price(self, entry_price: Decimal, direction: str, position_size: Decimal) -> Decimal:
         """
         Рассчитывает цену стоп-лосса на основе процента от маржи.
@@ -843,7 +894,7 @@ class SignalScalperStrategy(BaseStrategy):
 
         # После убыточной сделки требуем больше подтверждений
         if self.last_trade_was_loss:
-            required = max(required, 2)  # После убытка требуем минимум 3 подтверждения
+            required = max(required, 2)  # После убытка требуем минимум 2 подтверждения
 
         # НОВАЯ ЛОГИКА: После реверса требуем специальное количество подтверждений
         if self.after_reversal_mode:

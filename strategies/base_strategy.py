@@ -134,13 +134,17 @@ class BaseStrategy(ABC):
         Returns:
             Цена стоп-лосса с учетом комиссий
         """
-        # Комиссия тейкера (обычно 0.055% на Bybit)
-        taker_fee_rate = Decimal('0.0006')  # 0.06% с небольшим буфером
+        # Комиссия тейкера из конфига
+        from core.settings_config import EXCHANGE_FEES
+        from core.enums import ExchangeType
+        taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')  # 0.1%
 
         # Расчет комиссии при закрытии позиции
         estimated_close_fee = entry_price * qty * taker_fee_rate
 
-        # Добавляем 5% буфер для точности
+        # ТЕХНИЧЕСКИЙ ПАРАМЕТР: Добавляем 5% буфер для точности расчётов
+        # Компенсирует погрешности и микро-движения цены, чтобы SL не сработал раньше времени
+        # НЕ является стратегическим параметром - это математическая константа
         buffer = Decimal('1.05')
 
         # Корректируем желаемый убыток с учетом комиссии
@@ -179,17 +183,20 @@ class BaseStrategy(ABC):
             else:
                 actual_loss = (sl_price - price) * quantity
 
-            # Добавляем комиссию при закрытии
-            taker_fee_rate = Decimal('0.0006')  # 0.06% комиссия тейкера
+            # Добавляем комиссию при закрытии (из конфига)
+            from core.settings_config import EXCHANGE_FEES
+            from core.enums import ExchangeType
+            taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')
             estimated_close_fee = sl_price * quantity * taker_fee_rate
             total_expected_loss = actual_loss + estimated_close_fee
 
             return sl_price, total_expected_loss
 
         except Exception as e:
-            log_error(self.user_id, f"Ошибка расчета информации SL: {e}", "base_strategy")
-            # Возвращаем безопасные значения по умолчанию
-            return price, Decimal('15.0')
+            log_error(self.user_id, f"КРИТИЧЕСКАЯ ОШИБКА расчета SL: {e}. Ордер НЕ будет создан!", "base_strategy")
+            # Выбрасываем исключение - не даём открыть сделку с неправильным SL
+            # Уведомление пользователю будет отправлено на уровне вызывающего кода
+            raise ValueError(f"Не удалось рассчитать Stop Loss для {self.symbol}. Проверьте параметры конфигурации (max_loss_usd, averaging_stop_loss_percent).")
 
     async def _set_leverage(self):
         """Устанавливает кредитное плечо для торгуемого символа."""
@@ -1177,8 +1184,8 @@ class BaseStrategy(ABC):
             # Рассчитываем общую маржу
             leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
             old_margin = (old_entry_price * old_size) / leverage if old_entry_price and old_size else Decimal('0')
-            new_margin = (new_avg_price * new_total_size) / leverage
-            total_margin = old_margin + (averaging_amount if averaging_amount else Decimal('0'))
+            # Точный расчёт маржи после усреднения из биржевых данных
+            total_margin = (new_avg_price * new_total_size) / leverage
 
             # Получаем информацию о SL для новой позиции
             if side:
@@ -1192,15 +1199,18 @@ class BaseStrategy(ABC):
                     else:
                         actual_loss = (sl_price - new_avg_price) * new_total_size
 
-                    # Добавляем комиссию при закрытии
-                    taker_fee_rate = Decimal('0.0006')
+                    # Добавляем комиссию при закрытии (из конфига)
+                    from core.settings_config import EXCHANGE_FEES
+                    from core.enums import ExchangeType
+                    taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')
                     estimated_close_fee = sl_price * new_total_size * taker_fee_rate
                     sl_loss = actual_loss + estimated_close_fee
                 else:
                     sl_price, sl_loss = self._get_stop_loss_info(side, new_avg_price, new_total_size)
             else:
-                # Если side не передан, используем значения по умолчанию
-                sl_price, sl_loss = new_avg_price, Decimal('15.0')
+                # Если side не передан - логируем предупреждение, но уведомление отправляем
+                log_error(self.user_id, f"⚠️ ПРЕДУПРЕЖДЕНИЕ: Параметр 'side' не передан в уведомление об усреднении для {self.symbol}. SL не может быть отображен корректно.", "base_strategy")
+                sl_price, sl_loss = new_avg_price, Decimal('0.0')  # SL не рассчитан
 
             # Формируем блок "ПОЧЕМУ произошло усреднение"
             trigger_reason = ""
