@@ -314,6 +314,17 @@ class SignalScalperStrategy(BaseStrategy):
         # Получаем актуальные данные ТОЛЬКО ОДИН РАЗ перед созданием ордера
         await self._force_config_reload()
 
+        # КРИТИЧНО: Обновляем параметры усреднения из свежезагруженного конфига
+        self.max_averaging_count = int(self.config.get("max_averaging_count", 1))
+        self.averaging_trigger_loss_percent = self._convert_to_decimal(self.config.get("averaging_trigger_loss_percent", "15.0"))
+        self.averaging_multiplier = self._convert_to_decimal(self.config.get("averaging_multiplier", "2.0"))
+        self.averaging_stop_loss_percent = self._convert_to_decimal(self.config.get("averaging_stop_loss_percent", "16.0"))
+
+        log_info(self.user_id,
+                f"🔧 Параметры усреднения обновлены: триггер={self.averaging_trigger_loss_percent}%, "
+                f"SL={self.averaging_stop_loss_percent}%, множитель={self.averaging_multiplier}, лимит={self.max_averaging_count}",
+                "SignalScalper")
+
         # ЗАМОРАЖИВАЕМ КОНФИГУРАЦИЮ ДЛЯ ЭТОЙ СДЕЛКИ
         self.active_trade_config = self.config.copy()  # Полная копия конфигурации
         self.config_frozen = True
