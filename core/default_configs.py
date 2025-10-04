@@ -90,12 +90,17 @@ class DefaultConfigs:
             "leverage": 2,
             "analysis_timeframe": "5m",
 
-            # --- НОВАЯ СИСТЕМА УСРЕДНЕНИЯ (ОДИНОЧНОЕ УТРОЕНИЕ) ---
-            "enable_averaging": True,                    # Включить усреднение позиции
-            "averaging_trigger_loss_percent": 25.0,       # Триггер усреднения: убыток -15% от маржи
-            "averaging_multiplier": 3.0,                 # Утроение суммы при усреднении (БЕЗ ПЛЕЧА!)
-            "max_averaging_count": 1,                    # Только ОДНО усреднение
-            "averaging_stop_loss_percent": 30.0,          # Программный SL после усреднения: -16% от маржи (на 1% выше триггера)
+            # --- ПРОМЕЖУТОЧНОЕ УСРЕДНЕНИЕ (ТЕСТОВАЯ ФУНКЦИЯ) ---
+            "enable_intermediate_averaging": True,       # Включить промежуточное усреднение (легко отключить!)
+            "intermediate_trigger_percent": 15.0,        # Триггер промежуточного усреднения: -15% от маржи
+            "intermediate_multiplier": 1.0,              # Докупаем на ТУ ЖЕ маржу (100$ → +100$)
+
+            # --- ОСНОВНОЕ УСРЕДНЕНИЕ (ОДИНОЧНОЕ УТРОЕНИЕ) ---
+            "enable_averaging": True,                    # Включить основное усреднение позиции
+            "averaging_trigger_loss_percent": 25.0,      # Триггер основного усреднения: убыток -25% от маржи
+            "averaging_multiplier": 2.0,                 # Утроение суммы при усреднении (БЕЗ ПЛЕЧА!)
+            "max_averaging_count": 1,                    # Только ОДНО основное усреднение
+            "averaging_stop_loss_percent": 30.0,         # Программный SL после усреднения: -30% от маржи
 
 
 

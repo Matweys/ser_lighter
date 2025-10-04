@@ -58,7 +58,13 @@ class SignalScalperStrategy(BaseStrategy):
         self.reversal_required_confirmations = 2  # Требуемые подтверждения после реверса
         self.after_reversal_mode = False  # Флаг: находимся ли мы в режиме после реверса
 
-        # НОВАЯ СИСТЕМА УСРЕДНЕНИЯ (ОДИНОЧНОЕ УДВОЕНИЕ)
+        # ПРОМЕЖУТОЧНОЕ УСРЕДНЕНИЕ (ТЕСТОВАЯ ФУНКЦИЯ - ЛЕГКО ОТКЛЮЧАЕТСЯ!)
+        self.intermediate_averaging_enabled = False  # Включено ли промежуточное усреднение
+        self.intermediate_averaging_executed = False  # Флаг: было ли выполнено промежуточное усреднение
+        self.intermediate_trigger_percent = Decimal('15.0')  # Триггер промежуточного усреднения: -15% от маржи
+        self.intermediate_multiplier = Decimal('1.0')  # Множитель для промежуточного усреднения (1x = та же маржа)
+
+        # ОСНОВНАЯ СИСТЕМА УСРЕДНЕНИЯ (ОДИНОЧНОЕ УТРОЕНИЕ)
         self.averaging_enabled = False  # Включена ли система усреднения
         self.averaging_executed = False  # Флаг: было ли выполнено усреднение
         self.averaging_count = 0  # Счетчик выполненных усреднений
@@ -98,11 +104,16 @@ class SignalScalperStrategy(BaseStrategy):
         if self.config:
             self.signal_analyzer = SignalAnalyzer(self.user_id, self.api, self.config)
 
-            # Загружаем параметры НОВОЙ системы усреднения (одиночное удвоение)
+            # Загружаем параметры ПРОМЕЖУТОЧНОГО усреднения (тестовая функция)
+            self.intermediate_averaging_enabled = self.config.get("enable_intermediate_averaging", True)
+            self.intermediate_trigger_percent = self._convert_to_decimal(self.config.get("intermediate_trigger_percent", "15.0"))
+            self.intermediate_multiplier = self._convert_to_decimal(self.config.get("intermediate_multiplier", "1.0"))
+
+            # Загружаем параметры ОСНОВНОГО усреднения (одиночное утроение)
             self.averaging_enabled = self.config.get("enable_averaging", True)
             self.max_averaging_count = int(self.config.get("max_averaging_count", 1))
             self.averaging_trigger_loss_percent = self._convert_to_decimal(self.config.get("averaging_trigger_loss_percent", "25.0"))
-            self.averaging_multiplier = self._convert_to_decimal(self.config.get("averaging_multiplier", "3.0"))
+            self.averaging_multiplier = self._convert_to_decimal(self.config.get("averaging_multiplier", "2.0"))
             self.averaging_stop_loss_percent = self._convert_to_decimal(self.config.get("averaging_stop_loss_percent", "30.0"))
 
     async def start(self) -> bool:
@@ -241,7 +252,35 @@ class SignalScalperStrategy(BaseStrategy):
         else:  # SHORT
             pnl = (entry_price_to_use - current_price) * position_size_to_use
 
-        # НОВАЯ СИСТЕМА УСРЕДНЕНИЯ (ОДИНОЧНОЕ УДВОЕНИЕ)
+        # ПРОМЕЖУТОЧНОЕ УСРЕДНЕНИЕ (ТЕСТОВАЯ ФУНКЦИЯ)
+        if self.intermediate_averaging_enabled and not self.intermediate_averaging_executed:
+            # Рассчитываем % убытка от начальной маржи
+            if self.initial_margin_usd > 0:
+                loss_percent_from_margin = (abs(pnl) / self.initial_margin_usd) * Decimal('100') if pnl < 0 else Decimal('0')
+
+                log_debug(self.user_id,
+                         f"📊 Мониторинг ПРОМЕЖУТОЧНОГО усреднения: PnL=${pnl:.2f}, маржа=${self.initial_margin_usd:.2f}, "
+                         f"убыток={loss_percent_from_margin:.2f}%, триггер={self.intermediate_trigger_percent}%",
+                         "SignalScalper")
+
+                # Проверяем триггер промежуточного усреднения: убыток >= 15% от маржи
+                if loss_percent_from_margin >= self.intermediate_trigger_percent:
+                    log_warning(self.user_id,
+                               f"🎯 ТРИГГЕР ПРОМЕЖУТОЧНОГО УСРЕДНЕНИЯ! Убыток {loss_percent_from_margin:.2f}% >= {self.intermediate_trigger_percent}% от маржи",
+                               "SignalScalper")
+                    await self._execute_intermediate_averaging(current_price)
+
+        # ЛОГИКА ЗАКРЫТИЯ В ПЛЮС ПОСЛЕ ПРОМЕЖУТОЧНОГО УСРЕДНЕНИЯ
+        if self.intermediate_averaging_executed and not self.averaging_executed:
+            # После промежуточного усреднения закрываемся при ЛЮБОЙ прибыли
+            if pnl > 0:
+                log_warning(self.user_id,
+                           f"💰 ЗАКРЫТИЕ В ПЛЮС ПОСЛЕ ПРОМЕЖУТОЧНОГО УСРЕДНЕНИЯ! PnL=${pnl:.2f}",
+                           "SignalScalper")
+                await self._close_position("profit_after_intermediate_averaging")
+                return
+
+        # ОСНОВНОЕ УСРЕДНЕНИЕ (ОДИНОЧНОЕ УТРОЕНИЕ)
         if self.averaging_enabled and not self.averaging_executed:
             # Рассчитываем % убытка от начальной маржи
             if self.initial_margin_usd > 0:
@@ -322,7 +361,7 @@ class SignalScalperStrategy(BaseStrategy):
         # КРИТИЧНО: Обновляем параметры усреднения из свежезагруженного конфига
         self.max_averaging_count = int(self.config.get("max_averaging_count", 1))
         self.averaging_trigger_loss_percent = self._convert_to_decimal(self.config.get("averaging_trigger_loss_percent", "15.0"))
-        self.averaging_multiplier = self._convert_to_decimal(self.config.get("averaging_multiplier", "3.0"))
+        self.averaging_multiplier = self._convert_to_decimal(self.config.get("averaging_multiplier", "2.0"))
         self.averaging_stop_loss_percent = self._convert_to_decimal(self.config.get("averaging_stop_loss_percent", "30.0"))
 
         log_info(self.user_id,
@@ -576,7 +615,7 @@ class SignalScalperStrategy(BaseStrategy):
             if self.active_trade_config:
                 self.averaging_trigger_loss_percent = self._convert_to_decimal(self.active_trade_config.get("averaging_trigger_loss_percent", "25.0"))
                 self.averaging_stop_loss_percent = self._convert_to_decimal(self.active_trade_config.get("averaging_stop_loss_percent", "30.0"))
-                self.averaging_multiplier = self._convert_to_decimal(self.active_trade_config.get("averaging_multiplier", "3.0"))
+                self.averaging_multiplier = self._convert_to_decimal(self.active_trade_config.get("averaging_multiplier", "2.0"))
                 log_info(self.user_id,
                         f"🔧 Параметры усреднения: триггер={self.averaging_trigger_loss_percent}%, "
                         f"SL={self.averaging_stop_loss_percent}%, множитель={self.averaging_multiplier}x",
@@ -732,7 +771,10 @@ class SignalScalperStrategy(BaseStrategy):
             self.entry_price = None
             self.position_size = None
 
-            # СБРОС ПЕРЕМЕННЫХ НОВОЙ СИСТЕМЫ УСРЕДНЕНИЯ (ОДИНОЧНОЕ УДВОЕНИЕ)
+            # СБРОС ПЕРЕМЕННЫХ ПРОМЕЖУТОЧНОГО УСРЕДНЕНИЯ
+            self.intermediate_averaging_executed = False
+
+            # СБРОС ПЕРЕМЕННЫХ ОСНОВНОГО УСРЕДНЕНИЯ (ОДИНОЧНОЕ УТРОЕНИЕ)
             self.averaging_executed = False
             self.averaging_count = 0  # Сброс счетчика усреднений
             self.initial_margin_usd = Decimal('0')
@@ -971,9 +1013,61 @@ class SignalScalperStrategy(BaseStrategy):
 
         return cooldown_active
 
+    async def _execute_intermediate_averaging(self, current_price: Decimal):
+        """
+        Выполняет ПРОМЕЖУТОЧНОЕ УСРЕДНЕНИЕ позиции при достижении -15% убытка.
+        Добавляет ту же маржу (множитель 1x), БЕЗ плеча.
+        """
+        # ПРОВЕРКА: отключено или уже выполнено
+        if not self.intermediate_averaging_enabled or self.intermediate_averaging_executed:
+            return
+
+        try:
+            self.is_waiting_for_trade = True
+
+            # Используем ЗАМОРОЖЕННЫЕ параметры текущей сделки
+            order_amount = self._convert_to_decimal(self._get_frozen_config_value("order_amount", 50.0))
+
+            # ДЛЯ ПРОМЕЖУТОЧНОГО УСРЕДНЕНИЯ: ВСЕГДА используем плечо 1x (БЕЗ плеча)
+            leverage = Decimal('1.0')
+
+            # ПРОМЕЖУТОЧНОЕ УСРЕДНЕНИЕ: та же маржа (множитель 1.0)
+            intermediate_amount = order_amount * self.intermediate_multiplier
+
+            log_warning(self.user_id,
+                       f"💎 ПРОМЕЖУТОЧНОЕ УСРЕДНЕНИЕ (x{self.intermediate_multiplier}): {order_amount:.2f}$ × {self.intermediate_multiplier} = {intermediate_amount:.2f}$ USDT (БЕЗ ПЛЕЧА)",
+                       "SignalScalper")
+
+            qty = await self.api.calculate_quantity_from_usdt(self.symbol, intermediate_amount, leverage, price=current_price)
+
+            if qty <= 0:
+                log_error(self.user_id, "Не удалось рассчитать количество для промежуточного усреднения", "SignalScalper")
+                self.is_waiting_for_trade = False
+                return
+
+            # Размещаем промежуточный усредняющий ордер
+            side = "Buy" if self.active_direction == "LONG" else "Sell"
+            order_id = await self._place_order(side=side, order_type="Market", qty=qty)
+
+            if order_id:
+                self.current_order_id = order_id
+                # Устанавливаем флаг промежуточного усреднения
+                self.intermediate_averaging_executed = True
+                log_info(self.user_id, f"✅ Промежуточное усреднение выполнено", "SignalScalper")
+
+                # Ждем исполнения ордера
+                # Вся логика обновления статистики будет в _handle_order_filled()
+                await self._await_order_fill(order_id, side=side, qty=qty)
+
+            self.is_waiting_for_trade = False
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка при промежуточном усреднении: {e}", "SignalScalper")
+            self.is_waiting_for_trade = False
+
     async def _execute_averaging(self, current_price: Decimal):
         """
-        Выполняет ОДИНОЧНОЕ УДВОЕНИЕ позиции при достижении триггера убытка.
+        Выполняет ОСНОВНОЕ УТРОЕНИЕ позиции при достижении триггера убытка.
         После выполнения устанавливается флаг averaging_executed = True.
         """
         # ПРОВЕРКА: отключено или достигнут лимит усреднений
@@ -989,7 +1083,7 @@ class SignalScalperStrategy(BaseStrategy):
             # ДЛЯ УСРЕДНЕНИЯ: ВСЕГДА используем плечо 1x (БЕЗ плеча)
             leverage = Decimal('1.0')
 
-            # УТРОЕНИЕ суммы (множитель 3.0)
+            # Удвоение суммы (множитель 2.0)
             averaging_amount = order_amount * self.averaging_multiplier
 
             log_warning(self.user_id,
