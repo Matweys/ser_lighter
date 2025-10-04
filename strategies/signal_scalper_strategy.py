@@ -63,9 +63,9 @@ class SignalScalperStrategy(BaseStrategy):
         self.averaging_executed = False  # Флаг: было ли выполнено усреднение
         self.averaging_count = 0  # Счетчик выполненных усреднений
         self.max_averaging_count = 1  # Максимальное количество усреднений (из конфигурации)
-        self.averaging_trigger_loss_percent = Decimal('15.0')  # Триггер: убыток от маржи
+        self.averaging_trigger_loss_percent = Decimal('25.0')  # Триггер: убыток от маржи
         self.averaging_multiplier = Decimal('2.0')  # Удвоение суммы
-        self.averaging_stop_loss_percent = Decimal('16.0')  # Программный SL: от маржи
+        self.averaging_stop_loss_percent = Decimal('30.0')  # Программный SL: от маржи
         self.total_position_size = Decimal('0')  # Общий размер позиции после усреднения
         self.average_entry_price = Decimal('0')  # Средняя цена входа после усреднения
         self.initial_margin_usd = Decimal('0')  # Начальная маржа для расчета % убытка
@@ -101,9 +101,9 @@ class SignalScalperStrategy(BaseStrategy):
             # Загружаем параметры НОВОЙ системы усреднения (одиночное удвоение)
             self.averaging_enabled = self.config.get("enable_averaging", True)
             self.max_averaging_count = int(self.config.get("max_averaging_count", 1))
-            self.averaging_trigger_loss_percent = self._convert_to_decimal(self.config.get("averaging_trigger_loss_percent", "15.0"))
-            self.averaging_multiplier = self._convert_to_decimal(self.config.get("averaging_multiplier", "2.0"))
-            self.averaging_stop_loss_percent = self._convert_to_decimal(self.config.get("averaging_stop_loss_percent", "16.0"))
+            self.averaging_trigger_loss_percent = self._convert_to_decimal(self.config.get("averaging_trigger_loss_percent", "25.0"))
+            self.averaging_multiplier = self._convert_to_decimal(self.config.get("averaging_multiplier", "3.0"))
+            self.averaging_stop_loss_percent = self._convert_to_decimal(self.config.get("averaging_stop_loss_percent", "30.0"))
 
     async def start(self) -> bool:
         """Запуск стратегии и подписка на события свечей."""
@@ -259,14 +259,14 @@ class SignalScalperStrategy(BaseStrategy):
                                "SignalScalper")
                     await self._execute_averaging(current_price)
 
-        # АВАРИЙНОЕ БЫСТРОЕ ЗАКРЫТИЕ после усреднения при достижении фиксированного убытка -4 USDT
+        # АВАРИЙНОЕ БЫСТРОЕ ЗАКРЫТИЕ после усреднения при достижении фиксированного убытка -15 USDT
         # (Основной SL уже выставлен на бирже, это дополнительная защита)
         if self.averaging_executed:
             # Учитываем накопленные комиссии в расчёте убытка
             pnl_with_fees = pnl - self.total_fees_paid
 
-            # Фиксированный порог: -4.0 USDT с учётом комиссий
-            emergency_loss_threshold = Decimal('-4.0')
+            # Фиксированный порог: -15.0 USDT с учётом комиссий
+            emergency_loss_threshold = Decimal('-15.0')
 
             if pnl_with_fees <= emergency_loss_threshold:
                 log_error(self.user_id,
@@ -322,8 +322,8 @@ class SignalScalperStrategy(BaseStrategy):
         # КРИТИЧНО: Обновляем параметры усреднения из свежезагруженного конфига
         self.max_averaging_count = int(self.config.get("max_averaging_count", 1))
         self.averaging_trigger_loss_percent = self._convert_to_decimal(self.config.get("averaging_trigger_loss_percent", "15.0"))
-        self.averaging_multiplier = self._convert_to_decimal(self.config.get("averaging_multiplier", "2.0"))
-        self.averaging_stop_loss_percent = self._convert_to_decimal(self.config.get("averaging_stop_loss_percent", "16.0"))
+        self.averaging_multiplier = self._convert_to_decimal(self.config.get("averaging_multiplier", "3.0"))
+        self.averaging_stop_loss_percent = self._convert_to_decimal(self.config.get("averaging_stop_loss_percent", "30.0"))
 
         log_info(self.user_id,
                 f"🔧 Параметры усреднения обновлены: триггер={self.averaging_trigger_loss_percent}%, "
@@ -574,9 +574,9 @@ class SignalScalperStrategy(BaseStrategy):
 
             # КРИТИЧНО: Загружаем параметры усреднения из ЗАМОРОЖЕННОЙ конфигурации
             if self.active_trade_config:
-                self.averaging_trigger_loss_percent = self._convert_to_decimal(self.active_trade_config.get("averaging_trigger_loss_percent", "15.0"))
-                self.averaging_stop_loss_percent = self._convert_to_decimal(self.active_trade_config.get("averaging_stop_loss_percent", "16.0"))
-                self.averaging_multiplier = self._convert_to_decimal(self.active_trade_config.get("averaging_multiplier", "2.0"))
+                self.averaging_trigger_loss_percent = self._convert_to_decimal(self.active_trade_config.get("averaging_trigger_loss_percent", "25.0"))
+                self.averaging_stop_loss_percent = self._convert_to_decimal(self.active_trade_config.get("averaging_stop_loss_percent", "30.0"))
+                self.averaging_multiplier = self._convert_to_decimal(self.active_trade_config.get("averaging_multiplier", "3.0"))
                 log_info(self.user_id,
                         f"🔧 Параметры усреднения: триггер={self.averaging_trigger_loss_percent}%, "
                         f"SL={self.averaging_stop_loss_percent}%, множитель={self.averaging_multiplier}x",
@@ -985,13 +985,15 @@ class SignalScalperStrategy(BaseStrategy):
 
             # Используем ЗАМОРОЖЕННЫЕ параметры текущей сделки
             order_amount = self._convert_to_decimal(self._get_frozen_config_value("order_amount", 50.0))
-            leverage = self._convert_to_decimal(self._get_frozen_config_value("leverage", 1.0))
 
-            # УДВОЕНИЕ суммы
+            # ДЛЯ УСРЕДНЕНИЯ: ВСЕГДА используем плечо 1x (БЕЗ плеча)
+            leverage = Decimal('1.0')
+
+            # УТРОЕНИЕ суммы (множитель 3.0)
             averaging_amount = order_amount * self.averaging_multiplier
 
             log_warning(self.user_id,
-                       f"💰 УСРЕДНЕНИЕ (УДВОЕНИЕ): {order_amount:.2f}$ × {self.averaging_multiplier} = {averaging_amount:.2f}$ USDT",
+                       f"💰 УСРЕДНЕНИЕ (x{self.averaging_multiplier}): {order_amount:.2f}$ × {self.averaging_multiplier} = {averaging_amount:.2f}$ USDT (БЕЗ ПЛЕЧА)",
                        "SignalScalper")
 
             qty = await self.api.calculate_quantity_from_usdt(self.symbol, averaging_amount, leverage, price=current_price)

@@ -90,12 +90,12 @@ class DefaultConfigs:
             "leverage": 2,
             "analysis_timeframe": "5m",
 
-            # --- НОВАЯ СИСТЕМА УСРЕДНЕНИЯ (ОДИНОЧНОЕ УДВОЕНИЕ) ---
+            # --- НОВАЯ СИСТЕМА УСРЕДНЕНИЯ (ОДИНОЧНОЕ УТРОЕНИЕ) ---
             "enable_averaging": True,                    # Включить усреднение позиции
-            "averaging_trigger_loss_percent": 15.0,       # Триггер усреднения: убыток -15% от маржи
-            "averaging_multiplier": 2.0,                 # Удвоение суммы при усреднении
+            "averaging_trigger_loss_percent": 25.0,       # Триггер усреднения: убыток -15% от маржи
+            "averaging_multiplier": 3.0,                 # Утроение суммы при усреднении (БЕЗ ПЛЕЧА!)
             "max_averaging_count": 1,                    # Только ОДНО усреднение
-            "averaging_stop_loss_percent": 16.0,          # Программный SL после усреднения: -16% от маржи (на 1% выше триггера)
+            "averaging_stop_loss_percent": 30.0,          # Программный SL после усреднения: -16% от маржи (на 1% выше триггера)
 
 
 
