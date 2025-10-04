@@ -122,6 +122,14 @@ class SignalScalperStrategy(BaseStrategy):
         if is_started:
             # Основной триггер стратегии - новая 5-минутная свеча
             await self.event_bus.subscribe(EventType.NEW_CANDLE, self._handle_new_candle, user_id=self.user_id)
+
+            # КРИТИЧНО: Принудительная синхронизация с биржей при старте
+            # Это гарантирует восстановление состояния активных позиций после перезапуска
+            try:
+                await self._force_sync_with_exchange()
+                log_info(self.user_id, f"✅ Синхронизация с биржей завершена для {self.symbol} при старте стратегии", "SignalScalper")
+            except Exception as sync_error:
+                log_error(self.user_id, f"❌ Ошибка синхронизации при старте: {sync_error}", "SignalScalper")
         return is_started
 
     async def stop(self, reason: str = "Manual stop"):
