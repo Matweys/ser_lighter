@@ -389,7 +389,8 @@ async def callback_configure_strategy(callback: CallbackQuery, state: FSMContext
         # Вместо getattr, который вызывал ошибку, используем явную карту соответствия.
         strategy_enum_map = {
             StrategyType.SIGNAL_SCALPER.value: ConfigType.STRATEGY_SIGNAL_SCALPER,
-            StrategyType.IMPULSE_TRAILING.value: ConfigType.STRATEGY_IMPULSE_TRAILING
+            StrategyType.IMPULSE_TRAILING.value: ConfigType.STRATEGY_IMPULSE_TRAILING,
+            StrategyType.FLASH_DROP_CATCHER.value: ConfigType.STRATEGY_FLASH_DROP_CATCHER
         }
         config_enum = strategy_enum_map.get(strategy_type)
 

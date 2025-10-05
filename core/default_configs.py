@@ -43,7 +43,7 @@ class DefaultConfigs:
         """Конфигурация для асимметричной стратегии 'Риск-Реверсал'."""
         return {
             # --- Общие настройки, видимые пользователю ---
-            "is_enabled": True,
+            "is_enabled": False,
             "leverage": 2,
             "order_amount": 50.0,
             "analysis_timeframe": "5m",
