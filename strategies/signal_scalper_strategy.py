@@ -84,6 +84,24 @@ class SignalScalperStrategy(BaseStrategy):
         # РЕЖИМ ВОССТАНОВЛЕНИЯ - УДАЛЕНО!
         # Теперь используется is_bot_restart_recovery из базового класса BaseStrategy
 
+        # ============================================================
+        # ДЕТЕКТОР ЗАСТРЯВШЕЙ ЦЕНЫ (STAGNATION DETECTOR)
+        # Легко удалить: удалите этот блок и связанные методы
+        # ============================================================
+        self.stagnation_detector_enabled = False  # Включен ли детектор
+        self.stagnation_check_interval = 60  # Время наблюдения в секундах (1 минута)
+        self.stagnation_ranges = []  # Список диапазонов {"min": -15.0, "max": -20.0}
+        self.stagnation_averaging_multiplier = Decimal('2.0')  # Множитель усреднения (x2)
+        self.stagnation_averaging_leverage = 1  # Плечо для усреднения (x1)
+        self.stagnation_exit_min_loss_usdt = Decimal('-3.0')  # Минимальный убыток для выхода
+
+        # Мониторинг состояния детектора
+        self.stagnation_monitor_active = False  # Активен ли мониторинг
+        self.stagnation_monitor_start_time: Optional[float] = None  # Время начала мониторинга
+        self.stagnation_current_range_index: Optional[int] = None  # Индекс текущего отслеживаемого диапазона
+        self.stagnation_averaging_executed = False  # Флаг: было ли выполнено усреднение
+        # ============================================================
+
 
     def _get_strategy_type(self) -> StrategyType:
         return StrategyType.SIGNAL_SCALPER
@@ -103,6 +121,17 @@ class SignalScalperStrategy(BaseStrategy):
         await super()._load_strategy_config()
         if self.config:
             self.signal_analyzer = SignalAnalyzer(self.user_id, self.api, self.config)
+
+            # ============================================================
+            # ЗАГРУЗКА ПАРАМЕТРОВ ДЕТЕКТОРА ЗАСТРЯВШЕЙ ЦЕНЫ
+            # ============================================================
+            self.stagnation_detector_enabled = self.config.get("enable_stagnation_detector", True)
+            self.stagnation_check_interval = int(self.config.get("stagnation_check_interval_seconds", 60))
+            self.stagnation_ranges = self.config.get("stagnation_ranges_usdt", [])
+            self.stagnation_averaging_multiplier = self._convert_to_decimal(self.config.get("stagnation_averaging_multiplier", "2.0"))
+            self.stagnation_averaging_leverage = int(self.config.get("stagnation_averaging_leverage", 1))
+            self.stagnation_exit_min_loss_usdt = self._convert_to_decimal(self.config.get("stagnation_exit_min_loss_usdt", "-3.0"))
+            # ============================================================
 
             # Загружаем параметры ПРОМЕЖУТОЧНОГО усреднения (тестовая функция)
             self.intermediate_averaging_enabled = self.config.get("enable_intermediate_averaging", True)
@@ -280,6 +309,29 @@ class SignalScalperStrategy(BaseStrategy):
                 await self._close_position("profit_after_intermediate_averaging")
                 return
 
+        # ============================================================
+        # ДЕТЕКТОР ЗАСТРЯВШЕЙ ЦЕНЫ (STAGNATION DETECTOR)
+        # ============================================================
+        # Проверяем детектор стагнации (работает параллельно с другими триггерами)
+        if not self.intermediate_averaging_executed and not self.averaging_executed and not self.stagnation_averaging_executed:
+            # Проверяем условия детектора
+            if await self._check_stagnation_detector(pnl):
+                # Триггер сработал! Выполняем усреднение
+                await self._execute_stagnation_averaging(current_price)
+                # Детектор теперь отключится автоматически через флаг stagnation_averaging_executed
+
+        # ЛОГИКА ВЫХОДА ПОСЛЕ УСРЕДНЕНИЯ ПО ДЕТЕКТОРУ СТАГНАЦИИ
+        if self.stagnation_averaging_executed:
+            # После усреднения по стагнации: выходим только в плюс по трейлингу
+            if pnl > 0:
+                # Закрытие в плюс (трейлинг)
+                log_warning(self.user_id,
+                           f"💰 ЗАКРЫТИЕ В ПЛЮС ПОСЛЕ УСРЕДНЕНИЯ ПО СТАГНАЦИИ! PnL=${pnl:.2f}",
+                           "SignalScalper")
+                await self._close_position("profit_after_stagnation_averaging")
+                return
+        # ============================================================
+
         # ОСНОВНОЕ УСРЕДНЕНИЕ (ОДИНОЧНОЕ УТРОЕНИЕ)
         if self.averaging_enabled and not self.averaging_executed:
             # Рассчитываем % убытка от начальной маржи
@@ -297,23 +349,6 @@ class SignalScalperStrategy(BaseStrategy):
                                f"🎯 ТРИГГЕР УСРЕДНЕНИЯ! Убыток {loss_percent_from_margin:.2f}% >= {self.averaging_trigger_loss_percent}% от маржи",
                                "SignalScalper")
                     await self._execute_averaging(current_price)
-
-        # АВАРИЙНОЕ БЫСТРОЕ ЗАКРЫТИЕ после усреднения при достижении фиксированного убытка -15 USDT
-        # (Основной SL уже выставлен на бирже, это дополнительная защита)
-        if self.averaging_executed:
-            # Учитываем накопленные комиссии в расчёте убытка
-            pnl_with_fees = pnl - self.total_fees_paid
-
-            # Фиксированный порог: -15.0 USDT с учётом комиссий
-            emergency_loss_threshold = Decimal('-15.0')
-
-            if pnl_with_fees <= emergency_loss_threshold:
-                log_error(self.user_id,
-                         f"🚨 АВАРИЙНОЕ ЗАКРЫТИЕ! Убыток {pnl_with_fees:.2f} USDT (с комиссиями) достиг порога {emergency_loss_threshold} USDT. "
-                         f"Молниеносно закрываю позицию!",
-                         "SignalScalper")
-                await self._close_position("emergency_loss_after_averaging")
-                return
 
         # Обновляем пиковую прибыль
         if pnl > self.peak_profit_usd:
@@ -1118,6 +1153,174 @@ class SignalScalperStrategy(BaseStrategy):
         except Exception as e:
             log_error(self.user_id, f"Ошибка при усреднении: {e}", "SignalScalper")
             self.is_waiting_for_trade = False
+
+    # ============================================================
+    # ДЕТЕКТОР ЗАСТРЯВШЕЙ ЦЕНЫ (STAGNATION DETECTOR)
+    # Легко удалить: удалите эти методы
+    # ============================================================
+
+    async def _check_stagnation_detector(self, current_pnl: Decimal) -> bool:
+        """
+        Проверяет условия детектора застрявшей цены.
+
+        Args:
+            current_pnl: Текущий PnL в USDT
+
+        Returns:
+            bool: True если сработал триггер усреднения
+        """
+        # Пропускаем если детектор отключен или уже выполнено усреднение
+        if not self.stagnation_detector_enabled or self.stagnation_averaging_executed:
+            return False
+
+        # Пропускаем если нет диапазонов для отслеживания
+        if not self.stagnation_ranges:
+            return False
+
+        # Проверяем только если в убытке
+        if current_pnl >= 0:
+            # Если цена вышла в плюс - сбрасываем мониторинг
+            if self.stagnation_monitor_active:
+                self._reset_stagnation_monitor()
+            return False
+
+        # Проверяем, находится ли PnL в одном из диапазонов
+        current_range_index = None
+        for idx, range_dict in enumerate(self.stagnation_ranges):
+            range_min = Decimal(str(range_dict.get('min', 0)))
+            range_max = Decimal(str(range_dict.get('max', 0)))
+
+            # Проверяем вхождение в диапазон
+            if range_min <= current_pnl <= range_max:
+                current_range_index = idx
+                break
+
+        # Если PnL НЕ в диапазоне
+        if current_range_index is None:
+            # Сбрасываем мониторинг если был активен
+            if self.stagnation_monitor_active:
+                log_debug(self.user_id,
+                         f"🔄 Детектор стагнации: PnL=${current_pnl:.2f} вышел из диапазона. Сброс мониторинга.",
+                         "SignalScalper")
+                self._reset_stagnation_monitor()
+            return False
+
+        # PnL В ДИАПАЗОНЕ
+        current_time = time.time()
+
+        # Если мониторинг НЕ активен - запускаем
+        if not self.stagnation_monitor_active:
+            self.stagnation_monitor_active = True
+            self.stagnation_monitor_start_time = current_time
+            self.stagnation_current_range_index = current_range_index
+
+            range_dict = self.stagnation_ranges[current_range_index]
+            log_info(self.user_id,
+                    f"🎯 Детектор стагнации АКТИВИРОВАН! PnL=${current_pnl:.2f} в диапазоне [{range_dict['min']:.1f}$ - {range_dict['max']:.1f}$]. "
+                    f"Мониторинг {self.stagnation_check_interval} сек...",
+                    "SignalScalper")
+            return False
+
+        # Мониторинг АКТИВЕН - проверяем условия
+        # Проверка 1: PnL все еще в ТОМ ЖЕ диапазоне?
+        if current_range_index != self.stagnation_current_range_index:
+            log_warning(self.user_id,
+                       f"⚠️ Детектор стагнации: PnL перешел в другой диапазон! Сброс мониторинга.",
+                       "SignalScalper")
+            self._reset_stagnation_monitor()
+            return False
+
+        # Проверка 2: Прошло ли достаточно времени?
+        elapsed_time = current_time - self.stagnation_monitor_start_time
+
+        if elapsed_time >= self.stagnation_check_interval:
+            # ТРИГГЕР СРАБОТАЛ!
+            range_dict = self.stagnation_ranges[current_range_index]
+            log_warning(self.user_id,
+                       f"🚨 ТРИГГЕР ДЕТЕКТОРА СТАГНАЦИИ! PnL=${current_pnl:.2f} застрял в диапазоне "
+                       f"[{range_dict['min']:.1f}$ - {range_dict['max']:.1f}$] на {elapsed_time:.0f} сек! "
+                       f"Выполняю усреднение...",
+                       "SignalScalper")
+            return True
+        else:
+            # Еще не прошло достаточно времени
+            remaining_time = self.stagnation_check_interval - elapsed_time
+            log_debug(self.user_id,
+                     f"⏱️ Детектор стагнации: PnL=${current_pnl:.2f} в диапазоне. Осталось {remaining_time:.0f} сек...",
+                     "SignalScalper")
+            return False
+
+    def _reset_stagnation_monitor(self):
+        """Сбрасывает состояние мониторинга детектора стагнации."""
+        self.stagnation_monitor_active = False
+        self.stagnation_monitor_start_time = None
+        self.stagnation_current_range_index = None
+
+    async def _execute_stagnation_averaging(self, current_price: Decimal):
+        """
+        Выполняет усреднение при срабатывании детектора застрявшей цены.
+        Удваивает позицию с плечом x1.
+        """
+        # ПРОВЕРКА: отключено или уже выполнено
+        if not self.stagnation_detector_enabled or self.stagnation_averaging_executed:
+            return
+
+        try:
+            self.is_waiting_for_trade = True
+
+            # Используем ЗАМОРОЖЕННЫЕ параметры текущей сделки
+            order_amount = self._convert_to_decimal(self._get_frozen_config_value("order_amount", 50.0))
+
+            # Используем настройки детектора стагнации
+            leverage = Decimal(str(self.stagnation_averaging_leverage))  # x1
+            multiplier = self.stagnation_averaging_multiplier  # x2
+
+            # Расчет суммы усреднения
+            stagnation_amount = order_amount * multiplier
+
+            log_warning(self.user_id,
+                       f"💎 УСРЕДНЕНИЕ ПО ДЕТЕКТОРУ СТАГНАЦИИ (x{multiplier}): "
+                       f"{order_amount:.2f}$ × {multiplier} = {stagnation_amount:.2f}$ USDT (плечо x{leverage})",
+                       "SignalScalper")
+
+            qty = await self.api.calculate_quantity_from_usdt(
+                self.symbol, stagnation_amount, leverage, price=current_price
+            )
+
+            if qty <= 0:
+                log_error(self.user_id,
+                         "Не удалось рассчитать количество для усреднения по детектору стагнации",
+                         "SignalScalper")
+                self.is_waiting_for_trade = False
+                return
+
+            # Размещаем усредняющий ордер
+            side = "Buy" if self.active_direction == "LONG" else "Sell"
+            order_id = await self._place_order(side=side, order_type="Market", qty=qty)
+
+            if order_id:
+                self.current_order_id = order_id
+                # Устанавливаем флаг выполнения
+                self.stagnation_averaging_executed = True
+                # Сбрасываем мониторинг
+                self._reset_stagnation_monitor()
+
+                log_info(self.user_id,
+                        f"✅ Усреднение по детектору стагнации выполнено",
+                        "SignalScalper")
+
+                # Ждем исполнения ордера
+                await self._await_order_fill(order_id, side=side, qty=qty)
+
+            self.is_waiting_for_trade = False
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка при усреднении по детектору стагнации: {e}", "SignalScalper")
+            self.is_waiting_for_trade = False
+
+    # ============================================================
+    # КОНЕЦ ДЕТЕКТОРА ЗАСТРЯВШЕЙ ЦЕНЫ
+    # ============================================================
 
     def _calculate_dynamic_levels(self) -> Dict[int, Decimal]:
         """
