@@ -54,6 +54,7 @@ def get_strategy_settings_keyboard(configs: Dict[str, Dict[str, Any]]) -> Inline
     buttons = [
         [{"text": f"{get_status_icon('signal_scalper')} Сигнальный скальпер", "callback_data": "configure_strategy_signal_scalper"}],
         [{"text": f"{get_status_icon('impulse_trailing')} Асимметричный Импульс", "callback_data": "configure_strategy_impulse_trailing"}],
+        [{"text": f"{get_status_icon('flash_drop_catcher')} 🚀 Flash Drop Catcher", "callback_data": "configure_strategy_flash_drop_catcher"}],
         [{"text": "⚙️ Назад в Настройки", "callback_data": "settings"}]
     ]
     return KeyboardBuilder.build_keyboard(buttons)
@@ -80,6 +81,13 @@ def get_strategy_config_keyboard(strategy_type: str, config: Dict[str, Any]) -> 
             "min_profit_activation_usdt": f"🎯 Активация трейлинга: +{config.get('min_profit_activation_usdt', 5.0)} USDT",
             "trailing_distance_usdt": f"📏 Расстояние трейлинга: {config.get('trailing_distance_usdt', 11.77)} USDT",
             "pullback_close_usdt": f"📉 Откат для закрытия: {config.get('pullback_close_usdt', 5.87)} USDT",
+        }
+    elif strategy_type == StrategyType.FLASH_DROP_CATCHER.value:
+        editable_params = {
+            "leverage": f"🎚️ Плечо: x{config.get('leverage', 10)}",
+            "order_amount": f"💰 Сумма ордера: {config.get('order_amount', 50)} USDT",
+            "drop_percent": f"📉 Процент падения: {config.get('drop_percent', 2.0)}%",
+            "hard_stop_loss_usdt": f"🛑 Hard Stop Loss: {config.get('hard_stop_loss_usdt', -15.0)} USDT",
         }
 
     for key, text in editable_params.items():

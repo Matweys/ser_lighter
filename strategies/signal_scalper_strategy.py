@@ -93,7 +93,7 @@ class SignalScalperStrategy(BaseStrategy):
         self.stagnation_ranges = []  # Список диапазонов {"min": -15.0, "max": -20.0}
         self.stagnation_averaging_multiplier = Decimal('2.0')  # Множитель усреднения (x2)
         self.stagnation_averaging_leverage = 1  # Плечо для усреднения (x1)
-        self.stagnation_exit_min_loss_usdt = Decimal('-3.0')  # Минимальный убыток для выхода
+
 
         # Мониторинг состояния детектора
         self.stagnation_monitor_active = False  # Активен ли мониторинг
@@ -130,7 +130,7 @@ class SignalScalperStrategy(BaseStrategy):
             self.stagnation_ranges = self.config.get("stagnation_ranges_usdt", [])
             self.stagnation_averaging_multiplier = self._convert_to_decimal(self.config.get("stagnation_averaging_multiplier", "2.0"))
             self.stagnation_averaging_leverage = int(self.config.get("stagnation_averaging_leverage", 1))
-            self.stagnation_exit_min_loss_usdt = self._convert_to_decimal(self.config.get("stagnation_exit_min_loss_usdt", "-3.0"))
+
             # ============================================================
 
             # Загружаем параметры ПРОМЕЖУТОЧНОГО усреднения (тестовая функция)
@@ -182,20 +182,22 @@ class SignalScalperStrategy(BaseStrategy):
 
         # --- Конечный автомат логики ---
         if self.position_active:
-            # Правило 4: Реверс позиции при смене сигнала (только при PnL >= 0)
+            # Правило 4: Реверс позиции при смене сигнала (ВРЕМЕННО БЕЗ ПРОВЕРКИ PnL)
             if (signal == "LONG" and self.active_direction == "SHORT") or \
                     (signal == "SHORT" and self.active_direction == "LONG"):
                 current_pnl = await self._calculate_current_pnl(price)
 
-                if current_pnl >= 0:
-                    log_warning(self.user_id,
-                                f"СМЕНА СИГНАЛА! Реверс позиции по {self.symbol} с {self.active_direction} на {signal} при PnL={current_pnl:.2f}$.",
-                                "SignalScalper")
-                    await self._reverse_position(new_direction=signal)
-                else:
-                    log_info(self.user_id,
-                            f"Сигнал на реверс с {self.active_direction} на {signal}, но позиция в убытке {current_pnl:.2f} USDT. Ожидаем улучшения.",
+                # ВРЕМЕННО ОТКЛЮЧЕНО: Проверка PnL для реверса (чтобы вернуть - раскомментируй блок ниже)
+                # if current_pnl >= 0:
+                log_warning(self.user_id,
+                            f"СМЕНА СИГНАЛА! Реверс позиции по {self.symbol} с {self.active_direction} на {signal} при PnL={current_pnl:.2f}$.",
                             "SignalScalper")
+                # ЕСЛИ ВОЗВРАЩАЕШЬ РЕВЕРС УДАЛИ ЭТУ СТРОКУ ИЛИ ЗАКОММЕНТИРУЙ
+                await self._reverse_position(new_direction=signal)
+                # else:
+                #     log_info(self.user_id,
+                #             f"Сигнал на реверс с {self.active_direction} на {signal}, но позиция в убытке {current_pnl:.2f} USDT. Ожидаем улучшения.",
+                #             "SignalScalper")
 
             # Правило 5: Закрытие при двух "HOLD" подряд (только при положительном PnL)
             elif signal == "HOLD":

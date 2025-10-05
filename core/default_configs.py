@@ -34,6 +34,8 @@ class DefaultConfigs:
                                         all_configs["strategy_configs"]["impulse_trailing"])
         await redis_manager.save_config(user_id, ConfigType.STRATEGY_SIGNAL_SCALPER,
                                         all_configs["strategy_configs"]["signal_scalper"])
+        await redis_manager.save_config(user_id, ConfigType.STRATEGY_FLASH_DROP_CATCHER,
+                                        all_configs["strategy_configs"]["flash_drop_catcher"])
 
 
     @staticmethod
@@ -132,12 +134,31 @@ class DefaultConfigs:
 
 
     @staticmethod
+    def get_flash_drop_catcher_config() -> Dict[str, Any]:
+        """Конфигурация для Flash Drop Catcher Strategy."""
+        return {
+            # --- Основные параметры ---
+            "is_enabled": False,
+            "order_amount": 200.0,  # Сумма ордера в USDT
+            "leverage": 3,  # Плечо
+
+            # --- Параметры обнаружения падений ---
+            "drop_percent": 2.0,  # Процент падения для сигнала (2% от среднего)
+            "candle_history_size": 10,  # Количество свечей для расчета среднего
+
+            # --- Параметры выхода ---
+            "hard_stop_loss_usdt": -15.0,  # Жесткий стоп-лосс при -3 USDT
+            # Trailing stop использует те же уровни, что и signal_scalper (динамические)
+        }
+
+    @staticmethod
     def get_all_default_configs() -> Dict[str, Dict[str, Any]]:
         """Получение всех конфигураций по умолчанию."""
         return {
             "global_config": DefaultConfigs.get_global_config(),
             "strategy_configs": {
                 "impulse_trailing": DefaultConfigs.get_impulse_trailing_config(),
-                "signal_scalper": DefaultConfigs.get_signal_scalper_config()
+                "signal_scalper": DefaultConfigs.get_signal_scalper_config(),
+                "flash_drop_catcher": DefaultConfigs.get_flash_drop_catcher_config()
             }
         }
