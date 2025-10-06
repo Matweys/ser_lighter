@@ -274,6 +274,20 @@ class UserSession:
                     analysis_data={'trigger': 'persistent_start'}
                 )
 
+            # === ЗАПУСК FLASH DROP CATCHER (независимая стратегия) ===
+            flash_drop_config = await redis_manager.get_config(self.user_id, ConfigType.STRATEGY_FLASH_DROP_CATCHER)
+            if flash_drop_config and flash_drop_config.get("is_enabled", False):
+                log_info(self.user_id, "🚀 Запуск Flash Drop Catcher (сканирование всех символов)...",
+                         module_name=__name__)
+                await self.start_strategy(
+                    strategy_type=StrategyType.FLASH_DROP_CATCHER.value,
+                    symbol="ALL",
+                    analysis_data={'trigger': 'persistent_start'}
+                )
+            else:
+                log_info(self.user_id, "Стратегия Flash Drop Catcher отключена в настройках.",
+                         module_name=__name__)
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка при запуске постоянных стратегий: {e}", module_name=__name__)
 

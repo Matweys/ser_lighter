@@ -452,9 +452,18 @@ async def callback_set_strategy_parameter(callback: CallbackQuery, state: FSMCon
     """Обрабатывает нажатие на кнопку параметра и запрашивает новое значение."""
     user_id = callback.from_user.id
     try:
+        # Формат: set_param_{strategy_type}_{param_key}
+        # Нужно правильно разобрать для flash_drop_catcher (3 части) и signal_scalper (2 части)
         parts = callback.data.split("_")
-        strategy_type = f"{parts[2]}_{parts[3]}"
-        param_key = "_".join(parts[4:])
+
+        # Определяем, где заканчивается имя стратегии
+        # Известные стратегии: signal_scalper, impulse_trailing, flash_drop_catcher
+        if len(parts) >= 5 and f"{parts[2]}_{parts[3]}_{parts[4]}" in ["flash_drop_catcher"]:
+            strategy_type = f"{parts[2]}_{parts[3]}_{parts[4]}"
+            param_key = "_".join(parts[5:])
+        else:
+            strategy_type = f"{parts[2]}_{parts[3]}"
+            param_key = "_".join(parts[4:])
 
         # Используем НОВОЕ, единое состояние
         await state.set_state(UserStates.AWAITING_STRATEGY_PARAM_VALUE)

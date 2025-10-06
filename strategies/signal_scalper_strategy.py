@@ -47,7 +47,7 @@ class SignalScalperStrategy(BaseStrategy):
         # Система подтверждения сигналов и кулдауна
         self.last_signal: Optional[str] = None  # Последний полученный сигнал
         self.signal_confirmation_count = 0  # Счетчик одинаковых сигналов подряд
-        self.required_confirmations = 1  # Требуемое количество подтверждений
+        self.required_confirmations = 2  # Требуемое количество подтверждений
         self.last_trade_close_time: Optional[float] = None  # Время закрытия последней сделки
         self.cooldown_seconds = 60  # Кулдаун в секундах (1 минута)
         self.last_trade_was_loss = False  # Была ли последняя сделка убыточной
@@ -89,7 +89,7 @@ class SignalScalperStrategy(BaseStrategy):
         # Легко удалить: удалите этот блок и связанные методы
         # ============================================================
         self.stagnation_detector_enabled = False  # Включен ли детектор
-        self.stagnation_check_interval = 60  # Время наблюдения в секундах (1 минута)
+        self.stagnation_check_interval = 30  # Время наблюдения в секундах (1 минута)
         self.stagnation_ranges = []  # Список диапазонов {"min": -15.0, "max": -20.0}
         self.stagnation_averaging_multiplier = Decimal('2.0')  # Множитель усреднения (x2)
         self.stagnation_averaging_leverage = 1  # Плечо для усреднения (x1)
@@ -188,16 +188,16 @@ class SignalScalperStrategy(BaseStrategy):
                 current_pnl = await self._calculate_current_pnl(price)
 
                 # ВРЕМЕННО ОТКЛЮЧЕНО: Проверка PnL для реверса (чтобы вернуть - раскомментируй блок ниже)
-                # if current_pnl >= 0:
-                log_warning(self.user_id,
+                if current_pnl >= 0:
+                    log_warning(self.user_id,
                             f"СМЕНА СИГНАЛА! Реверс позиции по {self.symbol} с {self.active_direction} на {signal} при PnL={current_pnl:.2f}$.",
                             "SignalScalper")
                 # ЕСЛИ ВОЗВРАЩАЕШЬ РЕВЕРС УДАЛИ ЭТУ СТРОКУ ИЛИ ЗАКОММЕНТИРУЙ
-                await self._reverse_position(new_direction=signal)
-                # else:
-                #     log_info(self.user_id,
-                #             f"Сигнал на реверс с {self.active_direction} на {signal}, но позиция в убытке {current_pnl:.2f} USDT. Ожидаем улучшения.",
-                #             "SignalScalper")
+                #await self._reverse_position(new_direction=signal)
+                else:
+                    log_info(self.user_id,
+                            f"Сигнал на реверс с {self.active_direction} на {signal}, но позиция в убытке {current_pnl:.2f} USDT. Ожидаем улучшения.",
+                            "SignalScalper")
 
             # Правило 5: Закрытие при двух "HOLD" подряд (только при положительном PnL)
             elif signal == "HOLD":
@@ -713,7 +713,7 @@ class SignalScalperStrategy(BaseStrategy):
                 log_info(self.user_id, f"[БД] Сделка {self.active_trade_db_id} обновлена в БД после усреднения", "SignalScalper")
 
             # ДИНАМИЧЕСКАЯ КОРРЕКТИРОВКА СТОП-ЛОССА после усреднения - ОТКЛЮЧЕНО для новой системы
-            # await self._update_stop_loss_after_averaging()
+            await self._update_stop_loss_after_averaging()
 
             # Отправляем МАКСИМАЛЬНО ИНФОРМАТИВНОЕ уведомление об усреднении
             await self._send_averaging_notification(
