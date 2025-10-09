@@ -267,14 +267,17 @@ class SignalScalperStrategy(BaseStrategy):
                             f"✅ Spike Detector ({candles_count} свечей, {len(recent_spikes)}/{total_spikes} всплесков за 5мин): {spike_reason}",
                             "SignalScalper")
 
-                # Правило 1.1: Пропуск сигнала для "успокоения" рынка
-                if signal == self.last_closed_direction:
-                    log_info(self.user_id,
-                             f"Пропуск сигнала {signal} для {self.symbol} (совпадает с последней закрытой сделкой).",
-                             "SignalScalper")
-                    self.last_closed_direction = None  # Сбрасываем, чтобы следующий сигнал вошел
-                else:
-                    await self._enter_position(direction=signal, signal_price=price)
+                # Правило 1.1: Пропуск сигнала для "успокоения" рынка (ВРЕМЕННО ОТКЛЮЧЕНО)
+                # if signal == self.last_closed_direction:
+                #     log_info(self.user_id,
+                #              f"Пропуск сигнала {signal} для {self.symbol} (совпадает с последней закрытой сделкой).",
+                #              "SignalScalper")
+                #     self.last_closed_direction = None  # Сбрасываем, чтобы следующий сигнал вошел
+                # else:
+                #     await self._enter_position(direction=signal, signal_price=price)
+
+                # ВРЕМЕННО: входим сразу без проверки направления
+                await self._enter_position(direction=signal, signal_price=price)
             else:
                 # При сигнале HOLD сбрасываем счетчик подтверждений
                 self.signal_confirmation_count = 0
