@@ -97,29 +97,20 @@ class DefaultConfigs:
             # Легко отключить: установите enable_stagnation_detector = False
             # ============================================================
             "enable_stagnation_detector": True,                      # Включить детектор застрявшей цены
-            "stagnation_check_interval_seconds": 30,                 # Время наблюдения (60 сек = 1 минута)
-            "stagnation_ranges_usdt": [                              # Диапазоны убытков для отслеживания (в USDT)
-                {"min": -15.0, "max": -20.0},                        # Диапазон 1: от -15$ до -20$
-                {"min": -20.0, "max": -25.0},                        # Диапазон 2: от -20$ до -25$
-                {"min": -25.0, "max": -30.0},                         # Диапазон 3: от -25$ до -30$
-                {"min": -30.0, "max": -35.0}
+            "stagnation_check_interval_seconds": 120,                 # Время наблюдения
+            "stagnation_ranges_percent": [                           # Диапазоны убытков (в % от маржи = order_amount × leverage)
+                {"min": 6.0, "max": 9.0}                             # От -5% до -7% убытка (для 200$×3x = -30 до -42 USDT)
             ],
-            "stagnation_averaging_multiplier": 2.0,                  # Множитель усреднения (x2 = удвоение позиции)
+            "stagnation_averaging_multiplier": 1.0,                  # Множитель усреднения (x1 = равная сумма основному ордеру)
             "stagnation_averaging_leverage": 1,                      # Плечо для усреднения (x1 = без дополнительного плеча)
-            "stagnation_exit_min_loss_usdt": -3.0,                   # Минимальный убыток для выхода после усреднения (-3$)
             # ============================================================
-
-            # --- ПРОМЕЖУТОЧНОЕ УСРЕДНЕНИЕ (ТЕСТОВАЯ ФУНКЦИЯ) ---
-            "enable_intermediate_averaging": False,       # Включить промежуточное усреднение (легко отключить!)
-            "intermediate_trigger_percent": 15.0,        # Триггер промежуточного усреднения: -15% от маржи
-            "intermediate_multiplier": 1.0,              # Докупаем на ТУ ЖЕ маржу (100$ → +100$)
 
             # --- ОСНОВНОЕ УСРЕДНЕНИЕ (ОДИНОЧНОЕ УТРОЕНИЕ) ---
             "enable_averaging": True,                    # Включить основное усреднение позиции
-            "averaging_trigger_loss_percent": 30.0,      # Триггер основного усреднения: убыток -25% от маржи
-            "averaging_multiplier": 2.0,                 # Утроение суммы при усреднении (БЕЗ ПЛЕЧА!)
+            "averaging_trigger_loss_percent": 25.0,      # Триггер основного усреднения: убыток -25% от маржи
+            "averaging_multiplier": 1.0,                 # УДвоение суммы при усреднении (БЕЗ ПЛЕЧА!)
             "max_averaging_count": 1,                    # Только ОДНО основное усреднение
-            "averaging_stop_loss_percent": 35.0,         # Программный SL после усреднения: -30% от маржи
+            "averaging_stop_loss_percent": 40.0,         # Программный SL после усреднения: -30% от маржи
 
 
 

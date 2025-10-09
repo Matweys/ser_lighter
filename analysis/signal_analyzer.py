@@ -32,8 +32,8 @@ class SignalAnalyzer:
         self.EMA_SHORT = config.get("EMA_SHORT", 21)
         self.EMA_LONG = config.get("EMA_LONG", 50)
         self.RSI_PERIOD = config.get("RSI_PERIOD", 14)
-        self.RSI_NEUTRAL_MIN = config.get("RSI_NEUTRAL_MIN", 35)
-        self.RSI_NEUTRAL_MAX = config.get("RSI_NEUTRAL_MAX", 65)
+        self.RSI_NEUTRAL_MIN = config.get("RSI_NEUTRAL_MIN", 30)
+        self.RSI_NEUTRAL_MAX = config.get("RSI_NEUTRAL_MAX", 70)
         self.HISTORY_LIMIT = 100
 
     async def get_analysis(self, symbol: str) -> Optional[SignalAnalysisResult]:

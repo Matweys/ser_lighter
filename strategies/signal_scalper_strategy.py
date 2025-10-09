@@ -9,6 +9,7 @@ from core.enums import StrategyType, EventType
 from core.logger import log_info, log_error, log_warning, log_debug
 from core.events import EventBus, NewCandleEvent, PriceUpdateEvent, OrderFilledEvent
 from analysis.signal_analyzer import SignalAnalyzer, SignalAnalysisResult
+from analysis.spike_detector import SpikeDetector
 
 getcontext().prec = 28
 
@@ -25,6 +26,7 @@ class SignalScalperStrategy(BaseStrategy):
 
         # Компоненты
         self.signal_analyzer: Optional[SignalAnalyzer] = None
+        self.spike_detector: Optional[SpikeDetector] = None  # Детектор всплесков для оптимизации входа
 
         # Состояние стратегии
         self.position_active = False
@@ -47,7 +49,7 @@ class SignalScalperStrategy(BaseStrategy):
         # Система подтверждения сигналов и кулдауна
         self.last_signal: Optional[str] = None  # Последний полученный сигнал
         self.signal_confirmation_count = 0  # Счетчик одинаковых сигналов подряд
-        self.required_confirmations = 2  # Требуемое количество подтверждений
+        self.required_confirmations = 1  # Требуемое количество подтверждений
         self.last_trade_close_time: Optional[float] = None  # Время закрытия последней сделки
         self.cooldown_seconds = 60  # Кулдаун в секундах (1 минута)
         self.last_trade_was_loss = False  # Была ли последняя сделка убыточной
@@ -55,14 +57,9 @@ class SignalScalperStrategy(BaseStrategy):
         # СИСТЕМА КОНТРОЛЯ РЕВЕРСОВ
         self.last_reversal_time: Optional[float] = None  # Время последнего реверса
         self.reversal_cooldown_seconds = 60  # Кулдаун после реверса в секундах (1 минута)
-        self.reversal_required_confirmations = 2  # Требуемые подтверждения после реверса
+        self.reversal_required_confirmations = 1  # Требуемые подтверждения после реверса
         self.after_reversal_mode = False  # Флаг: находимся ли мы в режиме после реверса
 
-        # ПРОМЕЖУТОЧНОЕ УСРЕДНЕНИЕ (ТЕСТОВАЯ ФУНКЦИЯ - ЛЕГКО ОТКЛЮЧАЕТСЯ!)
-        self.intermediate_averaging_enabled = False  # Включено ли промежуточное усреднение
-        self.intermediate_averaging_executed = False  # Флаг: было ли выполнено промежуточное усреднение
-        self.intermediate_trigger_percent = Decimal('15.0')  # Триггер промежуточного усреднения: -15% от маржи
-        self.intermediate_multiplier = Decimal('1.0')  # Множитель для промежуточного усреднения (1x = та же маржа)
 
         # ОСНОВНАЯ СИСТЕМА УСРЕДНЕНИЯ (ОДИНОЧНОЕ УТРОЕНИЕ)
         self.averaging_enabled = False  # Включена ли система усреднения
@@ -76,13 +73,11 @@ class SignalScalperStrategy(BaseStrategy):
         self.average_entry_price = Decimal('0')  # Средняя цена входа после усреднения
         self.initial_margin_usd = Decimal('0')  # Начальная маржа для расчета % убытка
         self.total_fees_paid = Decimal('0')  # Накопленные комиссии
+        self.intermediate_averaging_executed = False  # Флаг: было ли промежуточное усреднение (legacy)
 
         # ИЗОЛЯЦИЯ НАСТРОЕК ДЛЯ АКТИВНОЙ СДЕЛКИ
         self.active_trade_config = None  # Конфигурация, зафиксированная при входе в сделку
         self.config_frozen = False  # Флаг: заморожены ли настройки для активной сделки
-
-        # РЕЖИМ ВОССТАНОВЛЕНИЯ - УДАЛЕНО!
-        # Теперь используется is_bot_restart_recovery из базового класса BaseStrategy
 
         # ============================================================
         # ДЕТЕКТОР ЗАСТРЯВШЕЙ ЦЕНЫ (STAGNATION DETECTOR)
@@ -117,26 +112,31 @@ class SignalScalperStrategy(BaseStrategy):
             return self.get_config_value(key, default)
 
     async def _load_strategy_config(self):
-        """Переопределяем для инициализации SignalAnalyzer."""
+        """Переопределяем для инициализации SignalAnalyzer и SpikeDetector."""
         await super()._load_strategy_config()
         if self.config:
             self.signal_analyzer = SignalAnalyzer(self.user_id, self.api, self.config)
+
+            # Инициализируем детектор всплесков для оптимального входа
+            self.spike_detector = SpikeDetector(
+                user_id=self.user_id,
+                symbol=self.symbol,
+                lookback=50,
+                threshold=0.001  # 0.1% порог для всплеска
+            )
+            log_info(self.user_id, f"📡 SpikeDetector инициализирован для {self.symbol}", "SignalScalper")
 
             # ============================================================
             # ЗАГРУЗКА ПАРАМЕТРОВ ДЕТЕКТОРА ЗАСТРЯВШЕЙ ЦЕНЫ
             # ============================================================
             self.stagnation_detector_enabled = self.config.get("enable_stagnation_detector", True)
-            self.stagnation_check_interval = int(self.config.get("stagnation_check_interval_seconds", 60))
-            self.stagnation_ranges = self.config.get("stagnation_ranges_usdt", [])
-            self.stagnation_averaging_multiplier = self._convert_to_decimal(self.config.get("stagnation_averaging_multiplier", "2.0"))
+            self.stagnation_check_interval = int(self.config.get("stagnation_check_interval_seconds", 30))
+            # НОВАЯ СИСТЕМА: диапазоны в процентах от маржи
+            self.stagnation_ranges = self.config.get("stagnation_ranges_percent", [])
+            self.stagnation_averaging_multiplier = self._convert_to_decimal(self.config.get("stagnation_averaging_multiplier", "1.0"))
             self.stagnation_averaging_leverage = int(self.config.get("stagnation_averaging_leverage", 1))
 
             # ============================================================
-
-            # Загружаем параметры ПРОМЕЖУТОЧНОГО усреднения (тестовая функция)
-            self.intermediate_averaging_enabled = self.config.get("enable_intermediate_averaging", True)
-            self.intermediate_trigger_percent = self._convert_to_decimal(self.config.get("intermediate_trigger_percent", "15.0"))
-            self.intermediate_multiplier = self._convert_to_decimal(self.config.get("intermediate_multiplier", "1.0"))
 
             # Загружаем параметры ОСНОВНОГО усреднения (одиночное утроение)
             self.averaging_enabled = self.config.get("enable_averaging", True)
@@ -160,10 +160,19 @@ class SignalScalperStrategy(BaseStrategy):
 
     async def _handle_new_candle(self, event: NewCandleEvent):
         """Главный обработчик логики на каждой новой свече."""
-        if event.symbol != self.symbol or self.is_waiting_for_trade:
+        if event.symbol != self.symbol:
             return
 
-        # ВАЖНО: Обрабатываем только 5-минутные свечи согласно конфигурации
+        # SPIKE DETECTOR: Обрабатываем 1-минутные свечи для детектора всплесков
+        if event.interval == '1m' and self.spike_detector:
+            # Добавляем закрытую 1-минутную свечу в детектор
+            self.spike_detector.add_candle(event.close, timestamp=event.timestamp)
+            return  # Не продолжаем обработку для 1-минутных свечей
+
+        # ОСНОВНАЯ ЛОГИКА: Обрабатываем только 5-минутные свечи для торговли
+        if self.is_waiting_for_trade:
+            return
+
         config_timeframe = self.get_config_value('analysis_timeframe', '5m')
         if event.interval != config_timeframe:
             return
@@ -236,6 +245,15 @@ class SignalScalperStrategy(BaseStrategy):
                 if not self._is_signal_confirmed(signal):
                     return
 
+                # НОВАЯ ПРОВЕРКА: Spike Detector для оптимального входа
+                if self.spike_detector:
+                    should_enter, spike_reason = self.spike_detector.should_enter_on_pullback(signal)
+                    if not should_enter:
+                        log_info(self.user_id, f"⏸️ Spike Detector: {spike_reason}", "SignalScalper")
+                        return
+
+                    log_info(self.user_id, f"✅ Spike Detector: {spike_reason}", "SignalScalper")
+
                 # Правило 1.1: Пропуск сигнала для "успокоения" рынка
                 if signal == self.last_closed_direction:
                     log_info(self.user_id,
@@ -283,33 +301,6 @@ class SignalScalperStrategy(BaseStrategy):
         else:  # SHORT
             pnl = (entry_price_to_use - current_price) * position_size_to_use
 
-        # ПРОМЕЖУТОЧНОЕ УСРЕДНЕНИЕ (ТЕСТОВАЯ ФУНКЦИЯ)
-        if self.intermediate_averaging_enabled and not self.intermediate_averaging_executed:
-            # Рассчитываем % убытка от начальной маржи
-            if self.initial_margin_usd > 0:
-                loss_percent_from_margin = (abs(pnl) / self.initial_margin_usd) * Decimal('100') if pnl < 0 else Decimal('0')
-
-                log_debug(self.user_id,
-                         f"📊 Мониторинг ПРОМЕЖУТОЧНОГО усреднения: PnL=${pnl:.2f}, маржа=${self.initial_margin_usd:.2f}, "
-                         f"убыток={loss_percent_from_margin:.2f}%, триггер={self.intermediate_trigger_percent}%",
-                         "SignalScalper")
-
-                # Проверяем триггер промежуточного усреднения: убыток >= 15% от маржи
-                if loss_percent_from_margin >= self.intermediate_trigger_percent:
-                    log_warning(self.user_id,
-                               f"🎯 ТРИГГЕР ПРОМЕЖУТОЧНОГО УСРЕДНЕНИЯ! Убыток {loss_percent_from_margin:.2f}% >= {self.intermediate_trigger_percent}% от маржи",
-                               "SignalScalper")
-                    await self._execute_intermediate_averaging(current_price)
-
-        # ЛОГИКА ЗАКРЫТИЯ В ПЛЮС ПОСЛЕ ПРОМЕЖУТОЧНОГО УСРЕДНЕНИЯ
-        if self.intermediate_averaging_executed and not self.averaging_executed:
-            # После промежуточного усреднения закрываемся при ЛЮБОЙ прибыли
-            if pnl > 0:
-                log_warning(self.user_id,
-                           f"💰 ЗАКРЫТИЕ В ПЛЮС ПОСЛЕ ПРОМЕЖУТОЧНОГО УСРЕДНЕНИЯ! PnL=${pnl:.2f}",
-                           "SignalScalper")
-                await self._close_position("profit_after_intermediate_averaging")
-                return
 
         # ============================================================
         # ДЕТЕКТОР ЗАСТРЯВШЕЙ ЦЕНЫ (STAGNATION DETECTOR)
@@ -966,6 +957,52 @@ class SignalScalperStrategy(BaseStrategy):
                 self.stop_loss_order_id = None
                 self.stop_loss_price = None
 
+    async def _update_stop_loss_after_averaging(self):
+        """
+        Обновляет стоп-лосс после усреднения позиции.
+        Смещает SL на основе новой средней цены входа и общего размера позиции.
+        """
+        if not self.average_entry_price or not self.total_position_size:
+            log_debug(self.user_id, "Пропуск обновления SL: нет данных об усреднении", "SignalScalper")
+            return
+
+        try:
+            # Отменяем старый SL
+            if self.stop_loss_order_id:
+                await self._cancel_stop_loss_order()
+
+            # ПРАВИЛЬНЫЙ расчет: используем тот же метод что и при открытии позиции
+            # Рассчитываем максимальный убыток в USDT на основе процента от маржи
+            max_loss_usd = self.initial_margin_usd * (self.averaging_stop_loss_percent / Decimal('100'))
+
+            # Используем точный метод расчета SL
+            is_long = (self.active_direction == "LONG")
+            new_sl_price = BaseStrategy._calculate_precise_stop_loss(
+                self.average_entry_price,
+                self.total_position_size,
+                max_loss_usd,
+                is_long
+            )
+
+            # Устанавливаем новый SL через Bybit API
+            success = await self.api.set_trading_stop(
+                symbol=self.symbol,
+                stop_loss=str(new_sl_price),
+                position_idx=1 if self.active_direction == "LONG" else 2
+            )
+
+            if success:
+                self.stop_loss_price = new_sl_price
+                log_info(self.user_id,
+                        f"✅ SL смещен после усреднения: новая средняя цена=${self.average_entry_price:.4f}, "
+                        f"новый SL=${new_sl_price:.4f}, размер позиции={self.total_position_size}",
+                        "SignalScalper")
+            else:
+                log_warning(self.user_id, "Не удалось установить новый SL после усреднения", "SignalScalper")
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка обновления SL после усреднения: {e}", "SignalScalper")
+
     def _is_signal_confirmed(self, signal: str) -> bool:
         """
         Проверяет, подтвержден ли сигнал достаточным количеством повторений.
@@ -1050,61 +1087,10 @@ class SignalScalperStrategy(BaseStrategy):
 
         return cooldown_active
 
-    async def _execute_intermediate_averaging(self, current_price: Decimal):
-        """
-        Выполняет ПРОМЕЖУТОЧНОЕ УСРЕДНЕНИЕ позиции при достижении -15% убытка.
-        Добавляет ту же маржу (множитель 1x), БЕЗ плеча.
-        """
-        # ПРОВЕРКА: отключено или уже выполнено
-        if not self.intermediate_averaging_enabled or self.intermediate_averaging_executed:
-            return
-
-        try:
-            self.is_waiting_for_trade = True
-
-            # Используем ЗАМОРОЖЕННЫЕ параметры текущей сделки
-            order_amount = self._convert_to_decimal(self._get_frozen_config_value("order_amount", 50.0))
-
-            # ДЛЯ ПРОМЕЖУТОЧНОГО УСРЕДНЕНИЯ: ВСЕГДА используем плечо 1x (БЕЗ плеча)
-            leverage = Decimal('1.0')
-
-            # ПРОМЕЖУТОЧНОЕ УСРЕДНЕНИЕ: та же маржа (множитель 1.0)
-            intermediate_amount = order_amount * self.intermediate_multiplier
-
-            log_warning(self.user_id,
-                       f"💎 ПРОМЕЖУТОЧНОЕ УСРЕДНЕНИЕ (x{self.intermediate_multiplier}): {order_amount:.2f}$ × {self.intermediate_multiplier} = {intermediate_amount:.2f}$ USDT (БЕЗ ПЛЕЧА)",
-                       "SignalScalper")
-
-            qty = await self.api.calculate_quantity_from_usdt(self.symbol, intermediate_amount, leverage, price=current_price)
-
-            if qty <= 0:
-                log_error(self.user_id, "Не удалось рассчитать количество для промежуточного усреднения", "SignalScalper")
-                self.is_waiting_for_trade = False
-                return
-
-            # Размещаем промежуточный усредняющий ордер
-            side = "Buy" if self.active_direction == "LONG" else "Sell"
-            order_id = await self._place_order(side=side, order_type="Market", qty=qty)
-
-            if order_id:
-                self.current_order_id = order_id
-                # Устанавливаем флаг промежуточного усреднения
-                self.intermediate_averaging_executed = True
-                log_info(self.user_id, f"✅ Промежуточное усреднение выполнено", "SignalScalper")
-
-                # Ждем исполнения ордера
-                # Вся логика обновления статистики будет в _handle_order_filled()
-                await self._await_order_fill(order_id, side=side, qty=qty)
-
-            self.is_waiting_for_trade = False
-
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка при промежуточном усреднении: {e}", "SignalScalper")
-            self.is_waiting_for_trade = False
 
     async def _execute_averaging(self, current_price: Decimal):
         """
-        Выполняет ОСНОВНОЕ УТРОЕНИЕ позиции при достижении триггера убытка.
+        Выполняет ОСНОВНОЕ Удвоение позиции при достижении триггера убытка.
         После выполнения устанавливается флаг averaging_executed = True.
         """
         # ПРОВЕРКА: отключено или достигнут лимит усреднений
@@ -1164,6 +1150,7 @@ class SignalScalperStrategy(BaseStrategy):
     async def _check_stagnation_detector(self, current_pnl: Decimal) -> bool:
         """
         Проверяет условия детектора застрявшей цены.
+        НОВАЯ СИСТЕМА: диапазоны в процентах от маржи (order_amount × leverage)
 
         Args:
             current_pnl: Текущий PnL в USDT
@@ -1186,14 +1173,22 @@ class SignalScalperStrategy(BaseStrategy):
                 self._reset_stagnation_monitor()
             return False
 
-        # Проверяем, находится ли PnL в одном из диапазонов
+        # Рассчитываем маржу (номинал позиции с учетом плеча)
+        order_amount = self._convert_to_decimal(self._get_frozen_config_value("order_amount", 100.0))
+        leverage = self._convert_to_decimal(self._get_frozen_config_value("leverage", 1.0))
+        margin = order_amount * leverage
+
+        # Рассчитываем убыток в процентах от маржи
+        loss_percent = (abs(current_pnl) / margin) * Decimal('100') if margin > 0 else Decimal('0')
+
+        # Проверяем, находится ли убыток в одном из диапазонов (в процентах)
         current_range_index = None
         for idx, range_dict in enumerate(self.stagnation_ranges):
-            range_min = Decimal(str(range_dict.get('min', 0)))
-            range_max = Decimal(str(range_dict.get('max', 0)))
+            range_min_percent = Decimal(str(range_dict.get('min', 0)))
+            range_max_percent = Decimal(str(range_dict.get('max', 0)))
 
-            # Проверяем вхождение в диапазон
-            if range_min <= current_pnl <= range_max:
+            # Проверяем вхождение в диапазон процентов
+            if range_min_percent <= loss_percent <= range_max_percent:
                 current_range_index = idx
                 break
 
@@ -1217,8 +1212,12 @@ class SignalScalperStrategy(BaseStrategy):
             self.stagnation_current_range_index = current_range_index
 
             range_dict = self.stagnation_ranges[current_range_index]
+            # Рассчитываем USDT эквиваленты для логов
+            loss_usdt_min = (margin * range_dict['min']) / Decimal('100')
+            loss_usdt_max = (margin * range_dict['max']) / Decimal('100')
             log_info(self.user_id,
-                    f"🎯 Детектор стагнации АКТИВИРОВАН! PnL=${current_pnl:.2f} в диапазоне [{range_dict['min']:.1f}$ - {range_dict['max']:.1f}$]. "
+                    f"🎯 Детектор стагнации АКТИВИРОВАН! PnL=${current_pnl:.2f} ({loss_percent:.1f}%) "
+                    f"в диапазоне [{range_dict['min']:.1f}%-{range_dict['max']:.1f}% (${loss_usdt_min:.1f}-${loss_usdt_max:.1f})]. "
                     f"Мониторинг {self.stagnation_check_interval} сек...",
                     "SignalScalper")
             return False
@@ -1238,9 +1237,12 @@ class SignalScalperStrategy(BaseStrategy):
         if elapsed_time >= self.stagnation_check_interval:
             # ТРИГГЕР СРАБОТАЛ!
             range_dict = self.stagnation_ranges[current_range_index]
+            # Рассчитываем USDT эквиваленты для логов
+            loss_usdt_min = (margin * range_dict['min']) / Decimal('100')
+            loss_usdt_max = (margin * range_dict['max']) / Decimal('100')
             log_warning(self.user_id,
-                       f"🚨 ТРИГГЕР ДЕТЕКТОРА СТАГНАЦИИ! PnL=${current_pnl:.2f} застрял в диапазоне "
-                       f"[{range_dict['min']:.1f}$ - {range_dict['max']:.1f}$] на {elapsed_time:.0f} сек! "
+                       f"🚨 ТРИГГЕР ДЕТЕКТОРА СТАГНАЦИИ! PnL=${current_pnl:.2f} ({loss_percent:.1f}%) застрял в диапазоне "
+                       f"[{range_dict['min']:.1f}%-{range_dict['max']:.1f}% (${loss_usdt_min:.1f}-${loss_usdt_max:.1f})] на {elapsed_time:.0f} сек! "
                        f"Выполняю усреднение...",
                        "SignalScalper")
             return True
