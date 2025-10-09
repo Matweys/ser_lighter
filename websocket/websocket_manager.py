@@ -181,13 +181,20 @@ class GlobalWebSocketManager:
             await self.public_connection.send(json.dumps(trade_msg))
 
             # Подписка на свечи 5m (для стратегий на 5-минутном таймфрейме)
-            candle_msg = {
+            candle_5m_msg = {
                 "op": "subscribe",
                 "args": [f"kline.5.{symbol}"]  # 5-минутные свечи
             }
-            await self.public_connection.send(json.dumps(candle_msg))
+            await self.public_connection.send(json.dumps(candle_5m_msg))
 
-            log_info(0, f"⚡ МГНОВЕННАЯ подписка на {symbol} (publicTrade + kline.5) отправлена", module_name=__name__)
+            # Подписка на свечи 1m (для spike detector)
+            candle_1m_msg = {
+                "op": "subscribe",
+                "args": [f"kline.1.{symbol}"]  # 1-минутные свечи
+            }
+            await self.public_connection.send(json.dumps(candle_1m_msg))
+
+            log_info(0, f"⚡ МГНОВЕННАЯ подписка на {symbol} (publicTrade + kline.5 + kline.1) отправлена", module_name=__name__)
 
         except Exception as e:
             log_error(0, f"Ошибка подписки на {symbol}: {e}", module_name=__name__)
@@ -206,13 +213,20 @@ class GlobalWebSocketManager:
             await self.public_connection.send(json.dumps(trade_msg))
 
             # Отписка от свечей 5m
-            candle_msg = {
+            candle_5m_msg = {
                 "op": "unsubscribe",
                 "args": [f"kline.5.{symbol}"]  # 5-минутные свечи
             }
-            await self.public_connection.send(json.dumps(candle_msg))
+            await self.public_connection.send(json.dumps(candle_5m_msg))
 
-            log_info(0, f"Отписка от {symbol} отправлена", module_name=__name__)
+            # Отписка от свечей 1m
+            candle_1m_msg = {
+                "op": "unsubscribe",
+                "args": [f"kline.1.{symbol}"]  # 1-минутные свечи
+            }
+            await self.public_connection.send(json.dumps(candle_1m_msg))
+
+            log_info(0, f"Отписка от {symbol} (kline.5 + kline.1) отправлена", module_name=__name__)
 
         except Exception as e:
             log_error(0, f"Ошибка отписки от {symbol}: {e}", module_name=__name__)
