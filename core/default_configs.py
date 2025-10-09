@@ -107,10 +107,10 @@ class DefaultConfigs:
 
             # --- ОСНОВНОЕ УСРЕДНЕНИЕ (ОДИНОЧНОЕ УТРОЕНИЕ) ---
             "enable_averaging": True,                    # Включить основное усреднение позиции
-            "averaging_trigger_loss_percent": 25.0,      # Триггер основного усреднения: убыток -25% от маржи
+            "averaging_trigger_loss_percent": 25.0,      # Триггер основного усреднения: убыток % от маржи
             "averaging_multiplier": 1.0,                 # УДвоение суммы при усреднении (БЕЗ ПЛЕЧА!)
             "max_averaging_count": 1,                    # Только ОДНО основное усреднение
-            "averaging_stop_loss_percent": 40.0,         # Программный SL после усреднения: -30% от маржи
+            "averaging_stop_loss_percent": 40.0,         # Программный SL после усреднения: % от маржи
 
 
 

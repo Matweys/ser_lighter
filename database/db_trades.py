@@ -1049,7 +1049,9 @@ class _DatabaseManager:
             winning_trades = stats['winning_trades']
             total_profit = Decimal(str(stats['total_profit'])) if stats['total_profit'] else Decimal('0')
             total_commission = Decimal(str(stats['total_commission'])) if stats['total_commission'] else Decimal('0')
-            net_profit = total_profit - total_commission
+            # ВАЖНО: total_profit УЖЕ содержит чистую прибыль (комиссии вычтены при закрытии сделки)
+            # Поэтому НЕ вычитаем комиссии повторно!
+            net_profit = total_profit
 
             win_rate = (Decimal(winning_trades) / Decimal(total_trades) * 100) if total_trades > 0 else Decimal('0')
 
@@ -1146,7 +1148,8 @@ class _DatabaseManager:
                 winning_trades = row['winning_trades']
                 total_pnl = Decimal(str(row['total_pnl'])) if row['total_pnl'] else Decimal('0')
                 total_commission = Decimal(str(row['total_commission'])) if row['total_commission'] else Decimal('0')
-                net_pnl = total_pnl - total_commission
+                # ВАЖНО: total_pnl УЖЕ содержит чистую прибыль (комиссии вычтены при закрытии сделки)
+                net_pnl = total_pnl
 
                 win_rate = (Decimal(winning_trades) / Decimal(total_trades) * 100) if total_trades > 0 else Decimal('0')
 

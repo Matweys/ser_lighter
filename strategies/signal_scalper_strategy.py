@@ -248,11 +248,21 @@ class SignalScalperStrategy(BaseStrategy):
                 # НОВАЯ ПРОВЕРКА: Spike Detector для оптимального входа
                 if self.spike_detector:
                     should_enter, spike_reason = self.spike_detector.should_enter_on_pullback(signal)
+
+                    # Получаем статистику для логирования
+                    recent_spikes = self.spike_detector.get_recent_spikes(seconds=300)
+                    total_spikes = len(self.spike_detector.spike_history)
+                    candles_count = len(self.spike_detector.price_history)
+
                     if not should_enter:
-                        log_info(self.user_id, f"⏸️ Spike Detector: {spike_reason}", "SignalScalper")
+                        log_info(self.user_id,
+                                f"⏸️ Spike Detector ({candles_count} свечей, {len(recent_spikes)}/{total_spikes} всплесков за 5мин): {spike_reason}",
+                                "SignalScalper")
                         return
 
-                    log_info(self.user_id, f"✅ Spike Detector: {spike_reason}", "SignalScalper")
+                    log_info(self.user_id,
+                            f"✅ Spike Detector ({candles_count} свечей, {len(recent_spikes)}/{total_spikes} всплесков за 5мин): {spike_reason}",
+                            "SignalScalper")
 
                 # Правило 1.1: Пропуск сигнала для "успокоения" рынка
                 if signal == self.last_closed_direction:

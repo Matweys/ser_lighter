@@ -203,6 +203,14 @@ class SpikeDetector:
         if main_signal == "HOLD":
             return False, "Main signal is HOLD"
 
+        # ПРОВЕРКА МИНИМАЛЬНОГО НАКОПЛЕНИЯ ДАННЫХ (защита от холодного старта)
+        recent_spikes = self.get_recent_spikes(seconds=300)
+        if len(recent_spikes) < 3:
+            log_info(self.user_id,
+                    f"⏸️ SpikeDetector ({self.symbol}): Недостаточно данных ({len(recent_spikes)}/3 всплесков), накапливаю историю...",
+                    "SpikeDetector")
+            return False, f"⏸️ Недостаточно данных для анализа ({len(recent_spikes)}/3 всплесков)"
+
         # Анализируем импульс за последние 5 минут
         momentum_data = self.analyze_momentum(seconds=300)
 
