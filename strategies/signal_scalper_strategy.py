@@ -361,22 +361,23 @@ class SignalScalperStrategy(BaseStrategy):
             self.peak_profit_usd = pnl
 
         # НОВАЯ СИСТЕМА: Поэтапный трейлинг с динамическими порогами и 20% откатом
-        current_trailing_level = self._get_trailing_level(pnl)
+        # КРИТИЧНО: Определяем уровень по ПИКУ, а не по текущему PnL
+        peak_trailing_level = self._get_trailing_level(self.peak_profit_usd)
 
-        if current_trailing_level > 0:  # Если достигли хотя бы начального уровня
+        if peak_trailing_level > 0:  # Если ПИКОВАЯ прибыль достигла хотя бы начального уровня
             # Фиксированный 20% откат от пика на всех уровнях
             trailing_distance = self.peak_profit_usd * Decimal('0.20')
 
             # Проверяем условие закрытия: откат от пика >= 20%
             if pnl < (self.peak_profit_usd - trailing_distance):
-                level_name = self._get_level_name(current_trailing_level)
+                level_name = self._get_level_name(peak_trailing_level)
                 log_info(self.user_id,
                          f"💎 ЗАКРЫТИЕ НА {level_name}! Пик: ${self.peak_profit_usd:.2f}, PnL: ${pnl:.2f}, откат: ${trailing_distance:.2f} (20%)",
                          "SignalScalper")
                 await self._close_position("level_trailing_profit")
             else:
                 # Логируем текущий статус трейлинга
-                level_name = self._get_level_name(current_trailing_level)
+                level_name = self._get_level_name(peak_trailing_level)
                 log_debug(self.user_id,
                          f"Трейлинг {level_name}: пик=${self.peak_profit_usd:.2f}, PnL=${pnl:.2f}, откат допустим=${trailing_distance:.2f}",
                          "SignalScalper")
