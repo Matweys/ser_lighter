@@ -166,7 +166,10 @@ class SignalScalperStrategy(BaseStrategy):
         # SPIKE DETECTOR: Обрабатываем 1-минутные свечи для детектора всплесков
         if event.interval == '1m' and self.spike_detector:
             # Добавляем закрытую 1-минутную свечу в детектор
-            self.spike_detector.add_candle(event.close, timestamp=event.timestamp)
+            close_price = event.candle_data.get("close")
+            timestamp = event.candle_data.get("timestamp")
+            if close_price:
+                self.spike_detector.add_candle(close_price, timestamp=timestamp)
             return  # Не продолжаем обработку для 1-минутных свечей
 
         # ОСНОВНАЯ ЛОГИКА: Обрабатываем только 5-минутные свечи для торговли
