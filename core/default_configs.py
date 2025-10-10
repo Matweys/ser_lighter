@@ -97,20 +97,20 @@ class DefaultConfigs:
             # Легко отключить: установите enable_stagnation_detector = False
             # ============================================================
             "enable_stagnation_detector": True,                      # Включить детектор застрявшей цены
-            "stagnation_check_interval_seconds": 120,                 # Время наблюдения
+            "stagnation_check_interval_seconds": 300,                 # Время наблюдения
             "stagnation_ranges_percent": [                           # Диапазоны убытков (в % от маржи = order_amount × leverage)
-                {"min": 6.0, "max": 9.0}                             # От -5% до -7% убытка (для 200$×3x = -30 до -42 USDT)
+                {"min": 15.0, "max": 24.0}
             ],
             "stagnation_averaging_multiplier": 1.0,                  # Множитель усреднения (x1 = равная сумма основному ордеру)
             "stagnation_averaging_leverage": 1,                      # Плечо для усреднения (x1 = без дополнительного плеча)
             # ============================================================
 
-            # --- ОСНОВНОЕ УСРЕДНЕНИЕ (ОДИНОЧНОЕ УТРОЕНИЕ) ---
+            # --- ОСНОВНОЕ УСРЕДНЕНИЕ ---
             "enable_averaging": True,                    # Включить основное усреднение позиции
             "averaging_trigger_loss_percent": 25.0,      # Триггер основного усреднения: убыток % от маржи
             "averaging_multiplier": 1.0,                 # УДвоение суммы при усреднении (БЕЗ ПЛЕЧА!)
             "max_averaging_count": 1,                    # Только ОДНО основное усреднение
-            "averaging_stop_loss_percent": 40.0,         # Программный SL после усреднения: % от маржи
+            "averaging_stop_loss_percent": 50.0,         # Программный SL после усреднения: % от маржи
 
 
 

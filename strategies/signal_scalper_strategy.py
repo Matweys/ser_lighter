@@ -72,6 +72,7 @@ class SignalScalperStrategy(BaseStrategy):
         self.total_position_size = Decimal('0')  # Общий размер позиции после усреднения
         self.average_entry_price = Decimal('0')  # Средняя цена входа после усреднения
         self.initial_margin_usd = Decimal('0')  # Начальная маржа для расчета % убытка
+        self.current_total_margin = Decimal('0')  # ТЕКУЩАЯ общая маржа (initial + все усреднения)
         self.total_fees_paid = Decimal('0')  # Накопленные комиссии
         self.intermediate_averaging_executed = False  # Флаг: было ли промежуточное усреднение (legacy)
 
@@ -303,8 +304,8 @@ class SignalScalperStrategy(BaseStrategy):
             return
 
         # Проверка на адекватность изменения цены (не больше 50% от цены входа)
-        price_change_percent = abs((current_price - self.entry_price) / self.entry_price * 100)
-        if price_change_percent > 50:
+        price_change_percent = abs((current_price - self.entry_price) / self.entry_price * Decimal('100'))
+        if price_change_percent > Decimal('50'):
             return
 
         # Используем среднюю цену входа если есть усреднения
@@ -343,12 +344,12 @@ class SignalScalperStrategy(BaseStrategy):
 
         # ОСНОВНОЕ УСРЕДНЕНИЕ (ОДИНОЧНОЕ УТРОЕНИЕ)
         if self.averaging_enabled and not self.averaging_executed:
-            # Рассчитываем % убытка от начальной маржи
-            if self.initial_margin_usd > 0:
-                loss_percent_from_margin = (abs(pnl) / self.initial_margin_usd) * Decimal('100') if pnl < 0 else Decimal('0')
+            # Рассчитываем % убытка от ТЕКУЩЕЙ маржи (с учетом всех усреднений)
+            if self.current_total_margin > 0:
+                loss_percent_from_margin = (abs(pnl) / self.current_total_margin) * Decimal('100') if pnl < 0 else Decimal('0')
 
                 log_debug(self.user_id,
-                         f"📊 Мониторинг усреднения: PnL=${pnl:.2f}, маржа=${self.initial_margin_usd:.2f}, "
+                         f"📊 Мониторинг усреднения: PnL=${pnl:.2f}, текущая_маржа=${self.current_total_margin:.2f}, "
                          f"убыток={loss_percent_from_margin:.2f}%, триггер={self.averaging_trigger_loss_percent}%",
                          "SignalScalper")
 
@@ -363,24 +364,23 @@ class SignalScalperStrategy(BaseStrategy):
         if pnl > self.peak_profit_usd:
             self.peak_profit_usd = pnl
 
-        # НОВАЯ СИСТЕМА: Поэтапный трейлинг с динамическими порогами и 20% откатом
-        # КРИТИЧНО: Определяем уровень по ПИКУ, а не по текущему PnL
-        peak_trailing_level = self._get_trailing_level(self.peak_profit_usd)
+        # Поэтапный трейлинг с динамическими порогами и 20% откатом
+        current_trailing_level = self._get_trailing_level(pnl)
 
-        if peak_trailing_level > 0:  # Если ПИКОВАЯ прибыль достигла хотя бы начального уровня
+        if current_trailing_level > 0:  # Если достигли хотя бы начального уровня
             # Фиксированный 20% откат от пика на всех уровнях
             trailing_distance = self.peak_profit_usd * Decimal('0.20')
 
             # Проверяем условие закрытия: откат от пика >= 20%
             if pnl < (self.peak_profit_usd - trailing_distance):
-                level_name = self._get_level_name(peak_trailing_level)
+                level_name = self._get_level_name(current_trailing_level)
                 log_info(self.user_id,
                          f"💎 ЗАКРЫТИЕ НА {level_name}! Пик: ${self.peak_profit_usd:.2f}, PnL: ${pnl:.2f}, откат: ${trailing_distance:.2f} (20%)",
                          "SignalScalper")
                 await self._close_position("level_trailing_profit")
             else:
                 # Логируем текущий статус трейлинга
-                level_name = self._get_level_name(peak_trailing_level)
+                level_name = self._get_level_name(current_trailing_level)
                 log_debug(self.user_id,
                          f"Трейлинг {level_name}: пик=${self.peak_profit_usd:.2f}, PnL=${pnl:.2f}, откат допустим=${trailing_distance:.2f}",
                          "SignalScalper")
@@ -653,6 +653,8 @@ class SignalScalperStrategy(BaseStrategy):
 
             # ПРАВИЛЬНЫЙ расчет начальной маржи: order_amount УЖЕ является маржой пользователя
             self.initial_margin_usd = self.intended_order_amount
+            # ТЕКУЩАЯ маржа отслеживает реальные вложения (initial + усреднения)
+            self.current_total_margin = self.intended_order_amount
 
             log_info(self.user_id, f"💰 Начальная маржа для усреднения: ${self.initial_margin_usd:.2f}", "SignalScalper")
 
@@ -677,9 +679,22 @@ class SignalScalperStrategy(BaseStrategy):
             old_entry_price = self.entry_price
             old_size = self.position_size
 
-            # Рассчитываем добавленную маржу
-            leverage = self._convert_to_decimal(self._get_frozen_config_value("leverage", 1.0))
-            averaging_amount = (event.price * event.qty) / leverage
+            # ПРАВИЛЬНЫЙ расчет добавленной маржи:
+            # Это просто order_amount * multiplier (без учета плеча, т.к. leverage=1 для усреднения)
+            # Берем из замороженной конфигурации
+            order_amount = self._convert_to_decimal(self._get_frozen_config_value("order_amount", 100.0))
+            # Определяем множитель (averaging_multiplier или stagnation_multiplier)
+            if self.averaging_executed or self.averaging_count > 0:
+                # Это основное усреднение
+                multiplier = self.averaging_multiplier
+            elif self.stagnation_averaging_executed:
+                # Это усреднение по стагнации
+                multiplier = self.stagnation_averaging_multiplier
+            else:
+                # Первое усреднение - определяем по контексту
+                multiplier = self.averaging_multiplier if self.averaging_enabled else self.stagnation_averaging_multiplier
+
+            averaging_amount = order_amount * multiplier
 
             # Рассчитываем текущий PnL ДО усреднения (для информирования о причине усреднения)
             if self.active_direction == "LONG":
@@ -705,6 +720,10 @@ class SignalScalperStrategy(BaseStrategy):
 
             # НАКОПЛЕНИЕ КОМИССИЙ (НОВАЯ СИСТЕМА)
             self.total_fees_paid += event.fee
+
+            # ОБНОВЛЕНИЕ ТЕКУЩЕЙ МАРЖИ: добавляем сумму усреднения
+            self.current_total_margin += averaging_amount
+            log_info(self.user_id, f"💰 Текущая маржа обновлена: ${self.current_total_margin:.2f} (добавлено ${averaging_amount:.2f})", "SignalScalper")
 
             log_info(self.user_id,
                     f"[УСРЕДНЕНИЕ] Усреднение выполнено. Новая средняя цена: {self.average_entry_price:.4f}, размер: {self.total_position_size}, комиссия: ${event.fee:.4f}",
@@ -823,6 +842,7 @@ class SignalScalperStrategy(BaseStrategy):
             self.averaging_executed = False
             self.averaging_count = 0  # Сброс счетчика усреднений
             self.initial_margin_usd = Decimal('0')
+            self.current_total_margin = Decimal('0')  # Сброс текущей маржи
             self.total_fees_paid = Decimal('0')
             self.total_position_size = Decimal('0')
             self.average_entry_price = Decimal('0')
@@ -1190,10 +1210,9 @@ class SignalScalperStrategy(BaseStrategy):
                 self._reset_stagnation_monitor()
             return False
 
-        # Рассчитываем маржу (номинал позиции с учетом плеча)
+        # Рассчитываем маржу (order_amount уже ЯВЛЯЕТСЯ маржой пользователя)
         order_amount = self._convert_to_decimal(self._get_frozen_config_value("order_amount", 100.0))
-        leverage = self._convert_to_decimal(self._get_frozen_config_value("leverage", 1.0))
-        margin = order_amount * leverage
+        margin = order_amount  # order_amount = маржа пользователя
 
         # Рассчитываем убыток в процентах от маржи
         loss_percent = (abs(current_pnl) / margin) * Decimal('100') if margin > 0 else Decimal('0')
@@ -1393,11 +1412,11 @@ class SignalScalperStrategy(BaseStrategy):
         # Уровни растут примерно в 1.8-2x для плавного перехода
         level_percentages = {
             1: Decimal('0.0020'),   # 0.20% - МГНОВЕННЫЙ (самый быстрый выход)
-            2: Decimal('0.0045'),   # 0.45% - РАННИЙ
-            3: Decimal('0.0085'),   # 0.85% - СРЕДНИЙ
-            4: Decimal('0.0130'),   # 1.30% - ХОРОШИЙ
-            5: Decimal('0.0185'),   # 1.85% - ОТЛИЧНЫЙ
-            6: Decimal('0.0250')    # 2.50% - МАКСИМАЛЬНЫЙ
+            2: Decimal('0.0035'),   # 0.45% - РАННИЙ
+            3: Decimal('0.0070'),   # 0.85% - СРЕДНИЙ
+            4: Decimal('0.0115'),   # 1.30% - ХОРОШИЙ
+            5: Decimal('0.0155'),   # 1.85% - ОТЛИЧНЫЙ
+            6: Decimal('0.0225')    # 2.50% - МАКСИМАЛЬНЫЙ
         }
 
         # Рассчитываем пороги в USDT для всех уровней
@@ -1447,11 +1466,11 @@ class SignalScalperStrategy(BaseStrategy):
 
         level_names = {
             1: f"МГНОВЕННЫЙ УРОВЕНЬ (${levels[1]:.2f}+, 0.20%)",
-            2: f"РАННИЙ УРОВЕНЬ (${levels[2]:.2f}+, 0.45%)",
-            3: f"СРЕДНИЙ УРОВЕНЬ (${levels[3]:.2f}+, 0.85%)",
-            4: f"ХОРОШИЙ УРОВЕНЬ (${levels[4]:.2f}+, 1.30%)",
-            5: f"ОТЛИЧНЫЙ УРОВЕНЬ (${levels[5]:.2f}+, 1.85%)",
-            6: f"МАКСИМАЛЬНЫЙ УРОВЕНЬ (${levels[6]:.2f}+, 2.50%)"
+            2: f"РАННИЙ УРОВЕНЬ (${levels[2]:.2f}+, 0.35%)",
+            3: f"СРЕДНИЙ УРОВЕНЬ (${levels[3]:.2f}+, 0.70%)",
+            4: f"ХОРОШИЙ УРОВЕНЬ (${levels[4]:.2f}+, 1.15%)",
+            5: f"ОТЛИЧНЫЙ УРОВЕНЬ (${levels[5]:.2f}+, 1.55%)",
+            6: f"МАКСИМАЛЬНЫЙ УРОВЕНЬ (${levels[6]:.2f}+, 2.25%)"
         }
         return level_names.get(level, "НЕИЗВЕСТНЫЙ УРОВЕНЬ")
 

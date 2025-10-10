@@ -1105,7 +1105,7 @@ class BaseStrategy(ABC):
                 relative_threshold = intended_amount * Decimal('0.005')  # 0.5%
 
                 if difference >= absolute_threshold or difference >= relative_threshold:
-                    difference_percent = (difference / intended_amount) * 100
+                    difference_percent = (difference / intended_amount) * Decimal('100')
                     text += (
                         f"\n\n⚠️ {hbold('Внимание:')}\n"
                         f"Запрошенная сумма ордера ({hcode(f'{intended_amount:.2f} USDT')}) была скорректирована "
