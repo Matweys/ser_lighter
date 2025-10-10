@@ -251,7 +251,7 @@ class SignalScalperStrategy(BaseStrategy):
 
                 # НОВАЯ ПРОВЕРКА: Spike Detector для оптимального входа
                 if self.spike_detector:
-                    should_enter, spike_reason = self.spike_detector.should_enter_on_pullback(signal)
+                    should_enter, final_signal, spike_reason = self.spike_detector.should_enter_on_pullback(signal)
 
                     # Получаем статистику для логирования
                     recent_spikes = self.spike_detector.get_recent_spikes(seconds=300)
@@ -263,6 +263,13 @@ class SignalScalperStrategy(BaseStrategy):
                                 f"⏸️ Spike Detector ({candles_count} свечей, {len(recent_spikes)}/{total_spikes} всплесков за 5мин): {spike_reason}",
                                 "SignalScalper")
                         return
+
+                    # ВАЖНО: Используем развернутый сигнал (может отличаться от исходного!)
+                    if final_signal != signal:
+                        log_info(self.user_id,
+                                f"🔄 РАЗВОРОТ! Spike Detector изменил сигнал: {signal} → {final_signal}",
+                                "SignalScalper")
+                        signal = final_signal  # Перезаписываем сигнал!
 
                     log_info(self.user_id,
                             f"✅ Spike Detector ({candles_count} свечей, {len(recent_spikes)}/{total_spikes} всплесков за 5мин): {spike_reason}",
@@ -847,6 +854,9 @@ class SignalScalperStrategy(BaseStrategy):
             self.total_position_size = Decimal('0')
             self.average_entry_price = Decimal('0')
 
+            # СБРОС ФЛАГА ДЕТЕКТОРА ЗАСТРЕВАНИЯ
+            self.stagnation_averaging_executed = False
+
             # СБРОС ФЛАГОВ ИНТЕЛЛЕКТУАЛЬНОГО SL
             self.sl_extended = False
             self.sl_extension_notified = False
@@ -1022,10 +1032,11 @@ class SignalScalperStrategy(BaseStrategy):
             )
 
             # Устанавливаем новый SL через Bybit API
+            # ВАЖНО: position_idx=0 для One-Way Mode (не используем Hedge Mode)
             success = await self.api.set_trading_stop(
                 symbol=self.symbol,
                 stop_loss=str(new_sl_price),
-                position_idx=1 if self.active_direction == "LONG" else 2
+                position_idx=0  # One-Way Mode
             )
 
             if success:
@@ -1249,8 +1260,8 @@ class SignalScalperStrategy(BaseStrategy):
 
             range_dict = self.stagnation_ranges[current_range_index]
             # Рассчитываем USDT эквиваленты для логов
-            loss_usdt_min = (margin * range_dict['min']) / Decimal('100')
-            loss_usdt_max = (margin * range_dict['max']) / Decimal('100')
+            loss_usdt_min = (margin * Decimal(str(range_dict['min']))) / Decimal('100')
+            loss_usdt_max = (margin * Decimal(str(range_dict['max']))) / Decimal('100')
             log_info(self.user_id,
                     f"🎯 Детектор стагнации АКТИВИРОВАН! PnL=${current_pnl:.2f} ({loss_percent:.1f}%) "
                     f"в диапазоне [{range_dict['min']:.1f}%-{range_dict['max']:.1f}% (${loss_usdt_min:.1f}-${loss_usdt_max:.1f})]. "
@@ -1274,8 +1285,8 @@ class SignalScalperStrategy(BaseStrategy):
             # ТРИГГЕР СРАБОТАЛ!
             range_dict = self.stagnation_ranges[current_range_index]
             # Рассчитываем USDT эквиваленты для логов
-            loss_usdt_min = (margin * range_dict['min']) / Decimal('100')
-            loss_usdt_max = (margin * range_dict['max']) / Decimal('100')
+            loss_usdt_min = (margin * Decimal(str(range_dict['min']))) / Decimal('100')
+            loss_usdt_max = (margin * Decimal(str(range_dict['max']))) / Decimal('100')
             log_warning(self.user_id,
                        f"🚨 ТРИГГЕР ДЕТЕКТОРА СТАГНАЦИИ! PnL=${current_pnl:.2f} ({loss_percent:.1f}%) застрял в диапазоне "
                        f"[{range_dict['min']:.1f}%-{range_dict['max']:.1f}% (${loss_usdt_min:.1f}-${loss_usdt_max:.1f})] на {elapsed_time:.0f} сек! "

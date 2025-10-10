@@ -185,7 +185,7 @@ class SpikeDetector:
             "momentum": momentum
         }
 
-    def should_enter_on_pullback(self, main_signal: str) -> tuple[bool, str]:
+    def should_enter_on_pullback(self, main_signal: str) -> tuple[bool, str, str]:
         """
         🎯 КЛЮЧЕВОЙ МЕТОД: Определяет, стоит ли входить в позицию.
 
@@ -194,14 +194,18 @@ class SpikeDetector:
         - Если основной сигнал LONG и резкое ускорение ВВЕРХ (3+ всплеска) → НЕ ВХОДИМ (ждем отката)
         - Аналогично для SHORT
 
+        ПРИОРИТЕТ: Если есть сильный противоположный всплеск >0.20% → РАЗВОРАЧИВАЕМ сигнал:
+        - SHORT + всплеск ВВЕРХ >0.20% → возвращаем LONG
+        - LONG + всплеск ВНИЗ >0.20% → возвращаем SHORT
+
         Args:
             main_signal: Основной сигнал ("LONG", "SHORT", "HOLD")
 
         Returns:
-            (should_enter: bool, reason: str)
+            (should_enter: bool, final_signal: str, reason: str)
         """
         if main_signal == "HOLD":
-            return False, "Main signal is HOLD"
+            return False, "HOLD", "Main signal is HOLD"
 
         # ПРОВЕРКА МИНИМАЛЬНОГО НАКОПЛЕНИЯ ДАННЫХ (защита от холодного старта)
         recent_spikes = self.get_recent_spikes(seconds=300)
@@ -209,7 +213,7 @@ class SpikeDetector:
             log_info(self.user_id,
                     f"⏸️ SpikeDetector ({self.symbol}): Недостаточно данных ({len(recent_spikes)}/3 всплесков), накапливаю историю...",
                     "SpikeDetector")
-            return False, f"⏸️ Недостаточно данных для анализа ({len(recent_spikes)}/3 всплесков)"
+            return False, main_signal, f"⏸️ Недостаточно данных для анализа ({len(recent_spikes)}/3 всплесков)"
 
         # Анализируем импульс за последние 5 минут
         momentum_data = self.analyze_momentum(seconds=300)
@@ -221,6 +225,45 @@ class SpikeDetector:
         last_3_direction = momentum_data["last_3_direction"]
         momentum = momentum_data["momentum"]
 
+        # ========== ПРИОРИТЕТ: ПРОВЕРКА СИЛЬНЫХ ПРОТИВОПОЛОЖНЫХ ВСПЛЕСКОВ ==========
+        # Порог для "сильного" всплеска: 0.20% (0.002)
+        strong_spike_threshold = Decimal('0.0025')
+
+        # Ищем сильные противоположные всплески за последние 5 минут
+        strong_opposite_spike = None
+        reversed_signal = None
+
+        for spike in recent_spikes:
+            spike_magnitude = Decimal(str(spike["magnitude"]))
+
+            # Проверяем силу всплеска
+            if spike_magnitude >= strong_spike_threshold:
+                # Проверяем, противоположен ли он основному сигналу
+                if main_signal == "SHORT" and spike["direction"] == "UP":
+                    # Сильный всплеск ВВЕРХ при сигнале SHORT → РАЗВОРАЧИВАЕМ на LONG
+                    strong_opposite_spike = spike
+                    reversed_signal = "LONG"
+                    break
+                elif main_signal == "LONG" and spike["direction"] == "DOWN":
+                    # Сильный всплеск ВНИЗ при сигнале LONG → РАЗВОРАЧИВАЕМ на SHORT
+                    strong_opposite_spike = spike
+                    reversed_signal = "SHORT"
+                    break
+
+        # Если обнаружен сильный противоположный всплеск - РАЗВОРАЧИВАЕМ сигнал
+        if strong_opposite_spike and reversed_signal:
+            direction_emoji = "📈" if strong_opposite_spike["direction"] == "UP" else "📉"
+            magnitude_pct = strong_opposite_spike["magnitude"] * 100
+
+            log_info(self.user_id,
+                    f"🔄 РАЗВОРОТ СИГНАЛА! {direction_emoji} Сильный всплеск {strong_opposite_spike['direction']} "
+                    f"{magnitude_pct:.2f}% (>{strong_spike_threshold*100:.2f}%). "
+                    f"Меняю {main_signal} → {reversed_signal}!",
+                    "SpikeDetector")
+
+            return True, reversed_signal, (f"🔄 РАЗВОРОТ: {direction_emoji} Всплеск {strong_opposite_spike['direction']} "
+                          f"{magnitude_pct:.2f}% развернул {main_signal} → {reversed_signal}")
+
         # Логируем анализ
         log_debug(self.user_id,
                  f"📊 Momentum {self.symbol}: {momentum} (⬆️{up_spikes} vs ⬇️{down_spikes}), "
@@ -231,45 +274,45 @@ class SpikeDetector:
         if main_signal == "LONG":
             # Сценарий 1: Откат в восходящем тренде (ЛУЧШИЙ вход для LONG)
             if consecutive_down and up_spikes > down_spikes:
-                return True, f"✅ Откат в восходящем тренде ({down_spikes} всплесков ВНИЗ, но общий импульс {momentum})"
+                return True, "LONG", f"✅ Откат в восходящем тренде ({down_spikes} всплесков ВНИЗ, но общий импульс {momentum})"
 
             # Сценарий 2: Подтверждение тренда (сильный вход)
             if momentum == "BULLISH":
-                return True, f"✅ Бычий импульс подтверждает LONG ({up_spikes} всплесков ВВЕРХ)"
+                return True, "LONG", f"✅ Бычий импульс подтверждает LONG ({up_spikes} всплесков ВВЕРХ)"
 
             # Сценарий 3: Резкое ускорение ВВЕРХ (цена убежала, ждем отката)
             if consecutive_up and last_3_direction == "UP" and len(self.get_recent_spikes(180)) >= 3:
-                return False, f"⏸️ Цена резко ускорилась ВВЕРХ ({up_spikes} всплесков), ждем отката"
+                return False, "LONG", f"⏸️ Цена резко ускорилась ВВЕРХ ({up_spikes} всплесков), ждем отката"
 
             # Сценарий 4: Сильный медвежий импульс против LONG
             if momentum == "BEARISH":
-                return False, f"⏸️ Медвежий импульс против LONG ({down_spikes} всплесков ВНИЗ)"
+                return False, "LONG", f"⏸️ Медвежий импульс против LONG ({down_spikes} всплесков ВНИЗ)"
 
             # Нейтральный случай - входим
-            return True, f"✅ LONG без сильных противоречий (импульс: {momentum})"
+            return True, "LONG", f"✅ LONG без сильных противоречий (импульс: {momentum})"
 
         # ========== ЛОГИКА ДЛЯ SHORT ==========
         elif main_signal == "SHORT":
             # Сценарий 1: Откат в нисходящем тренде (ЛУЧШИЙ вход для SHORT)
             if consecutive_up and down_spikes > up_spikes:
-                return True, f"✅ Откат в нисходящем тренде ({up_spikes} всплесков ВВЕРХ, но общий импульс {momentum})"
+                return True, "SHORT", f"✅ Откат в нисходящем тренде ({up_spikes} всплесков ВВЕРХ, но общий импульс {momentum})"
 
             # Сценарий 2: Подтверждение тренда (сильный вход)
             if momentum == "BEARISH":
-                return True, f"✅ Медвежий импульс подтверждает SHORT ({down_spikes} всплесков ВНИЗ)"
+                return True, "SHORT", f"✅ Медвежий импульс подтверждает SHORT ({down_spikes} всплесков ВНИЗ)"
 
             # Сценарий 3: Резкое ускорение ВНИЗ (цена убежала, ждем отката)
             if consecutive_down and last_3_direction == "DOWN" and len(self.get_recent_spikes(180)) >= 3:
-                return False, f"⏸️ Цена резко ускорилась ВНИЗ ({down_spikes} всплесков), ждем отката"
+                return False, "SHORT", f"⏸️ Цена резко ускорилась ВНИЗ ({down_spikes} всплесков), ждем отката"
 
             # Сценарий 4: Сильный бычий импульс против SHORT
             if momentum == "BULLISH":
-                return False, f"⏸️ Бычий импульс против SHORT ({up_spikes} всплесков ВВЕРХ)"
+                return False, "SHORT", f"⏸️ Бычий импульс против SHORT ({up_spikes} всплесков ВВЕРХ)"
 
             # Нейтральный случай - входим
-            return True, f"✅ SHORT без сильных противоречий (импульс: {momentum})"
+            return True, "SHORT", f"✅ SHORT без сильных противоречий (импульс: {momentum})"
 
-        return False, "Unknown signal"
+        return False, main_signal, "Unknown signal"
 
     def get_last_price(self) -> Optional[Decimal]:
         """Возвращает последнюю цену из истории."""
