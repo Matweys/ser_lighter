@@ -1007,7 +1007,14 @@ class SignalScalperStrategy(BaseStrategy):
     async def _update_stop_loss_after_averaging(self):
         """
         Обновляет стоп-лосс после усреднения позиции.
-        Смещает SL на основе новой средней цены входа и общего размера позиции.
+
+        НОВАЯ ЛОГИКА: SL смещается ВНИЗ, давая позиции больше пространства для восстановления.
+        Максимальный убыток рассчитывается от ОБЩЕЙ маржи (initial + все усреднения),
+        что приводит к ПОНИЖЕНИЮ цены SL после каждого усреднения.
+
+        Пример (LONG):
+        - Первый вход: маржа $500, SL при убытке $250 (50%) → SL = $171.35
+        - После усреднения: маржа $1000, SL при убытке $500 (50%) → SL опускается до ~$152
         """
         if not self.average_entry_price or not self.total_position_size:
             log_debug(self.user_id, "Пропуск обновления SL: нет данных об усреднении", "SignalScalper")
@@ -1018,11 +1025,11 @@ class SignalScalperStrategy(BaseStrategy):
             if self.stop_loss_order_id:
                 await self._cancel_stop_loss_order()
 
-            # ПРАВИЛЬНЫЙ расчет: используем тот же метод что и при открытии позиции
-            # Рассчитываем максимальный убыток в USDT на основе процента от маржи
-            max_loss_usd = self.initial_margin_usd * (self.averaging_stop_loss_percent / Decimal('100'))
+            # НОВАЯ ЛОГИКА: Рассчитываем максимальный убыток от ОБЩЕЙ маржи (с усреднениями)
+            # Это приведет к ПОНИЖЕНИЮ SL, давая позиции больше пространства
+            max_loss_usd = self.current_total_margin * (self.averaging_stop_loss_percent / Decimal('100'))
 
-            # Используем точный метод расчета SL
+            # Используем точный метод расчета SL от средней цены входа
             is_long = (self.active_direction == "LONG")
             new_sl_price = BaseStrategy._calculate_precise_stop_loss(
                 self.average_entry_price,
@@ -1042,8 +1049,9 @@ class SignalScalperStrategy(BaseStrategy):
             if success:
                 self.stop_loss_price = new_sl_price
                 log_info(self.user_id,
-                        f"✅ SL смещен после усреднения: новая средняя цена=${self.average_entry_price:.4f}, "
-                        f"новый SL=${new_sl_price:.4f}, размер позиции={self.total_position_size}",
+                        f"✅ SL смещен ВНИЗ после усреднения: средняя_цена=${self.average_entry_price:.4f}, "
+                        f"новый_SL=${new_sl_price:.4f}, макс_убыток=${max_loss_usd:.2f} "
+                        f"({self.averaging_stop_loss_percent}% от общей_маржи ${self.current_total_margin:.2f})",
                         "SignalScalper")
             else:
                 log_warning(self.user_id, "Не удалось установить новый SL после усреднения", "SignalScalper")
