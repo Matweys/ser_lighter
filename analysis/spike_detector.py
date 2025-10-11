@@ -131,7 +131,7 @@ class SpikeDetector:
             {
                 "up_spikes": количество всплесков вверх,
                 "down_spikes": количество всплесков вниз,
-                "last_3_direction": направление последних 3 всплесков ("UP", "DOWN", "MIXED", None),
+                "overall_direction": общее направление ВСЕХ всплесков ("UP", "DOWN", "MIXED", None),
                 "consecutive_up": есть ли 2+ всплеска ВВЕРХ подряд,
                 "consecutive_down": есть ли 2+ всплеска ВНИЗ подряд,
                 "momentum": "BULLISH", "BEARISH", "NEUTRAL"
@@ -143,7 +143,7 @@ class SpikeDetector:
             return {
                 "up_spikes": 0,
                 "down_spikes": 0,
-                "last_3_direction": None,
+                "overall_direction": None,
                 "consecutive_up": False,
                 "consecutive_down": False,
                 "momentum": "NEUTRAL"
@@ -153,25 +153,25 @@ class SpikeDetector:
         up_spikes = sum(1 for s in recent_spikes if s["direction"] == "UP")
         down_spikes = sum(1 for s in recent_spikes if s["direction"] == "DOWN")
 
-        # Анализируем последние 3 всплеска
-        last_3 = recent_spikes[-3:] if len(recent_spikes) >= 3 else recent_spikes
-        last_3_directions = [s["direction"] for s in last_3]
+        # Получаем направления ВСЕХ всплесков за период
+        all_directions = [s["direction"] for s in recent_spikes]
 
-        if all(d == "UP" for d in last_3_directions):
-            last_3_direction = "UP"
-        elif all(d == "DOWN" for d in last_3_directions):
-            last_3_direction = "DOWN"
-        else:
-            last_3_direction = "MIXED"
-
-        # Проверяем последовательные всплески (минимум 2 подряд)
-        consecutive_up = len(last_3_directions) >= 2 and last_3_directions[-1] == "UP" and last_3_directions[-2] == "UP"
-        consecutive_down = len(last_3_directions) >= 2 and last_3_directions[-1] == "DOWN" and last_3_directions[-2] == "DOWN"
-
-        # Определяем общий импульс
+        # Определяем общее направление на основе ВСЕХ всплесков
         if up_spikes >= down_spikes * 1.5:  # В 1.5 раза больше всплесков вверх
-            momentum = "BULLISH"
+            overall_direction = "UP"
         elif down_spikes >= up_spikes * 1.5:  # В 1.5 раза больше всплесков вниз
+            overall_direction = "DOWN"
+        else:
+            overall_direction = "MIXED"
+
+        # Проверяем последовательные всплески (минимум 2 подряд в конце периода)
+        consecutive_up = len(all_directions) >= 2 and all_directions[-1] == "UP" and all_directions[-2] == "UP"
+        consecutive_down = len(all_directions) >= 2 and all_directions[-1] == "DOWN" and all_directions[-2] == "DOWN"
+
+        # Определяем общий импульс (BULLISH/BEARISH/NEUTRAL)
+        if up_spikes >= down_spikes * 1.5:
+            momentum = "BULLISH"
+        elif down_spikes >= up_spikes * 1.5:
             momentum = "BEARISH"
         else:
             momentum = "NEUTRAL"
@@ -179,7 +179,7 @@ class SpikeDetector:
         return {
             "up_spikes": up_spikes,
             "down_spikes": down_spikes,
-            "last_3_direction": last_3_direction,
+            "overall_direction": overall_direction,
             "consecutive_up": consecutive_up,
             "consecutive_down": consecutive_down,
             "momentum": momentum
@@ -222,7 +222,7 @@ class SpikeDetector:
         down_spikes = momentum_data["down_spikes"]
         consecutive_up = momentum_data["consecutive_up"]
         consecutive_down = momentum_data["consecutive_down"]
-        last_3_direction = momentum_data["last_3_direction"]
+        overall_direction = momentum_data["overall_direction"]
         momentum = momentum_data["momentum"]
 
         # ========== ПРИОРИТЕТ: ПРОВЕРКА СИЛЬНЫХ ПРОТИВОПОЛОЖНЫХ ВСПЛЕСКОВ ==========
@@ -265,7 +265,7 @@ class SpikeDetector:
         # Логируем анализ
         log_debug(self.user_id,
                  f"📊 Momentum {self.symbol}: {momentum} (⬆️{up_spikes} vs ⬇️{down_spikes}), "
-                 f"последние 3: {last_3_direction}, consecutive_up={consecutive_up}, consecutive_down={consecutive_down}",
+                 f"общее направление: {overall_direction}, consecutive_up={consecutive_up}, consecutive_down={consecutive_down}",
                  "SpikeDetector")
 
         # ========== ЛОГИКА ДЛЯ LONG ==========
@@ -279,7 +279,7 @@ class SpikeDetector:
                 return True, "LONG", f"✅ Бычий импульс подтверждает LONG ({up_spikes} всплесков ВВЕРХ)"
 
             # Сценарий 3: Резкое ускорение ВВЕРХ (цена убежала, ждем отката)
-            if consecutive_up and last_3_direction == "UP" and len(self.get_recent_spikes(180)) >= 3:
+            if consecutive_up and overall_direction == "UP" and len(self.get_recent_spikes(180)) >= 3:
                 return False, "LONG", f"⏸️ Цена резко ускорилась ВВЕРХ ({up_spikes} всплесков), ждем отката"
 
             # Сценарий 4: Сильный медвежий импульс против LONG
@@ -300,7 +300,7 @@ class SpikeDetector:
                 return True, "SHORT", f"✅ Медвежий импульс подтверждает SHORT ({down_spikes} всплесков ВНИЗ)"
 
             # Сценарий 3: Резкое ускорение ВНИЗ (цена убежала, ждем отката)
-            if consecutive_down and last_3_direction == "DOWN" and len(self.get_recent_spikes(180)) >= 3:
+            if consecutive_down and overall_direction == "DOWN" and len(self.get_recent_spikes(180)) >= 3:
                 return False, "SHORT", f"⏸️ Цена резко ускорилась ВНИЗ ({down_spikes} всплесков), ждем отката"
 
             # Сценарий 4: Сильный бычий импульс против SHORT
