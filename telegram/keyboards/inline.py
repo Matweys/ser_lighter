@@ -20,9 +20,8 @@ class KeyboardBuilder:
 def get_main_menu_keyboard() -> InlineKeyboardMarkup:
     """Главное меню бота."""
     buttons = [
-        [{"text": "📊 Статистика", "callback_data": "statistics"}, {"text": "💰 Баланс", "callback_data": "show_balance"}],
-        [{"text": "📈 Позиции", "callback_data": "show_positions"}, {"text": "📋 Ордера", "callback_data": "show_orders"}],
-        [{"text": "📊 Статус", "callback_data": "show_status"}, {"text": "⚙️ Настройки", "callback_data": "settings"}],
+        [{"text": "📊 Статус торговли", "callback_data": "show_trading_status"}, {"text": "💰 Баланс", "callback_data": "show_balance"}],
+        [{"text": "🔑 API ключи", "callback_data": "api_keys"}, {"text": "⚙️ Настройки", "callback_data": "settings"}],
     ]
     return KeyboardBuilder.build_keyboard(buttons)
 
@@ -30,7 +29,7 @@ def get_settings_keyboard() -> InlineKeyboardMarkup:
     """Главное меню настроек."""
     buttons = [
         [{"text": "🛡️ Риск-менеджмент", "callback_data": "risk_settings"}, {"text": "📊 Стратегии", "callback_data": "strategy_settings"}],
-        [{"text": "🔑 API ключи", "callback_data": "api_keys"}, {"text": "📈 Торговые пары", "callback_data": "select_trading_pairs"}],
+        [{"text": "📈 Торговые пары", "callback_data": "select_trading_pairs"}],
         [{"text": "🔄 Сбросить настройки", "callback_data": "reset_settings"}],
         [{"text": "🏠 Главное меню", "callback_data": "main_menu"}]
     ]
@@ -159,6 +158,21 @@ def get_quick_actions_keyboard(session_running: bool = False) -> InlineKeyboardM
         buttons = [
             [{"text": "⚙️ Настройки", "callback_data": "settings"}],
             [{"text": "📊 Статистика", "callback_data": "statistics"}],
+            [{"text": "🏠 Главное меню", "callback_data": "main_menu"}]
+        ]
+    return KeyboardBuilder.build_keyboard(buttons)
+
+def get_api_keys_keyboard(keys_exist: bool = False) -> InlineKeyboardMarkup:
+    """Клавиатура управления API ключами."""
+    if keys_exist:
+        buttons = [
+            [{"text": "🔄 Обновить ключи", "callback_data": "update_api_keys"}],
+            [{"text": "🗑️ Удалить ключи", "callback_data": "delete_api_keys"}],
+            [{"text": "🏠 Главное меню", "callback_data": "main_menu"}]
+        ]
+    else:
+        buttons = [
+            [{"text": "➕ Добавить ключи", "callback_data": "add_api_keys"}],
             [{"text": "🏠 Главное меню", "callback_data": "main_menu"}]
         ]
     return KeyboardBuilder.build_keyboard(buttons)

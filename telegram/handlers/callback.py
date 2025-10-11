@@ -718,9 +718,17 @@ async def callback_statistics(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "show_status")
 async def callback_show_status(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки 'Статус'"""
+    """Обработчик кнопки 'Статус' (старая версия)"""
     await callback.answer()
     await cmd_status(callback.message, state)
+
+
+@router.callback_query(F.data == "show_trading_status")
+async def callback_show_trading_status(callback: CallbackQuery, state: FSMContext):
+    """Обработчик кнопки 'Статус торговли' - вызывает /autotrade_status"""
+    from .basic import cmd_autotrade_status
+    await callback.answer("Загружаю статус торговли...")
+    await cmd_autotrade_status(callback.message, state)
 
 
 @router.callback_query(F.data == "show_positions")
@@ -821,9 +829,9 @@ async def callback_show_balance(callback: CallbackQuery, state: FSMContext):
     keys = await db_manager.get_api_keys(user_id, "bybit")
     if not keys:
         await callback.message.edit_text(
-            "⚠️ <b>API ключи не настроены.</b>\nНе могу получить баланс. Перейдите в 'Настройки' -> 'API ключи' для их добавления.",
+            "⚠️ <b>API ключи не настроены.</b>\n\nНе могу получить баланс. Для начала работы необходимо добавить API ключи от вашего аккаунта Bybit.\n\nПерейдите в 'API ключи' в главном меню.",
             parse_mode="HTML",
-            reply_markup=get_back_keyboard("settings")
+            reply_markup=get_back_keyboard("main_menu")
         )
         return
 
@@ -880,7 +888,7 @@ async def callback_api_keys(callback: CallbackQuery, state: FSMContext):
             text = (
                 f"🔑 <b>Настроенные API ключи (Bybit)</b>\n\n"
                 f"<b>API Key:</b> <code>{api_key_short}</code>\n\n"
-                f"✅ Ключи настроены. Вы можете обновить их в любой момент."
+                f"✅ Ключи настроены. Вы можете обновить или удалить их."
             )
         else:
             text = (
@@ -889,17 +897,17 @@ async def callback_api_keys(callback: CallbackQuery, state: FSMContext):
                 f"Для работы бота необходимо добавить API ключи от вашего аккаунта на бирже Bybit."
             )
 
-        # TODO: Добавить клавиатуру для управления ключами (добавить/удалить)
+        from ..keyboards.inline import get_api_keys_keyboard
         await callback.message.edit_text(
             text,
             parse_mode="HTML",
-            reply_markup=get_back_keyboard("settings")
+            reply_markup=get_api_keys_keyboard(keys_exist=bool(keys))
         )
     except Exception as e:
         log_error(user_id, f"Ошибка отображения API ключей: {e}", module_name='callback')
         await callback.message.edit_text(
             "❌ Ошибка загрузки информации о ключах.",
-            reply_markup=get_back_keyboard("settings")
+            reply_markup=get_back_keyboard("main_menu")
         )
 
 
@@ -1309,6 +1317,220 @@ async def callback_help_sections_stub(callback: CallbackQuery, state: FSMContext
     )
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_back_keyboard("help"))
     await callback.answer()
+
+
+# --- ОБРАБОТЧИКИ УПРАВЛЕНИЯ API КЛЮЧАМИ ---
+
+@router.callback_query(F.data.in_({"add_api_keys", "update_api_keys"}))
+async def callback_add_update_api_keys(callback: CallbackQuery, state: FSMContext):
+    """Начало процесса добавления/обновления API ключей"""
+    user_id = callback.from_user.id
+    action = "обновить" if callback.data == "update_api_keys" else "добавить"
+
+    await state.set_state(UserStates.AWAITING_API_KEY)
+    await state.update_data(menu_message_id=callback.message.message_id)
+
+    text = (
+        f"🔑 <b>Добавление API ключей Bybit</b>\n\n"
+        f"Шаг 1 из 2: Введите <b>API Key</b>\n\n"
+        f"⚠️ <b>ВАЖНО:</b>\n"
+        f"• Сообщение с ключом будет автоматически удалено после ввода\n"
+        f"• Ключ будет зашифрован перед сохранением в базе данных\n"
+        f"• API ключ должен иметь права на торговлю (Trade)\n\n"
+        f"Введите ваш API Key:"
+    )
+
+    await callback.message.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=get_back_keyboard("api_keys")
+    )
+    await callback.answer()
+    log_info(user_id, f"Пользователь начал процесс {action} API ключей", module_name='callback')
+
+
+@router.message(UserStates.AWAITING_API_KEY)
+async def process_api_key_input(message: Message, state: FSMContext):
+    """Обработка ввода API Key с немедленным удалением сообщения"""
+    user_id = message.from_user.id
+
+    try:
+        api_key = message.text.strip()
+
+        # Валидация API ключа (базовая проверка формата)
+        if len(api_key) < 10:
+            await message.answer("❌ API ключ слишком короткий. Попробуйте еще раз.")
+            await message.delete()
+            return
+
+        # Немедленно удаляем сообщение пользователя
+        await message.delete()
+
+        # Сохраняем API ключ в состояние
+        await state.update_data(api_key=api_key)
+        await state.set_state(UserStates.AWAITING_API_SECRET)
+
+        # Обновляем сообщение с инструкцией для ввода API Secret
+        state_data = await state.get_data()
+        menu_message_id = state_data.get("menu_message_id")
+
+        text = (
+            f"✅ <b>API Key принят и удален из чата</b>\n\n"
+            f"🔑 <b>Добавление API ключей Bybit</b>\n\n"
+            f"Шаг 2 из 2: Введите <b>API Secret</b>\n\n"
+            f"⚠️ <b>ВАЖНО:</b>\n"
+            f"• Сообщение с секретом будет автоматически удалено\n"
+            f"• Секрет будет зашифрован перед сохранением\n\n"
+            f"Введите ваш API Secret:"
+        )
+
+        await bot_manager.bot.edit_message_text(
+            chat_id=user_id,
+            message_id=menu_message_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=get_back_keyboard("api_keys")
+        )
+
+        log_info(user_id, "API Key получен и удален из чата", module_name='callback')
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка обработки API Key: {e}", module_name='callback')
+        await message.answer("❌ Произошла ошибка. Попробуйте еще раз.")
+        await message.delete()
+
+
+@router.message(UserStates.AWAITING_API_SECRET)
+async def process_api_secret_input(message: Message, state: FSMContext):
+    """Обработка ввода API Secret с немедленным удалением и сохранением в БД"""
+    user_id = message.from_user.id
+
+    try:
+        api_secret = message.text.strip()
+
+        # Валидация API секрета (базовая проверка формата)
+        if len(api_secret) < 10:
+            await message.answer("❌ API Secret слишком короткий. Попробуйте еще раз.")
+            await message.delete()
+            return
+
+        # Немедленно удаляем сообщение пользователя
+        await message.delete()
+
+        # Получаем сохраненный API Key
+        state_data = await state.get_data()
+        api_key = state_data.get("api_key")
+        menu_message_id = state_data.get("menu_message_id")
+
+        if not api_key:
+            await message.answer("❌ Ошибка: API Key не найден. Начните процесс заново.")
+            await state.clear()
+            return
+
+        # Сохраняем ключи в базу данных (они автоматически зашифруются)
+        success = await db_manager.save_api_keys(
+            user_id=user_id,
+            exchange="bybit",
+            api_key=api_key,
+            secret_key=api_secret
+        )
+
+        if success:
+            # Показываем короткую версию ключа для подтверждения
+            api_key_short = api_key[:4] + '...' + api_key[-4:]
+
+            text = (
+                f"✅ <b>API ключи успешно сохранены!</b>\n\n"
+                f"🔑 <b>API Key:</b> <code>{api_key_short}</code>\n\n"
+                f"🔒 Ваши ключи зашифрованы и надежно хранятся в базе данных.\n"
+                f"🗑️ Все сообщения с ключами были удалены из чата.\n\n"
+                f"Теперь вы можете начать автоматическую торговлю!"
+            )
+
+            log_info(user_id, f"API ключи успешно сохранены для пользователя {user_id}", module_name='callback')
+        else:
+            text = (
+                f"❌ <b>Ошибка сохранения ключей</b>\n\n"
+                f"Не удалось сохранить API ключи в базу данных. "
+                f"Попробуйте еще раз или обратитесь в поддержку."
+            )
+            log_error(user_id, "Ошибка сохранения API ключей в БД", module_name='callback')
+
+        from ..keyboards.inline import get_api_keys_keyboard
+        await bot_manager.bot.edit_message_text(
+            chat_id=user_id,
+            message_id=menu_message_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=get_api_keys_keyboard(keys_exist=success)
+        )
+
+        # Очищаем состояние
+        await state.clear()
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка обработки API Secret: {e}", module_name='callback')
+        await message.answer("❌ Произошла ошибка при сохранении ключей.")
+        await message.delete()
+        await state.clear()
+
+
+@router.callback_query(F.data == "delete_api_keys")
+async def callback_delete_api_keys(callback: CallbackQuery, state: FSMContext):
+    """Подтверждение удаления API ключей"""
+    user_id = callback.from_user.id
+
+    text = (
+        f"⚠️ <b>Подтверждение удаления API ключей</b>\n\n"
+        f"Вы уверены, что хотите удалить сохраненные API ключи?\n\n"
+        f"После удаления вы не сможете использовать автоматическую торговлю "
+        f"до тех пор, пока не добавите новые ключи."
+    )
+
+    await callback.message.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=get_confirmation_keyboard("delete_api_keys")
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "confirm_delete_api_keys")
+async def callback_confirm_delete_api_keys(callback: CallbackQuery, state: FSMContext):
+    """Выполнение удаления API ключей"""
+    user_id = callback.from_user.id
+
+    try:
+        # Удаляем ключи через деактивацию записи в БД
+        query = """
+            UPDATE user_api_keys
+            SET is_active = FALSE, updated_at = NOW()
+            WHERE user_id = $1 AND exchange = $2
+        """
+
+        async with db_manager.get_connection() as conn:
+            await conn.execute(query, user_id, "bybit")
+
+        text = (
+            f"✅ <b>API ключи успешно удалены</b>\n\n"
+            f"Ваши API ключи были деактивированы.\n"
+            f"Вы можете добавить новые ключи в любое время."
+        )
+
+        log_info(user_id, f"API ключи удалены для пользователя {user_id}", module_name='callback')
+
+        from ..keyboards.inline import get_api_keys_keyboard
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=get_api_keys_keyboard(keys_exist=False)
+        )
+        await callback.answer("Ключи удалены", show_alert=False)
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка удаления API ключей: {e}", module_name='callback')
+        await callback.answer("❌ Ошибка при удалении ключей", show_alert=True)
+
 
 # Обработчик неизвестных callback
 @router.callback_query()

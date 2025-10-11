@@ -36,8 +36,6 @@ async def set_commands():
         BotCommand(command="/settings", description="⚙️ Настройки"),
         BotCommand(command="/stats", description="📊 Статистика"),
         BotCommand(command="/balance", description="💰 Баланс"),
-        BotCommand(command="/positions", description="📈 Позиции"),
-        BotCommand(command="/orders", description="📋 Ордера"),
         BotCommand(command="/autotrade_status", description="📊 Статус торговли"),
         BotCommand(command="/help", description="ℹ️ Помощь")
 

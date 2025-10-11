@@ -14,3 +14,7 @@ class UserStates(StatesGroup):
     # Состояния ожидания ввода от пользователя
     SETTING_MAX_DAILY_LOSS_USDT = State()
     AWAITING_STRATEGY_PARAM_VALUE = State()
+
+    # Состояния для ввода API ключей
+    AWAITING_API_KEY = State()
+    AWAITING_API_SECRET = State()
