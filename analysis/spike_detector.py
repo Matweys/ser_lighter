@@ -102,12 +102,12 @@ class SpikeDetector:
                      f"{emoji} Всплеск {direction} {pct_change*100:.2f}% на {self.symbol} (цена: {curr_price})",
                      "SpikeDetector")
 
-    def get_recent_spikes(self, seconds: int = 300) -> List[Dict]:
+    def get_recent_spikes(self, seconds: int = 600) -> List[Dict]:
         """
         Возвращает всплески за последние N секунд.
 
         Args:
-            seconds: Временное окно в секундах (по умолчанию 5 минут = 300 сек)
+            seconds: Временное окно в секундах (по умолчанию 10 минут = 600 сек)
 
         Returns:
             Список всплесков: [{"timestamp", "direction", "magnitude", "price"}, ...]
@@ -120,12 +120,12 @@ class SpikeDetector:
             if spike["timestamp"] >= cutoff_time
         ]
 
-    def analyze_momentum(self, seconds: int = 300) -> Dict:
+    def analyze_momentum(self, seconds: int = 600) -> Dict:
         """
         Анализирует импульс (momentum) за последние N секунд.
 
         Args:
-            seconds: Временное окно (по умолчанию 5 минут)
+            seconds: Временное окно (по умолчанию 10 минут)
 
         Returns:
             {
@@ -208,15 +208,15 @@ class SpikeDetector:
             return False, "HOLD", "Main signal is HOLD"
 
         # ПРОВЕРКА МИНИМАЛЬНОГО НАКОПЛЕНИЯ ДАННЫХ (защита от холодного старта)
-        recent_spikes = self.get_recent_spikes(seconds=300)
+        recent_spikes = self.get_recent_spikes(seconds=600)
         if len(recent_spikes) < 3:
             log_info(self.user_id,
                     f"⏸️ SpikeDetector ({self.symbol}): Недостаточно данных ({len(recent_spikes)}/3 всплесков), накапливаю историю...",
                     "SpikeDetector")
             return False, main_signal, f"⏸️ Недостаточно данных для анализа ({len(recent_spikes)}/3 всплесков)"
 
-        # Анализируем импульс за последние 5 минут
-        momentum_data = self.analyze_momentum(seconds=300)
+        # Анализируем импульс за последние 10 минут
+        momentum_data = self.analyze_momentum(seconds=600)
 
         up_spikes = momentum_data["up_spikes"]
         down_spikes = momentum_data["down_spikes"]
@@ -229,7 +229,7 @@ class SpikeDetector:
         # Порог для "сильного" всплеска: 0.30% (0.003)
         strong_spike_threshold = Decimal('0.003')
 
-        # Ищем сильные противоположные всплески за последние 5 минут
+        # Ищем сильные противоположные всплески за последние 10 минут
         strong_opposite_spikes = []
         reversed_signal = None
 
@@ -249,7 +249,7 @@ class SpikeDetector:
                     reversed_signal = "SHORT"
 
         # Если обнаружено ДВА или более сильных противоположных всплеска - РАЗВОРАЧИВАЕМ сигнал
-        if len(strong_opposite_spikes) >= 2 and reversed_signal:
+        if len(strong_opposite_spikes) >= 3 and reversed_signal:
             direction_emoji = "📈" if strong_opposite_spikes[-1]["direction"] == "UP" else "📉"
             last_magnitude_pct = strong_opposite_spikes[-1]["magnitude"] * 100
 
