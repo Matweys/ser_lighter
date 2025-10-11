@@ -8,7 +8,7 @@ class DefaultConfigs:
     def get_global_config() -> Dict[str, Any]:
         """Глобальная конфигурация пользователя."""
         return {
-            "max_simultaneous_trades": 3,
+            "max_concurrent_trades": 5,
             "max_daily_loss_usdt": 10.0,
             "watchlist_symbols": ["BTCUSDT"],
             "enable_notifications": True,
@@ -133,7 +133,7 @@ class DefaultConfigs:
             "leverage": 3,  # Плечо
 
             # --- Параметры обнаружения падений ---
-            "drop_percent": 2.0,  # Процент падения для сигнала (2% от среднего)
+            "drop_percent": 3.0,  # Процент падения для сигнала (2% от среднего)
             "candle_history_size": 10,  # Количество свечей для расчета среднего
 
             # --- Параметры выхода ---

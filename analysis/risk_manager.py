@@ -124,7 +124,7 @@ class RiskManager:
                 return False
                 
             # Проверка лимита одновременных сделок
-            max_trades = self.user_config.get("max_simultaneous_trades", 2)
+            max_trades = self.user_config.get("max_concurrent_trades", 3)
             current_trades = len(self.active_positions)
             
             if current_trades >= max_trades:

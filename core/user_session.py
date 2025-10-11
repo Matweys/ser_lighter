@@ -465,6 +465,7 @@ class UserSession:
                 return True
 
             strategy = self.active_strategies[strategy_id]
+            symbol = strategy.symbol
 
             # Остановка стратегии
             await strategy.stop(reason)
@@ -483,6 +484,22 @@ class UserSession:
             # Удаление из активных стратегий
             del self.active_strategies[strategy_id]
 
+            # КРИТИЧНО: Отписываемся от WebSocket, если символ больше не используется
+            # Проверяем, есть ли другие стратегии для этого символа
+            symbol_still_in_use = any(
+                s.symbol == symbol for s in self.active_strategies.values()
+            )
+
+            if not symbol_still_in_use:
+                # Проверяем, не находится ли символ в текущем watchlist
+                global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
+                current_watchlist = set(global_config.get("watchlist_symbols", []))
+
+                if symbol not in current_watchlist:
+                    # Символ больше не используется - отписываемся от WebSocket
+                    await self.global_ws_manager.unsubscribe_symbol(self.user_id, symbol)
+                    log_info(self.user_id, f"✅ WebSocket отписан от {symbol} (стратегия остановлена, символ не в watchlist)", module_name=__name__)
+
             # Обновление статистики
             self.session_stats["strategies_stopped"] += 1
 
@@ -491,7 +508,7 @@ class UserSession:
                 user_id=self.user_id,
                 strategy_id=strategy_id,
                 reason=reason,
-                symbol=strategy.symbol,
+                symbol=symbol,
                 strategy_type=strategy.strategy_type.value
             )
             await self.event_bus.publish(event)
@@ -745,12 +762,25 @@ class UserSession:
                 for symbol in added:
                     await self.global_ws_manager.subscribe_symbol(self.user_id, symbol)
 
-                # Отписываемся от удаленных символов в WebSocket
-                for symbol in removed:
-                    await self.global_ws_manager.unsubscribe_symbol(self.user_id, symbol)
-
-                # УМНАЯ СИСТЕМА ЗАМЕНЫ СИМВОЛОВ
+                # УМНАЯ СИСТЕМА ЗАМЕНЫ СИМВОЛОВ (СНАЧАЛА!)
+                # Анализируем, какие символы можно безопасно отписать
                 await self._handle_smart_symbol_replacement(new_watchlist, old_watchlist, added, removed)
+
+                # Отписываемся ТОЛЬКО от удаленных символов БЕЗ активных позиций
+                # Символы с активными позициями останутся подписанными до закрытия позиции
+                for symbol in removed:
+                    # Проверяем, есть ли стратегия с активной позицией для этого символа
+                    has_active_position = False
+                    for strategy in self.active_strategies.values():
+                        if strategy.symbol == symbol and getattr(strategy, 'position_active', False):
+                            has_active_position = True
+                            log_info(self.user_id, f"🔒 WebSocket для {symbol} остаётся подписанным (активная позиция)", module_name=__name__)
+                            break
+
+                    if not has_active_position:
+                        # Нет активной позиции - безопасно отписываемся
+                        await self.global_ws_manager.unsubscribe_symbol(self.user_id, symbol)
+                        log_info(self.user_id, f"✅ WebSocket отписан от {symbol} (нет активной позиции)", module_name=__name__)
 
             log_info(self.user_id, "Конфигурации и подписки обновлены после изменения настроек.", module_name=__name__)
 

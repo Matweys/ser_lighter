@@ -194,9 +194,9 @@ class SpikeDetector:
         - Если основной сигнал LONG и резкое ускорение ВВЕРХ (3+ всплеска) → НЕ ВХОДИМ (ждем отката)
         - Аналогично для SHORT
 
-        ПРИОРИТЕТ: Если есть сильный противоположный всплеск >0.20% → РАЗВОРАЧИВАЕМ сигнал:
-        - SHORT + всплеск ВВЕРХ >0.20% → возвращаем LONG
-        - LONG + всплеск ВНИЗ >0.20% → возвращаем SHORT
+        ПРИОРИТЕТ: Если есть ДВА сильных противоположных всплеска >0.30% → РАЗВОРАЧИВАЕМ сигнал:
+        - SHORT + 2 всплеска ВВЕРХ >0.30% → возвращаем LONG
+        - LONG + 2 всплеска ВНИЗ >0.30% → возвращаем SHORT
 
         Args:
             main_signal: Основной сигнал ("LONG", "SHORT", "HOLD")
@@ -226,11 +226,11 @@ class SpikeDetector:
         momentum = momentum_data["momentum"]
 
         # ========== ПРИОРИТЕТ: ПРОВЕРКА СИЛЬНЫХ ПРОТИВОПОЛОЖНЫХ ВСПЛЕСКОВ ==========
-        # Порог для "сильного" всплеска: 0.20% (0.002)
-        strong_spike_threshold = Decimal('0.0025')
+        # Порог для "сильного" всплеска: 0.30% (0.003)
+        strong_spike_threshold = Decimal('0.003')
 
         # Ищем сильные противоположные всплески за последние 5 минут
-        strong_opposite_spike = None
+        strong_opposite_spikes = []
         reversed_signal = None
 
         for spike in recent_spikes:
@@ -240,29 +240,27 @@ class SpikeDetector:
             if spike_magnitude >= strong_spike_threshold:
                 # Проверяем, противоположен ли он основному сигналу
                 if main_signal == "SHORT" and spike["direction"] == "UP":
-                    # Сильный всплеск ВВЕРХ при сигнале SHORT → РАЗВОРАЧИВАЕМ на LONG
-                    strong_opposite_spike = spike
+                    # Сильный всплеск ВВЕРХ при сигнале SHORT
+                    strong_opposite_spikes.append(spike)
                     reversed_signal = "LONG"
-                    break
                 elif main_signal == "LONG" and spike["direction"] == "DOWN":
-                    # Сильный всплеск ВНИЗ при сигнале LONG → РАЗВОРАЧИВАЕМ на SHORT
-                    strong_opposite_spike = spike
+                    # Сильный всплеск ВНИЗ при сигнале LONG
+                    strong_opposite_spikes.append(spike)
                     reversed_signal = "SHORT"
-                    break
 
-        # Если обнаружен сильный противоположный всплеск - РАЗВОРАЧИВАЕМ сигнал
-        if strong_opposite_spike and reversed_signal:
-            direction_emoji = "📈" if strong_opposite_spike["direction"] == "UP" else "📉"
-            magnitude_pct = strong_opposite_spike["magnitude"] * 100
+        # Если обнаружено ДВА или более сильных противоположных всплеска - РАЗВОРАЧИВАЕМ сигнал
+        if len(strong_opposite_spikes) >= 2 and reversed_signal:
+            direction_emoji = "📈" if strong_opposite_spikes[-1]["direction"] == "UP" else "📉"
+            last_magnitude_pct = strong_opposite_spikes[-1]["magnitude"] * 100
 
             log_info(self.user_id,
-                    f"🔄 РАЗВОРОТ СИГНАЛА! {direction_emoji} Сильный всплеск {strong_opposite_spike['direction']} "
-                    f"{magnitude_pct:.2f}% (>{strong_spike_threshold*100:.2f}%). "
+                    f"🔄 РАЗВОРОТ СИГНАЛА! {direction_emoji} Обнаружено {len(strong_opposite_spikes)} сильных всплесков {strong_opposite_spikes[-1]['direction']} "
+                    f"(последний: {last_magnitude_pct:.2f}%, порог >{strong_spike_threshold*100:.2f}%). "
                     f"Меняю {main_signal} → {reversed_signal}!",
                     "SpikeDetector")
 
-            return True, reversed_signal, (f"🔄 РАЗВОРОТ: {direction_emoji} Всплеск {strong_opposite_spike['direction']} "
-                          f"{magnitude_pct:.2f}% развернул {main_signal} → {reversed_signal}")
+            return True, reversed_signal, (f"🔄 РАЗВОРОТ: {direction_emoji} {len(strong_opposite_spikes)} всплеска {strong_opposite_spikes[-1]['direction']} "
+                          f"(последний {last_magnitude_pct:.2f}%) развернули {main_signal} → {reversed_signal}")
 
         # Логируем анализ
         log_debug(self.user_id,

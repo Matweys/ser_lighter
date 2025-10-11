@@ -240,7 +240,7 @@ async def cmd_status(message: Message, state: FSMContext):
                     f"\n🛡️ <b>Настройки риска:</b>\n"
                     f"🎯 Риск на сделку: {user_config.get('risk_per_trade_percent', 2)}%\n"
                     f"📉 Макс. просадка: {user_config.get('global_daily_drawdown_percent', 10)}%\n"
-                    f"📊 Макс. сделок: {user_config.get('max_simultaneous_trades', 3)}\n"
+                    f"📊 Макс. сделок: {user_config.get('max_concurrent_trades', 3)}\n"
                 )
 
         await message.answer(

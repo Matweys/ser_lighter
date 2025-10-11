@@ -1158,8 +1158,14 @@ class BaseStrategy(ABC):
             # Рассчитываем общую маржу
             leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
             old_margin = (old_entry_price * old_size) / leverage if old_entry_price and old_size else Decimal('0')
-            # Точный расчёт маржи после усреднения из биржевых данных
-            total_margin = (new_avg_price * new_total_size) / leverage
+
+            # ПРАВИЛЬНЫЙ расчёт: используем реальную накопленную маржу (initial + усреднения)
+            # Для SignalScalper это self.current_total_margin, для других стратегий - расчёт от позиции
+            if hasattr(self, 'current_total_margin') and self.current_total_margin > 0:
+                total_margin = self.current_total_margin  # Реальная маржа (initial + все усреднения)
+            else:
+                # Fallback для стратегий без current_total_margin
+                total_margin = (new_avg_price * new_total_size) / leverage
 
             # Получаем информацию о SL для новой позиции
             if side:
