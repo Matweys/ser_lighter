@@ -168,48 +168,79 @@ class MultiAccountCoordinator:
 
     async def _check_deactivation_needed(self):
         """
-        Логика деактивации бота.
+        Логика деактивации и ротации ботов.
 
-        ДЕАКТИВИРУЕМ Бот N если:
-        - Существует более приоритетный бот M (M < N)
-        - Бот M свободен (status='free')
-        - Бот N свободен (status='free')
+        ПРАВИЛА:
+        1. АКТИВИРОВАТЬ более приоритетного бота ТОЛЬКО если он свободен И все вышеприоритетные тоже свободны
+        2. ДЕАКТИВИРОВАТЬ менее приоритетного бота если есть свободный более приоритетный бот
+        3. НЕ трогать ботов в позиции или ожидающих исполнения ордера
 
-        ВАЖНО: НЕ деактивируем если Бот N в позиции!
+        Логика:
+        - Ищем самого приоритетного СВОБОДНОГО бота
+        - Если он не активен, активируем его
+        - Деактивируем всех менее приоритетных СВОБОДНЫХ ботов
         """
-        # Проверяем от самого приоритетного к менее приоритетным
+        # 🔍 ДИАГНОСТИКА: Логируем состояние всех ботов перед проверкой
+        log_debug(self.user_id,
+                 f"🔍 [ДИАГНОСТИКА] Состояние активных ботов: {list(self.active_bots)}",
+                 "Coordinator")
+
+        for priority in [1, 2, 3]:
+            bot_data = self.bots[priority]
+            log_debug(self.user_id,
+                     f"🔍 [ДИАГНОСТИКА] Бот {priority}: status='{bot_data.status}', "
+                     f"position_active={bot_data.strategy.position_active}, "
+                     f"is_waiting={getattr(bot_data.strategy, 'is_waiting_for_trade', False)}",
+                     "Coordinator")
+
+        # ШАГ 1: Находим самого приоритетного СВОБОДНОГО бота
+        most_priority_free_bot = None
+
         for priority in [1, 2, 3]:
             bot_data = self.bots[priority]
             strategy = bot_data.strategy
 
-            # КРИТИЧНО: Проверяем РЕАЛЬНОЕ состояние позиции, не полагаемся только на status
-            # Статус обновляется каждые 5 секунд, но позиция может открыться между обновлениями
             is_really_free = not strategy.position_active
+            is_waiting = getattr(strategy, 'is_waiting_for_trade', False)
 
-            if is_really_free:
-                # Этот бот свободен - деактивируем менее приоритетных СВОБОДНЫХ
-                for lower_priority in range(priority + 1, 4):
-                    lower_bot = self.bots.get(lower_priority)
-                    if not lower_bot:
-                        continue
+            # Бот считается СВОБОДНЫМ только если НЕ в позиции И НЕ ожидает исполнения ордера
+            if is_really_free and not is_waiting:
+                most_priority_free_bot = priority
+                log_debug(self.user_id,
+                         f"🔍 [ДИАГНОСТИКА] Найден самый приоритетный свободный бот: {priority}",
+                         "Coordinator")
+                break  # Нашли - останавливаемся
 
-                    # Также проверяем реальное состояние для нижеприоритетных ботов
-                    lower_is_really_free = not lower_bot.strategy.position_active
+        # Если НЕТ свободных ботов - ничего не делаем
+        if most_priority_free_bot is None:
+            log_debug(self.user_id,
+                     f"🔍 [ДИАГНОСТИКА] Нет свободных ботов - пропускаем ротацию",
+                     "Coordinator")
+            return
 
-                    if lower_is_really_free and lower_priority in self.active_bots:
-                        log_info(self.user_id,
-                                f"🔵 Бот {priority} ({self.symbol}) свободен → Деактивирую свободного Бота {lower_priority}",
-                                "Coordinator")
-                        await self._deactivate_bot(lower_priority)
+        # ШАГ 2: Активируем самого приоритетного свободного бота (если он не активен)
+        if most_priority_free_bot not in self.active_bots:
+            log_info(self.user_id,
+                    f"🟢 Возвращаю Бота {most_priority_free_bot} ({self.symbol}) как приоритетного",
+                    "Coordinator")
+            await self._activate_bot(most_priority_free_bot)
 
-                # Активируем этот бот если он не активен И действительно свободен
-                if priority not in self.active_bots:
-                    log_info(self.user_id,
-                            f"🟢 Возвращаю Бота {priority} ({self.symbol}) как приоритетного",
-                            "Coordinator")
-                    await self._activate_bot(priority)
+        # ШАГ 3: Деактивируем всех менее приоритетных СВОБОДНЫХ ботов
+        for lower_priority in range(most_priority_free_bot + 1, 4):
+            lower_bot = self.bots.get(lower_priority)
+            if not lower_bot:
+                continue
 
-                break  # Нашли самого приоритетного свободного - останавливаемся
+            # Проверяем что нижеприоритетный бот действительно свободен
+            lower_is_really_free = not lower_bot.strategy.position_active
+            lower_is_waiting = getattr(lower_bot.strategy, 'is_waiting_for_trade', False)
+
+            # Деактивируем только если бот активен И свободен (не в позиции)
+            if lower_priority in self.active_bots and lower_is_really_free and not lower_is_waiting:
+                log_info(self.user_id,
+                        f"🔵 Бот {most_priority_free_bot} ({self.symbol}) свободен → Деактивирую свободного Бота {lower_priority}",
+                        "Coordinator")
+                await self._deactivate_bot(lower_priority)
 
     async def _activate_bot(self, priority: int):
         """
