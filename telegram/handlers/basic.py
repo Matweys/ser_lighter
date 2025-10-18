@@ -440,8 +440,24 @@ async def cmd_autotrade_start(message: Message, state: FSMContext):
             parse_mode="HTML")
         return
 
+    # КРИТИЧНО: Проверяем Redis данные против реального состояния в BotApplication
     session_status = await redis_manager.get_user_session(user_id)
-    if session_status and session_status.get('running', False):
+
+    # Валидация: проверяем реальное состояние в BotApplication
+    is_actually_running = False
+    if basic_handler.bot_application:
+        is_actually_running = user_id in basic_handler.bot_application.active_sessions
+
+        # Если сессия НЕ активна в BotApplication, но Redis говорит running=True - это stale data
+        if not is_actually_running and session_status and session_status.get('running', False):
+            log_warning(user_id,
+                       f"⚠️ Обнаружены stale данные в Redis при запуске: running={session_status.get('running')}. Очищаю...",
+                       module_name='basic_handlers')
+            await redis_manager.delete_user_session(user_id)
+            session_status = None
+
+    # Проверяем по реальному состоянию, а не по Redis
+    if is_actually_running:
         await message.answer("✅ Торговля уже запущена.")
         return
 
