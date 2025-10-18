@@ -365,7 +365,8 @@ class UserSession:
                         signal_data=signal_data_for_strategy,
                         api=api_client,  # Каждая стратегия использует свой API клиент
                         event_bus=self.event_bus,
-                        config=None
+                        config=None,
+                        bot_priority=priority  # КРИТИЧНО: Передаём приоритет для уникального ID
                     )
 
                     if not strategy:

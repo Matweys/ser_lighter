@@ -21,8 +21,8 @@ class SignalScalperStrategy(BaseStrategy):
     """
 
     def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, event_bus: EventBus,
-                 bot: "Bot", config: Optional[Dict] = None):
-        super().__init__(user_id, symbol, signal_data, api, event_bus, bot, config)
+                 bot: "Bot", config: Optional[Dict] = None, account_priority: int = 1):
+        super().__init__(user_id, symbol, signal_data, api, event_bus, bot, config, account_priority)
 
         # Компоненты
         self.signal_analyzer: Optional[SignalAnalyzer] = None

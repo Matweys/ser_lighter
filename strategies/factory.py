@@ -21,7 +21,8 @@ def create_strategy(
     api: BybitAPI,
     event_bus: EventBus,
     bot: Bot,
-    config: Optional[Dict[str, Any]] = None
+    config: Optional[Dict[str, Any]] = None,
+    bot_priority: Optional[int] = None
 ) -> Optional[BaseStrategy]:
     """
     Фабричная функция для создания стратегий.
@@ -37,4 +38,4 @@ def create_strategy(
         return None
 
     # Передаем все необходимые аргументы в конструктор
-    return strategy_class(user_id, symbol, signal_data, api, event_bus, bot, config)
+    return strategy_class(user_id, symbol, signal_data, api, event_bus, bot, config, bot_priority)

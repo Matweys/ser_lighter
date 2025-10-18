@@ -72,7 +72,9 @@ class BaseStrategy(ABC):
 
         # Состояние стратегии
         self.is_running = False
-        self.strategy_id = f"{self.user_id}_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # КРИТИЧНО: Добавляем account_priority в ID для уникальности каждого бота
+        bot_suffix = f"_bot{account_priority}" if account_priority else ""
+        self.strategy_id = f"{self.user_id}_{symbol}{bot_suffix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         self.strategy_type = self._get_strategy_type()
         
         # Конфигурация (загружается динамически)

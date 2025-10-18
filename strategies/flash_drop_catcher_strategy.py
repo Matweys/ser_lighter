@@ -34,9 +34,9 @@ class FlashDropCatcherStrategy(BaseStrategy):
     """
 
     def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any],
-                 api: BybitAPI, event_bus: EventBus, bot: Bot, config: Optional[Dict] = None):
+                 api: BybitAPI, event_bus: EventBus, bot: Bot, config: Optional[Dict] = None, account_priority: int = 1):
         """Инициализация стратегии Flash Drop Catcher"""
-        super().__init__(user_id, symbol, signal_data, api, event_bus, bot, config)
+        super().__init__(user_id, symbol, signal_data, api, event_bus, bot, config, account_priority)
 
         # === ОРИГИНАЛЬНАЯ ЛОГИКА СКАНЕРА (НЕ ТРОГАТЬ!) ===
         # Параметры для обнаружения падений
