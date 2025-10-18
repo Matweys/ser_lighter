@@ -180,21 +180,29 @@ class MultiAccountCoordinator:
         # Проверяем от самого приоритетного к менее приоритетным
         for priority in [1, 2, 3]:
             bot_data = self.bots[priority]
+            strategy = bot_data.strategy
 
-            if bot_data.status == 'free':
+            # КРИТИЧНО: Проверяем РЕАЛЬНОЕ состояние позиции, не полагаемся только на status
+            # Статус обновляется каждые 5 секунд, но позиция может открыться между обновлениями
+            is_really_free = not strategy.position_active
+
+            if is_really_free:
                 # Этот бот свободен - деактивируем менее приоритетных СВОБОДНЫХ
                 for lower_priority in range(priority + 1, 4):
                     lower_bot = self.bots.get(lower_priority)
                     if not lower_bot:
                         continue
 
-                    if lower_bot.status == 'free' and lower_priority in self.active_bots:
+                    # Также проверяем реальное состояние для нижеприоритетных ботов
+                    lower_is_really_free = not lower_bot.strategy.position_active
+
+                    if lower_is_really_free and lower_priority in self.active_bots:
                         log_info(self.user_id,
                                 f"🔵 Бот {priority} ({self.symbol}) свободен → Деактивирую свободного Бота {lower_priority}",
                                 "Coordinator")
                         await self._deactivate_bot(lower_priority)
 
-                # Активируем этот бот если он не активен
+                # Активируем этот бот если он не активен И действительно свободен
                 if priority not in self.active_bots:
                     log_info(self.user_id,
                             f"🟢 Возвращаю Бота {priority} ({self.symbol}) как приоритетного",

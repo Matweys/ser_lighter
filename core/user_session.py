@@ -392,8 +392,16 @@ class UserSession:
                 # Сохраняем координатор
                 self.coordinators[symbol] = coordinator
 
+                # КРИТИЧНО: Добавляем в active_strategies для отображения в /autotrade_status
+                # Используем первую стратегию как представителя координатора
+                strategy_id = f"{strategy_type}_{symbol}"
+                self.active_strategies[strategy_id] = bot_strategies[0]
+
                 # Обновление статистики
                 self.session_stats["strategies_launched"] += 1
+
+                # Сохраняем состояние сессии в Redis
+                await self._save_session_state()
 
                 # Публикация события (используем первую стратегию для ID)
                 event = StrategyStartEvent(
@@ -490,8 +498,15 @@ class UserSession:
                     # Удаляем координатор
                     del self.coordinators[symbol]
 
+                    # КРИТИЧНО: Удаляем из active_strategies для синхронизации с Redis
+                    if strategy_id in self.active_strategies:
+                        del self.active_strategies[strategy_id]
+
                     # Обновление статистики
                     self.session_stats["strategies_stopped"] += 1
+
+                    # Сохраняем состояние сессии в Redis
+                    await self._save_session_state()
 
                     # Отписываемся от WebSocket если нужно
                     global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
