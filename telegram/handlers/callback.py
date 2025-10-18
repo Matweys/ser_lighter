@@ -54,16 +54,6 @@ class CallbackHandler:
                 "risk_level": "MEDIUM",
                 "min_balance": Decimal('100')
             },
-            StrategyType.IMPULSE_TRAILING.value: {
-                "name": "🚀 Импульсный трейлинг",
-                "description": (
-                    "Стратегия следования за трендом с трейлинг-стопом.\n"
-                    "Входит в позицию при сильных импульсах.\n"
-                    "Максимизирует прибыль в трендовых движениях."
-                ),
-                "risk_level": "HIGH",
-                "min_balance": Decimal('150')
-            },
             StrategyType.FLASH_DROP_CATCHER.value: {
                 "name": "🚀 Flash Drop Catcher",
                 "description": (
@@ -77,17 +67,6 @@ class CallbackHandler:
         }
 
 callback_handler = CallbackHandler(None)  # EventBus будет инициализирован позже
-
-
-def convert_decimals_to_floats(data: Any) -> Any:
-    """Рекурсивно конвертирует Decimal в float для JSON-сериализации."""
-    if isinstance(data, Decimal):
-        return float(data)
-    if isinstance(data, dict):
-        return {k: convert_decimals_to_floats(v) for k, v in data.items()}
-    if isinstance(data, list):
-        return [convert_decimals_to_floats(i) for i in data]
-    return data
 
 
 def set_event_bus(event_bus: EventBus):
@@ -184,8 +163,6 @@ async def _generate_stats_report(user_id: int, start_date: Optional[datetime] = 
             # Переводим названия стратегий на русский
             if strategy_name == 'Signal Scalper':
                 strategy_name = 'Signal Scalper'
-            elif strategy_name == 'Impulse Trailing':
-                strategy_name = 'Impulse Trailing'
 
             net_pnl = stat['net_pnl']
             trades = stat['total_trades']
@@ -399,7 +376,6 @@ async def callback_configure_strategy(callback: CallbackQuery, state: FSMContext
         # Вместо getattr, который вызывал ошибку, используем явную карту соответствия.
         strategy_enum_map = {
             StrategyType.SIGNAL_SCALPER.value: ConfigType.STRATEGY_SIGNAL_SCALPER,
-            StrategyType.IMPULSE_TRAILING.value: ConfigType.STRATEGY_IMPULSE_TRAILING,
             StrategyType.FLASH_DROP_CATCHER.value: ConfigType.STRATEGY_FLASH_DROP_CATCHER
         }
         config_enum = strategy_enum_map.get(strategy_type)
@@ -457,7 +433,7 @@ async def callback_set_strategy_parameter(callback: CallbackQuery, state: FSMCon
         parts = callback.data.split("_")
 
         # Определяем, где заканчивается имя стратегии
-        # Известные стратегии: signal_scalper, impulse_trailing, flash_drop_catcher
+        # Известные стратегии: signal_scalper, flash_drop_catcher
         if len(parts) >= 5 and f"{parts[2]}_{parts[3]}_{parts[4]}" in ["flash_drop_catcher"]:
             strategy_type = f"{parts[2]}_{parts[3]}_{parts[4]}"
             param_key = "_".join(parts[5:])
@@ -716,13 +692,6 @@ async def callback_statistics(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Ошибка загрузки статистики", show_alert=True)
 
 
-@router.callback_query(F.data == "show_status")
-async def callback_show_status(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки 'Статус' (старая версия)"""
-    await callback.answer()
-    await cmd_status(callback.message, state)
-
-
 @router.callback_query(F.data == "show_trading_status")
 async def callback_show_trading_status(callback: CallbackQuery, state: FSMContext):
     """Обработчик кнопки 'Статус торговли' - вызывает /autotrade_status"""
@@ -765,7 +734,7 @@ async def callback_cancel(callback: CallbackQuery, state: FSMContext):
         log_info(user_id, "Пользователь отменил действие", module_name='callback')
         
     except Exception as e:
-        og_error(user_id, f"Ошибка отмены: {e}", module_name='callback')
+        log_error(user_id, f"Ошибка отмены: {e}", module_name='callback')
         await callback.answer("❌ Ошибка отмены", show_alert=True)
 
 
@@ -826,8 +795,10 @@ async def callback_show_balance(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     await callback.answer("Запрашиваю баланс...")
 
-    keys = await db_manager.get_api_keys(user_id, "bybit")
-    if not keys:
+    # === MULTI-ACCOUNT SUPPORT - проверяем все ключи ===
+    all_api_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
+
+    if not all_api_keys or len(all_api_keys) == 0:
         await callback.message.edit_text(
             "⚠️ <b>API ключи не настроены.</b>\n\nНе могу получить баланс. Для начала работы необходимо добавить API ключи от вашего аккаунта Bybit.\n\nПерейдите в 'API ключи' в главном меню.",
             parse_mode="HTML",
@@ -839,32 +810,116 @@ async def callback_show_balance(callback: CallbackQuery, state: FSMContext):
         exchange_config = system_config.get_exchange_config("bybit")
         use_demo = exchange_config.demo if exchange_config else False
 
-        async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], demo=use_demo) as api:
-            balance_data = await api.get_wallet_balance()
+        # === MULTI-ACCOUNT РЕЖИМ (3 аккаунта) ===
+        if len(all_api_keys) == 3:
+            log_info(user_id, "Получение баланса (callback) в multi-account режиме", "callback")
 
-        if balance_data and 'totalEquity' in balance_data:
-            total_equity = format_currency(balance_data['totalEquity'])
-            available_balance = format_currency(balance_data['totalAvailableBalance'])
-            unrealised_pnl = format_currency(balance_data['totalUnrealisedPnl'])
-            pnl_emoji = "📈" if balance_data['totalUnrealisedPnl'] >= 0 else "📉"
+            total_equity_sum = 0
+            total_available_sum = 0
+            total_unrealised_pnl_sum = 0
+            accounts_data = []
 
-            balance_text = (
-                f"💰 <b>Баланс аккаунта (Bybit)</b>\n\n"
-                f"<b>Общий капитал:</b> {total_equity}\n"
-                f"<b>Доступно для вывода:</b> {available_balance}\n"
-                f"<b>Нереализованный PnL:</b> {pnl_emoji} {unrealised_pnl}"
-            )
+            # Получаем баланс для каждого аккаунта
+            for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
+                priority = key_data['priority']
+                try:
+                    async with BybitAPI(
+                        user_id=user_id,
+                        api_key=key_data['api_key'],
+                        api_secret=key_data['secret_key'],
+                        demo=use_demo
+                    ) as api:
+                        balance_data = await api.get_wallet_balance()
+
+                    if balance_data and 'totalEquity' in balance_data:
+                        equity = float(balance_data['totalEquity'])
+                        available = float(balance_data['totalAvailableBalance'])
+                        unrealised_pnl = float(balance_data['totalUnrealisedPnl'])
+
+                        total_equity_sum += equity
+                        total_available_sum += available
+                        total_unrealised_pnl_sum += unrealised_pnl
+
+                        accounts_data.append({
+                            'priority': priority,
+                            'equity': equity,
+                            'available': available,
+                            'unrealised_pnl': unrealised_pnl
+                        })
+                except Exception as account_error:
+                    log_error(user_id, f"Ошибка получения баланса для аккаунта {priority} (callback): {account_error}", "callback")
+
+            if not accounts_data:
+                await callback.message.edit_text(
+                    "❌ Не удалось получить баланс ни с одного аккаунта.",
+                    reply_markup=get_back_keyboard("main_menu")
+                )
+                return
+
+            # Формируем сообщение для multi-account режима
+            pnl_emoji = "📈" if total_unrealised_pnl_sum >= 0 else "📉"
+            balance_text = "💰 <b>БАЛАНС (Multi-Account)</b>\n"
+            balance_text += "═" * 25 + "\n\n"
+            balance_text += f"🌟 <b>ОБЩИЙ:</b>\n"
+            balance_text += f"  • {format_currency(total_equity_sum)}\n"
+            balance_text += f"  • PnL: {pnl_emoji} {format_currency(total_unrealised_pnl_sum)}\n\n"
+
+            balance_text += "─" * 25 + "\n\n"
+
+            # Детали по ботам
+            priority_names = {1: "🥇 PRIMARY", 2: "🥈 SECONDARY", 3: "🥉 TERTIARY"}
+            for acc in accounts_data:
+                priority = acc['priority']
+                pnl_emoji_acc = "📈" if acc['unrealised_pnl'] >= 0 else "📉"
+                balance_text += f"{priority_names[priority]}:\n"
+                balance_text += f"  • {format_currency(acc['equity'])}\n"
+                balance_text += f"  • PnL: {pnl_emoji_acc} {format_currency(acc['unrealised_pnl'])}\n\n"
+
             await callback.message.edit_text(
                 balance_text,
                 parse_mode="HTML",
                 reply_markup=get_main_menu_keyboard()
             )
+
+        # === ОБЫЧНЫЙ РЕЖИМ (1 аккаунт) ===
         else:
-            error_message = balance_data.get("retMsg", "Проверьте права ваших API ключей")
-            await callback.message.edit_text(
-                f"❌ Не удалось получить данные о балансе: {error_message}",
-                reply_markup=get_back_keyboard("main_menu")
-            )
+            log_info(user_id, "Получение баланса (callback) в обычном режиме", "callback")
+
+            keys = await db_manager.get_api_keys(user_id, "bybit", account_priority=1)
+            if not keys:
+                await callback.message.edit_text(
+                    "❌ PRIMARY ключ не найден.",
+                    reply_markup=get_back_keyboard("main_menu")
+                )
+                return
+
+            async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], demo=use_demo) as api:
+                balance_data = await api.get_wallet_balance()
+
+            if balance_data and 'totalEquity' in balance_data:
+                total_equity = format_currency(balance_data['totalEquity'])
+                available_balance = format_currency(balance_data['totalAvailableBalance'])
+                unrealised_pnl = format_currency(balance_data['totalUnrealisedPnl'])
+                pnl_emoji = "📈" if balance_data['totalUnrealisedPnl'] >= 0 else "📉"
+
+                balance_text = (
+                    f"💰 <b>Баланс аккаунта (Bybit)</b>\n\n"
+                    f"<b>Общий капитал:</b> {total_equity}\n"
+                    f"<b>Доступно для вывода:</b> {available_balance}\n"
+                    f"<b>Нереализованный PnL:</b> {pnl_emoji} {unrealised_pnl}"
+                )
+                await callback.message.edit_text(
+                    balance_text,
+                    parse_mode="HTML",
+                    reply_markup=get_main_menu_keyboard()
+                )
+            else:
+                error_message = balance_data.get("retMsg", "Проверьте права ваших API ключей")
+                await callback.message.edit_text(
+                    f"❌ Не удалось получить данные о балансе: {error_message}",
+                    reply_markup=get_back_keyboard("main_menu")
+                )
+
     except Exception as e:
         log_error(user_id, f"Ошибка получения баланса по кнопке: {e}", module_name='callback')
         await callback.message.edit_text(
@@ -875,33 +930,81 @@ async def callback_show_balance(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "api_keys")
 async def callback_api_keys(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки 'API ключи'"""
+    """Обработчик кнопки 'API ключи' (Multi-Account Support)"""
     user_id = callback.from_user.id
     await callback.answer()
 
     try:
-        keys = await db_manager.get_api_keys(user_id, "bybit")
+        # Получаем ВСЕ API ключи пользователя
+        all_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
+        api_keys_count = len(all_keys)
 
-        if keys:
-            # Показываем только часть ключа для безопасности
-            api_key_short = keys[0][:4] + '...' + keys[0][-4:]
+        if api_keys_count == 0:
+            # Ключей нет
             text = (
-                f"🔑 <b>Настроенные API ключи (Bybit)</b>\n\n"
-                f"<b>API Key:</b> <code>{api_key_short}</code>\n\n"
-                f"✅ Ключи настроены. Вы можете обновить или удалить их."
+                f"🔑 <b>Управление API ключами Bybit</b>\n\n"
+                f"🔴 <b>API ключи не настроены</b>\n\n"
+                f"Для работы бота необходимо добавить минимум 1 API ключ от Bybit.\n\n"
+                f"💡 <b>Multi-Account режим:</b>\n"
+                f"   • 1 ключ → обычный режим (1 бот)\n"
+                f"   • 3 ключа → Multi-Account режим (3 бота с ротацией)\n\n"
+                f"Нажмите кнопку ниже, чтобы добавить PRIMARY ключ."
             )
-        else:
+        elif api_keys_count == 1:
+            # Есть PRIMARY ключ
+            primary_key = all_keys[0]
+            api_key_short = primary_key['api_key'][:4] + '...' + primary_key['api_key'][-4:]
             text = (
-                f"🔑 <b>Настройка API ключей</b>\n\n"
-                f"🔴 Ключи не настроены.\n\n"
-                f"Для работы бота необходимо добавить API ключи от вашего аккаунта на бирже Bybit."
+                f"🔑 <b>Управление API ключами Bybit</b>\n\n"
+                f"✅ <b>Настроено ключей: {api_keys_count}/3</b>\n\n"
+                f"<b>🥇 PRIMARY (Bot 1):</b> <code>{api_key_short}</code>\n"
+                f"🔘 SECONDARY (Bot 2): <i>не настроен</i>\n"
+                f"🔘 TERTIARY (Bot 3): <i>не настроен</i>\n\n"
+                f"💡 Работает в обычном режиме (1 бот).\n"
+                f"   Добавьте 2 дополнительных ключа для Multi-Account режима."
+            )
+        elif api_keys_count == 2:
+            # Есть PRIMARY и SECONDARY
+            primary_key = all_keys[0]
+            secondary_key = all_keys[1]
+            primary_short = primary_key['api_key'][:4] + '...' + primary_key['api_key'][-4:]
+            secondary_short = secondary_key['api_key'][:4] + '...' + secondary_key['api_key'][-4:]
+            text = (
+                f"🔑 <b>Управление API ключами Bybit</b>\n\n"
+                f"✅ <b>Настроено ключей: {api_keys_count}/3</b>\n\n"
+                f"<b>🥇 PRIMARY (Bot 1):</b> <code>{primary_short}</code>\n"
+                f"<b>🥈 SECONDARY (Bot 2):</b> <code>{secondary_short}</code>\n"
+                f"🔘 TERTIARY (Bot 3): <i>не настроен</i>\n\n"
+                f"⚠️ Почти готово!\n"
+                f"   Добавьте 3-й ключ для полноценного Multi-Account режима."
+            )
+        else:  # api_keys_count >= 3
+            # Все 3 ключа настроены - Multi-Account режим АКТИВЕН
+            primary_key = all_keys[0]
+            secondary_key = all_keys[1]
+            tertiary_key = all_keys[2]
+            primary_short = primary_key['api_key'][:4] + '...' + primary_key['api_key'][-4:]
+            secondary_short = secondary_key['api_key'][:4] + '...' + secondary_key['api_key'][-4:]
+            tertiary_short = tertiary_key['api_key'][:4] + '...' + tertiary_key['api_key'][-4:]
+            text = (
+                f"🔑 <b>Управление API ключами Bybit</b>\n\n"
+                f"🎉 <b>Multi-Account режим АКТИВЕН!</b>\n"
+                f"✅ Настроено ключей: {api_keys_count}/3\n\n"
+                f"<b>🥇 PRIMARY (Bot 1):</b> <code>{primary_short}</code>\n"
+                f"<b>🥈 SECONDARY (Bot 2):</b> <code>{secondary_short}</code>\n"
+                f"<b>🥉 TERTIARY (Bot 3):</b> <code>{tertiary_short}</code>\n\n"
+                f"🔀 Система автоматически управляет 3 ботами:\n"
+                f"   • Bot 1 активен по умолчанию\n"
+                f"   • Bot 2 активируется, если Bot 1 застрял\n"
+                f"   • Bot 3 активируется, если Bot 2 застрял\n"
+                f"   • Автоматическая деактивация свободных ботов"
             )
 
         from ..keyboards.inline import get_api_keys_keyboard
         await callback.message.edit_text(
             text,
             parse_mode="HTML",
-            reply_markup=get_api_keys_keyboard(keys_exist=bool(keys))
+            reply_markup=get_api_keys_keyboard(api_keys_count=api_keys_count)
         )
     except Exception as e:
         log_error(user_id, f"Ошибка отображения API ключей: {e}", module_name='callback')
@@ -991,25 +1094,50 @@ async def callback_confirm_reset_settings(callback: CallbackQuery, state: FSMCon
 
 @router.callback_query(F.data == "api_settings")
 async def callback_api_settings(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки 'API ключи' в настройках"""
+    """Обработчик кнопки 'API ключи' в настройках (Multi-Account Support)"""
     user_id = callback.from_user.id
     await callback.answer()
     try:
-        keys = await db_manager.get_api_keys(user_id, "bybit")
-        if keys:
-            api_key_short = keys[0][:4] + '...' + keys[0][-4:]
-            text = (
-                f"🔑 <b>Настроенные API ключи (Bybit)</b>\n\n"
-                f"<b>API Key:</b> <code>{api_key_short}</code>\n\n"
-                f"✅ Ключи настроены. Вы можете обновить их."
-            )
-        else:
+        # === MULTI-ACCOUNT SUPPORT - проверяем все ключи ===
+        all_api_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
+
+        if not all_api_keys or len(all_api_keys) == 0:
+            # Нет ключей вообще
             text = (
                 f"🔑 <b>Настройка API ключей</b>\n\n"
                 f"🔴 Ключи не настроены.\n\n"
                 f"Для работы бота необходимо добавить API ключи от Bybit."
             )
-        # TODO: Добавить клавиатуру для управления ключами (добавить/удалить)
+        elif len(all_api_keys) == 3:
+            # Multi-Account режим - все 3 ключа настроены
+            priority_names = {1: "🥇 PRIMARY (Bot 1)", 2: "🥈 SECONDARY (Bot 2)", 3: "🥉 TERTIARY (Bot 3)"}
+            text = "🔑 <b>Multi-Account режим АКТИВЕН</b>\n\n"
+
+            for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
+                priority = key_data['priority']
+                api_key = key_data['api_key']
+                api_key_short = api_key[:4] + '...' + api_key[-4:]
+
+                text += f"{priority_names[priority]}\n"
+                text += f"<b>API Key:</b> <code>{api_key_short}</code>\n\n"
+
+            text += "✅ Все 3 бота настроены для автоматической ротации."
+        else:
+            # Частичная настройка (1 или 2 ключа)
+            priority_names = {1: "🥇 PRIMARY (Bot 1)", 2: "🥈 SECONDARY (Bot 2)", 3: "🥉 TERTIARY (Bot 3)"}
+            text = f"🔑 <b>Настроенные API ключи ({len(all_api_keys)}/3)</b>\n\n"
+
+            for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
+                priority = key_data['priority']
+                api_key = key_data['api_key']
+                api_key_short = api_key[:4] + '...' + api_key[-4:]
+
+                text += f"{priority_names[priority]}\n"
+                text += f"<b>API Key:</b> <code>{api_key_short}</code>\n\n"
+
+            text += f"⚠️ Для Multi-Account режима добавьте ещё {3 - len(all_api_keys)} ключа.\n"
+            text += "Используйте меню '🔑 API ключи' из главного меню."
+
         await callback.message.edit_text(
             text,
             parse_mode="HTML",
@@ -1253,8 +1381,8 @@ async def callback_save_symbol_selection(callback: CallbackQuery, state: FSMCont
 
 
 @router.callback_query(F.data.startswith("enable_strategy_") | F.data.startswith("disable_strategy_"))
-async def callback_toggle_strategy(callback: CallbackQuery, state: FSMContext):
-    """Включает или отключает конкретную стратегию."""
+async def callback_toggle_strategy_global(callback: CallbackQuery, state: FSMContext):
+    """Включает или отключает конкретную стратегию в глобальном списке."""
     user_id = callback.from_user.id
     parts = callback.data.split("_")
     action = parts[0]
@@ -1402,7 +1530,11 @@ async def process_api_key_input(message: Message, state: FSMContext):
 
 @router.message(UserStates.AWAITING_API_SECRET)
 async def process_api_secret_input(message: Message, state: FSMContext):
-    """Обработка ввода API Secret с немедленным удалением и сохранением в БД"""
+    """
+    Обработка ввода API Secret с немедленным удалением и сохранением в БД (Multi-Account Support)
+
+    ПЕРЕДЕЛАНО для поддержки Multi-Account системы с account_priority
+    """
     user_id = message.from_user.id
 
     try:
@@ -1417,44 +1549,78 @@ async def process_api_secret_input(message: Message, state: FSMContext):
         # Немедленно удаляем сообщение пользователя
         await message.delete()
 
-        # Получаем сохраненный API Key
+        # Получаем сохраненные данные из состояния
         state_data = await state.get_data()
         api_key = state_data.get("api_key")
         menu_message_id = state_data.get("menu_message_id")
+        priority = state_data.get("api_key_priority", 1)  # По умолчанию PRIMARY
+        action = state_data.get("api_key_action", "add")
 
         if not api_key:
             await message.answer("❌ Ошибка: API Key не найден. Начните процесс заново.")
             await state.clear()
             return
 
-        # Сохраняем ключи в базу данных (они автоматически зашифруются)
+        # Сохраняем ключи в базу данных с указанным priority
         success = await db_manager.save_api_keys(
             user_id=user_id,
             exchange="bybit",
             api_key=api_key,
-            secret_key=api_secret
+            secret_key=api_secret,
+            account_priority=priority  # КЛЮЧЕВОЕ ИЗМЕНЕНИЕ - передаем priority
         )
 
         if success:
             # Показываем короткую версию ключа для подтверждения
             api_key_short = api_key[:4] + '...' + api_key[-4:]
 
+            priority_names = {
+                1: "PRIMARY (Bot 1)",
+                2: "SECONDARY (Bot 2)",
+                3: "TERTIARY (Bot 3)"
+            }
+            priority_name = priority_names[priority]
+
+            # Получаем ОБНОВЛЕННОЕ количество ключей для правильного отображения клавиатуры
+            all_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
+            api_keys_count = len(all_keys)
+
+            action_text = "обновлены" if action == "update" else "сохранены"
+
             text = (
-                f"✅ <b>API ключи успешно сохранены!</b>\n\n"
-                f"🔑 <b>API Key:</b> <code>{api_key_short}</code>\n\n"
+                f"✅ <b>{priority_name} API ключи успешно {action_text}!</b>\n\n"
+                f"🔑 <b>API Key:</b> <code>{api_key_short}</code>\n"
+                f"🔢 <b>Приоритет:</b> {priority}\n\n"
                 f"🔒 Ваши ключи зашифрованы и надежно хранятся в базе данных.\n"
                 f"🗑️ Все сообщения с ключами были удалены из чата.\n\n"
-                f"Теперь вы можете начать автоматическую торговлю!"
             )
 
-            log_info(user_id, f"API ключи успешно сохранены для пользователя {user_id}", module_name='callback')
+            # Добавляем информацию о Multi-Account режиме
+            if api_keys_count == 1:
+                text += (
+                    f"💡 <b>Текущий режим:</b> Обычный (1 бот)\n"
+                    f"   Добавьте еще 2 ключа для активации Multi-Account режима!"
+                )
+            elif api_keys_count == 2:
+                text += (
+                    f"💡 <b>Текущий режим:</b> Переходный (2 бота)\n"
+                    f"   Добавьте еще 1 ключ для полноценного Multi-Account режима!"
+                )
+            elif api_keys_count >= 3:
+                text += (
+                    f"🎉 <b>Multi-Account режим АКТИВЕН!</b>\n"
+                    f"   Система автоматически управляет 3 ботами с ротацией!"
+                )
+
+            log_info(user_id, f"API ключи успешно {action_text} для пользователя {user_id}, priority={priority}, всего ключей={api_keys_count}", module_name='callback')
         else:
+            api_keys_count = 0  # При ошибке показываем меню для 0 ключей
             text = (
                 f"❌ <b>Ошибка сохранения ключей</b>\n\n"
                 f"Не удалось сохранить API ключи в базу данных. "
                 f"Попробуйте еще раз или обратитесь в поддержку."
             )
-            log_error(user_id, "Ошибка сохранения API ключей в БД", module_name='callback')
+            log_error(user_id, f"Ошибка сохранения API ключей с priority={priority} в БД", module_name='callback')
 
         from ..keyboards.inline import get_api_keys_keyboard
         await bot_manager.bot.edit_message_text(
@@ -1462,7 +1628,7 @@ async def process_api_secret_input(message: Message, state: FSMContext):
             message_id=menu_message_id,
             text=text,
             parse_mode="HTML",
-            reply_markup=get_api_keys_keyboard(keys_exist=success)
+            reply_markup=get_api_keys_keyboard(api_keys_count=api_keys_count)  # ИСПРАВЛЕНО - используем api_keys_count
         )
 
         # Очищаем состояние
@@ -1523,7 +1689,7 @@ async def callback_confirm_delete_api_keys(callback: CallbackQuery, state: FSMCo
         await callback.message.edit_text(
             text,
             parse_mode="HTML",
-            reply_markup=get_api_keys_keyboard(keys_exist=False)
+            reply_markup=get_api_keys_keyboard(api_keys_count=0)  # ИСПРАВЛЕНО - используем api_keys_count
         )
         await callback.answer("Ключи удалены", show_alert=False)
 
@@ -1532,12 +1698,254 @@ async def callback_confirm_delete_api_keys(callback: CallbackQuery, state: FSMCo
         await callback.answer("❌ Ошибка при удалении ключей", show_alert=True)
 
 
+# ============================================================================
+# MULTI-ACCOUNT API KEYS HANDLERS (добавлено для поддержки 3 ключей)
+# ============================================================================
+
+@router.callback_query(F.data.startswith("add_api_key_priority_") | F.data.startswith("update_api_key_priority_"))
+async def callback_add_update_api_key_with_priority(callback: CallbackQuery, state: FSMContext):
+    """
+    Начало процесса добавления/обновления API ключа с указанным priority (Multi-Account Support)
+
+    Обрабатывает callback_data:
+    - add_api_key_priority_1 / add_api_key_priority_2 / add_api_key_priority_3
+    - update_api_key_priority_1 / update_api_key_priority_2 / update_api_key_priority_3
+    """
+    user_id = callback.from_user.id
+
+    try:
+        # Парсим callback_data для получения action и priority
+        if callback.data.startswith("add_api_key_priority_"):
+            action = "add"
+            priority = int(callback.data.replace("add_api_key_priority_", ""))
+        else:  # update_api_key_priority_
+            action = "update"
+            priority = int(callback.data.replace("update_api_key_priority_", ""))
+
+        # Валидация priority
+        if priority not in [1, 2, 3]:
+            await callback.answer("❌ Неверный приоритет ключа", show_alert=True)
+            return
+
+        # Определяем имя для отображения
+        priority_names = {
+            1: "PRIMARY (Bot 1)",
+            2: "SECONDARY (Bot 2)",
+            3: "TERTIARY (Bot 3)"
+        }
+        priority_name = priority_names[priority]
+        action_text = "Обновление" if action == "update" else "Добавление"
+
+        # Сохраняем priority в состояние
+        await state.set_state(UserStates.AWAITING_API_KEY)
+        await state.update_data(
+            menu_message_id=callback.message.message_id,
+            api_key_priority=priority,
+            api_key_action=action
+        )
+
+        text = (
+            f"🔑 <b>{action_text} {priority_name} API ключа Bybit</b>\n\n"
+            f"Шаг 1 из 2: Введите <b>API Key</b>\n\n"
+            f"⚠️ <b>ВАЖНО:</b>\n"
+            f"• Сообщение с ключом будет автоматически удалено после ввода\n"
+            f"• Ключ будет зашифрован перед сохранением в базе данных\n"
+            f"• API ключ должен иметь права на торговлю (Trade)\n\n"
+            f"💡 <b>Для Multi-Account режима:</b>\n"
+            f"   У каждого ключа должны быть права на отдельный суб-аккаунт Bybit\n\n"
+            f"Введите ваш API Key для {priority_name}:"
+        )
+
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=get_back_keyboard("api_keys")
+        )
+        await callback.answer()
+
+        log_info(user_id, f"Пользователь начал процесс {action} API ключа с priority={priority}", module_name='callback')
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка начала добавления/обновления API ключа: {e}", module_name='callback')
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("delete_api_key_priority_"))
+async def callback_delete_api_key_with_priority(callback: CallbackQuery, state: FSMContext):
+    """
+    Подтверждение удаления конкретного API ключа по priority (Multi-Account Support)
+
+    Обрабатывает callback_data:
+    - delete_api_key_priority_1 (PRIMARY)
+    - delete_api_key_priority_2 (SECONDARY)
+    - delete_api_key_priority_3 (TERTIARY)
+    """
+    user_id = callback.from_user.id
+
+    try:
+        # Парсим priority из callback_data
+        priority = int(callback.data.replace("delete_api_key_priority_", ""))
+
+        # Валидация priority
+        if priority not in [1, 2, 3]:
+            await callback.answer("❌ Неверный приоритет ключа", show_alert=True)
+            return
+
+        # Определяем имя для отображения
+        priority_names = {
+            1: "PRIMARY (Bot 1)",
+            2: "SECONDARY (Bot 2)",
+            3: "TERTIARY (Bot 3)"
+        }
+        priority_name = priority_names[priority]
+
+        # Проверяем, существует ли ключ с таким priority
+        all_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
+        key_exists = any(key['priority'] == priority for key in all_keys)
+
+        if not key_exists:
+            await callback.answer(f"❌ {priority_name} ключ не найден", show_alert=True)
+            return
+
+        # Получаем информацию о ключе для отображения
+        target_key = next(key for key in all_keys if key['priority'] == priority)
+        api_key_short = target_key['api_key'][:4] + '...' + target_key['api_key'][-4:]
+
+        text = (
+            f"⚠️ <b>Подтверждение удаления {priority_name} API ключа</b>\n\n"
+            f"🔑 <b>API Key:</b> <code>{api_key_short}</code>\n"
+            f"🔢 <b>Приоритет:</b> {priority}\n\n"
+            f"Вы уверены, что хотите удалить этот ключ?\n\n"
+        )
+
+        # Добавляем предупреждение в зависимости от количества ключей
+        if len(all_keys) == 3:
+            text += (
+                f"⚠️ <b>ВНИМАНИЕ:</b> После удаления этого ключа у вас останется 2 ключа.\n"
+                f"   Multi-Account режим будет частично деактивирован."
+            )
+        elif len(all_keys) == 2:
+            text += (
+                f"⚠️ <b>ВНИМАНИЕ:</b> После удаления этого ключа у вас останется 1 ключ.\n"
+                f"   Система перейдет в обычный режим (1 бот)."
+            )
+        elif len(all_keys) == 1:
+            text += (
+                f"🚨 <b>ВНИМАНИЕ:</b> Это ваш единственный ключ!\n"
+                f"   После удаления вы не сможете использовать автоматическую торговлю."
+            )
+
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=get_confirmation_keyboard(f"delete_api_key_priority_{priority}")
+        )
+        await callback.answer()
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка отображения подтверждения удаления API ключа: {e}", module_name='callback')
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("confirm_delete_api_key_priority_"))
+async def callback_confirm_delete_api_key_with_priority(callback: CallbackQuery, state: FSMContext):
+    """
+    Выполнение удаления конкретного API ключа по priority (Multi-Account Support)
+    """
+    user_id = callback.from_user.id
+
+    try:
+        # Парсим priority из callback_data
+        priority = int(callback.data.replace("confirm_delete_api_key_priority_", ""))
+
+        # Валидация priority
+        if priority not in [1, 2, 3]:
+            await callback.answer("❌ Неверный приоритет ключа", show_alert=True)
+            return
+
+        # Удаляем конкретный ключ через деактивацию записи в БД
+        query = """
+            UPDATE user_api_keys
+            SET is_active = FALSE, updated_at = NOW()
+            WHERE user_id = $1 AND exchange = $2 AND account_priority = $3
+        """
+
+        async with db_manager.get_connection() as conn:
+            result = await conn.execute(query, user_id, "bybit", priority)
+
+        # Проверяем, был ли удален ключ
+        if result == "UPDATE 0":
+            await callback.answer("❌ Ключ не найден", show_alert=True)
+            return
+
+        # Получаем ОБНОВЛЕННОЕ количество ключей
+        all_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
+        api_keys_count = len(all_keys)
+
+        priority_names = {
+            1: "PRIMARY (Bot 1)",
+            2: "SECONDARY (Bot 2)",
+            3: "TERTIARY (Bot 3)"
+        }
+        priority_name = priority_names[priority]
+
+        text = (
+            f"✅ <b>{priority_name} API ключ успешно удален</b>\n\n"
+            f"🔢 Удален ключ с приоритетом: {priority}\n"
+            f"📊 Осталось ключей: {api_keys_count}/3\n\n"
+        )
+
+        # Добавляем информацию о текущем режиме
+        if api_keys_count == 0:
+            text += (
+                f"⚠️ У вас больше нет API ключей.\n"
+                f"   Добавьте новые ключи для возобновления торговли."
+            )
+        elif api_keys_count == 1:
+            text += (
+                f"💡 Система переключена в обычный режим (1 бот).\n"
+                f"   Добавьте 2 дополнительных ключа для Multi-Account режима."
+            )
+        elif api_keys_count == 2:
+            text += (
+                f"💡 Multi-Account режим частично активен (2 бота).\n"
+                f"   Добавьте еще 1 ключ для полного Multi-Account режима."
+            )
+
+        log_info(user_id, f"API ключ с priority={priority} удален для пользователя {user_id}, осталось {api_keys_count} ключей", module_name='callback')
+
+        from ..keyboards.inline import get_api_keys_keyboard
+        await callback.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=get_api_keys_keyboard(api_keys_count=api_keys_count)
+        )
+        await callback.answer("Ключ удален", show_alert=False)
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка удаления API ключа с priority: {e}", module_name='callback')
+        await callback.answer("❌ Ошибка при удалении ключа", show_alert=True)
+
+
+@router.callback_query(F.data == "noop")
+async def callback_noop(callback: CallbackQuery, state: FSMContext):
+    """
+    Заглушка для информационной кнопки "Multi-Account режим АКТИВЕН"
+
+    Эта кнопка не выполняет никаких действий, просто показывает уведомление
+    """
+    await callback.answer(
+        "🎉 Multi-Account режим активен! Система автоматически управляет 3 ботами.",
+        show_alert=True
+    )
+
+
 # Обработчик неизвестных callback
 @router.callback_query()
 async def callback_unknown(callback: CallbackQuery):
     """Обработчик неизвестных callback запросов"""
     user_id = callback.from_user.id
-    
+
     log_warning(user_id, f"Неизвестный callback: {callback.data}", module_name='callback')
     await callback.answer("❌ Неизвестная команда", show_alert=True)
 

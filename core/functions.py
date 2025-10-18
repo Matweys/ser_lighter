@@ -233,7 +233,7 @@ def calculate_bollinger_bands(prices: List[Union[int, float, Decimal]],
 def detect_market_condition(prices: List[Union[int, float, Decimal]], volumes: List[Union[int, float, Decimal]] = None, period: int = 20) -> MarketCondition:
     """Определение рыночных условий с учетом объема"""
     if len(prices) < period:
-        return MarketCondition.UNKNOWN
+        return MarketCondition.UNCERTAIN
 
     decimal_prices = [to_decimal(p) for p in prices[-period:]]
 

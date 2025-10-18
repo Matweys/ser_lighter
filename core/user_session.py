@@ -26,7 +26,6 @@ from cache.redis_manager import redis_manager, ConfigType
 from core.enums import StrategyType, EventType
 from analysis.meta_strategist import MetaStrategist
 from analysis.market_analyzer import MarketAnalyzer
-from analysis.risk_manager import RiskManager
 from api.bybit_api import BybitAPI
 from websocket.websocket_manager import GlobalWebSocketManager, DataFeedHandler
 from database.db_trades import db_manager
@@ -37,6 +36,7 @@ from strategies.base_strategy import BaseStrategy
 from strategies.factory import create_strategy
 
 from telegram.bot import bot_manager
+from coordinator.multi_account_coordinator import MultiAccountCoordinator
 
 
 
@@ -50,7 +50,6 @@ class UserSession:
 
     Управляет всеми компонентами торговли для одного пользователя:
     - MetaStrategist (анализ и принятие решений)
-    - RiskManager (управление рисками)
     - DataFeedHandler (получение данных)
     - Активные стратегии
 
@@ -77,15 +76,19 @@ class UserSession:
         self.api: Optional[BybitAPI] = None
         # Основные компоненты
         self.meta_strategist: Optional[MetaStrategist] = None
-        self.risk_manager: Optional[RiskManager] = None
         self.data_feed_handler: Optional[DataFeedHandler] = None
 
         # Управление стратегиями
         self.active_strategies: Dict[str, BaseStrategy] = {}
         self.strategy_tasks: Dict[str, asyncio.Task] = {}
 
+        # === MULTI-ACCOUNT COORDINATOR SYSTEM ===
+        # Координаторы для multi-account торговли (3 бота на символ)
+        self.coordinators: Dict[str, MultiAccountCoordinator] = {}  # symbol -> coordinator
+        self.api_clients: List[BybitAPI] = []  # Список из 3 API клиентов
+
         # Система управления многосимвольными стратегиями
-        self.MAX_STRATEGY_SLOTS = 3  # Максимум символов для одной стратегии
+        self.MAX_STRATEGY_SLOTS = 5  # Максимум символов для одной стратегии
         self.strategy_queues: Dict[str, List[str]] = {}  # strategy_type -> [symbols] в очереди ожидания
 
         # Статистика сессии
@@ -167,39 +170,8 @@ class UserSession:
         позициями на бирже. Добавлено детальное логирование для отладки.
         """
         try:
-            lock_key = f"user:{self.user_id}:impulse_trailing_lock"
-            log_debug(self.user_id, f"Проверка на 'залипший' лок: ключ '{lock_key}'", "UserSession")
-
-            lock_data_raw = await redis_manager.get_cached_data(lock_key)
-            if not lock_data_raw:
-                log_debug(self.user_id, "Блокировка не найдена. Очистка не требуется.", "UserSession")
-                return
-
-            log_info(self.user_id, f"Обнаружены данные блокировки: {lock_data_raw}", "UserSession")
-
-            try:
-                lock_data = json.loads(lock_data_raw) if isinstance(lock_data_raw, str) else lock_data_raw
-            except (json.JSONDecodeError, TypeError):
-                log_warning(self.user_id, f"Поврежденные JSON-данные в ключе блокировки. Удаляю ключ.", "UserSession")
-                await redis_manager.delete_cached_data(lock_key)
-                return
-
-            symbol = lock_data.get("symbol")
-            order_id = lock_data.get("order_id", "N/A")
-            if not symbol:
-                log_warning(self.user_id, "В ключе блокировки отсутствует символ. Удаляю ключ.", "UserSession")
-                await redis_manager.delete_cached_data(lock_key)
-                return
-
-            log_info(self.user_id, f"Проверяю реальную позицию на бирже для символа {symbol} (ордер {order_id})...", "UserSession")
-            positions_on_exchange = await self.api.get_positions(symbol=symbol)
-
-            if not positions_on_exchange:
-                log_warning(self.user_id, f"Позиция по {symbol} на бирже НЕ найдена. Блокировка считается 'залипшей'. Безопасно удаляю.", "UserSession")
-                await redis_manager.delete_cached_data(lock_key)
-            else:
-                log_info(self.user_id, f"Позиция по {symbol} на бирже НАЙДЕНА. Блокировка подтверждена. Очистка не требуется.", "UserSession")
-
+            # Метод оставлен для совместимости, но больше не используется
+            log_debug(self.user_id, "Очистка стейл блокировок пропущена (impulse_trailing удалён)", "UserSession")
         except Exception as e:
             log_error(self.user_id, f"Критическая ошибка при очистке 'залипших' блокировок: {e}", "UserSession")
 
@@ -307,7 +279,6 @@ class UserSession:
             # Статус компонентов
             components_status = {
                 "meta_strategist": self.meta_strategist.running if self.meta_strategist else False,
-                "risk_manager": self.risk_manager.running if self.risk_manager else False,
                 "data_feed_handler": self.data_feed_handler.running if self.data_feed_handler else False
             }
 
@@ -336,34 +307,13 @@ class UserSession:
     async def start_strategy(self, strategy_type: str, symbol: str, analysis_data: Optional[Dict] = None) -> bool:
         """
         Запускает стратегию, предварительно получая для нее самые свежие аналитические данные.
+
+        В multi-account режиме (3 API ключа) для SignalScalper создаёт MultiAccountCoordinator.
+        В обычном режиме создаёт одну стратегию.
         """
         try:
-            # --- ФИНАЛЬНАЯ ЛОГИКА: УМНАЯ ОБРАБОТКА ДАННЫХ ---
             # Инициализируем данные по умолчанию. Если пришли данные (для grid/restart), используем их.
             signal_data_for_strategy = analysis_data or {}
-
-            # Для Impulse Trailing мы ВСЕГДА игнорируем пришедшие данные и запрашиваем свежие.
-            if strategy_type == "impulse_trailing":
-                lock_key = f"user:{self.user_id}:impulse_trailing_lock"
-                if await redis_manager.get_cached_data(lock_key):
-                    log_warning(self.user_id,
-                                f"Запуск impulse_trailing для {symbol} отклонен: другая импульсная сделка уже активна.",
-                                module_name=__name__)
-                    return False
-
-                analyzer = MarketAnalyzer(self.user_id, self.api)
-                impulse_config = await redis_manager.get_config(self.user_id, ConfigType.STRATEGY_IMPULSE_TRAILING)
-                timeframe = impulse_config.get("analysis_timeframe", "5m")
-                fresh_analysis = await analyzer.get_market_analysis(symbol, timeframe)
-
-                if not fresh_analysis:
-                    log_warning(self.user_id, f"Повторный анализ для {symbol} не дал результата. Сигнал пропущен.",
-                                module_name=__name__)
-                    return False
-
-                # Перезаписываем данные на самые свежие
-                signal_data_for_strategy = fresh_analysis.to_dict()
-            # --- КОНЕЦ ФИНАЛЬНОЙ ЛОГИКИ ---
 
             strategy_id = f"{strategy_type}_{symbol}"
 
@@ -372,24 +322,17 @@ class UserSession:
                 return True
 
             # СИСТЕМА УПРАВЛЕНИЯ СЛОТАМИ: Проверяем возможность запуска
-            # ВАЖНО: impulse_trailing использует собственную Redis-блокировку, слоты не проверяем
-            if strategy_type != "impulse_trailing":
-                slot_check_result = await self._check_strategy_slots(strategy_type, symbol)
+            slot_check_result = await self._check_strategy_slots(strategy_type, symbol)
 
-                if slot_check_result == "start_immediately":
-                    log_info(self.user_id, f"✅ Есть свободный слот для {strategy_type}_{symbol}", module_name=__name__)
-                elif slot_check_result == "replaced_inactive":
-                    log_info(self.user_id, f"🔄 Заменена неактивная стратегия для запуска {strategy_type}_{symbol}", module_name=__name__)
-                elif slot_check_result == "queued":
-                    log_info(self.user_id, f"⏳ Стратегия {strategy_type}_{symbol} добавлена в очередь ожидания", module_name=__name__)
-                    return True  # Стратегия добавлена в очередь, но не запущена
-                elif slot_check_result == "blocked":
-                    log_warning(self.user_id, f"🚫 Запуск {strategy_type}_{symbol} заблокирован: все слоты заняты активными позициями", module_name=__name__)
-                    return False
-
-            if not await self.risk_manager.can_open_new_trade(symbol):
-                log_warning(self.user_id, f"Открытие новой сделки для {symbol} отклонено риск-менеджером.",
-                            module_name=__name__)
+            if slot_check_result == "start_immediately":
+                log_info(self.user_id, f"✅ Есть свободный слот для {strategy_type}_{symbol}", module_name=__name__)
+            elif slot_check_result == "replaced_inactive":
+                log_info(self.user_id, f"🔄 Заменена неактивная стратегия для запуска {strategy_type}_{symbol}", module_name=__name__)
+            elif slot_check_result == "queued":
+                log_info(self.user_id, f"⏳ Стратегия {strategy_type}_{symbol} добавлена в очередь ожидания", module_name=__name__)
+                return True  # Стратегия добавлена в очередь, но не запущена
+            elif slot_check_result == "blocked":
+                log_warning(self.user_id, f"🚫 Запуск {strategy_type}_{symbol} заблокирован: все слоты заняты активными позициями", module_name=__name__)
                 return False
 
             if not self.api:
@@ -398,51 +341,119 @@ class UserSession:
                           module_name=__name__)
                 return False
 
-            strategy = create_strategy(
-                strategy_type=strategy_type,
-                bot=self.bot,
-                user_id=self.user_id,
-                symbol=symbol,
-                signal_data=signal_data_for_strategy,  # Передаем подготовленные данные
-                api=self.api,
-                event_bus=self.event_bus,
-                config=None
-            )
+            # === MULTI-ACCOUNT COORDINATOR MODE ===
+            # Если есть 3 API клиента И стратегия = SignalScalper, создаём координатор
+            is_multi_account_mode = len(self.api_clients) == 3
+            is_signal_scalper = strategy_type == StrategyType.SIGNAL_SCALPER.value
 
-            if not strategy:
-                log_error(self.user_id, f"Не удалось создать стратегию типа: {strategy_type}", module_name=__name__)
-                return False
+            if is_multi_account_mode and is_signal_scalper:
+                log_info(self.user_id, f"🔀 Запуск Multi-Account Coordinator для {symbol}", module_name=__name__)
 
-            # КРИТИЧНО: Передаём флаг восстановления в стратегию
-            if hasattr(self, 'is_bot_restart') and self.is_bot_restart:
-                strategy.is_bot_restart_recovery = True
-                log_info(self.user_id, f"🔄 Флаг восстановления передан стратегии {strategy_type}_{symbol}", module_name=__name__)
+                # Проверяем, не запущен ли уже координатор для этого символа
+                if symbol in self.coordinators:
+                    log_warning(self.user_id, f"Координатор для {symbol} уже запущен", module_name=__name__)
+                    return True
 
-            # Запуск стратегии
-            if await strategy.start():
-                # ВАЖНО: Отправляем уведомление СРАЗУ после start(), когда strategy_id уже создан
-                # но ДО добавления в active_strategies (чтобы пользователь получил уведомление раньше)
-                await self._send_strategy_start_notification(strategy)
+                # Создаём 3 стратегии (по одной для каждого API клиента)
+                bot_strategies = []
+                for priority, api_client in enumerate(self.api_clients, start=1):
+                    strategy = create_strategy(
+                        strategy_type=strategy_type,
+                        bot=self.bot,
+                        user_id=self.user_id,
+                        symbol=symbol,
+                        signal_data=signal_data_for_strategy,
+                        api=api_client,  # Каждая стратегия использует свой API клиент
+                        event_bus=self.event_bus,
+                        config=None
+                    )
 
-                self.active_strategies[strategy_id] = strategy
+                    if not strategy:
+                        log_error(self.user_id, f"Не удалось создать стратегию для Бота {priority}", module_name=__name__)
+                        return False
+
+                    # Передаём флаг восстановления если нужно
+                    if hasattr(self, 'is_bot_restart') and self.is_bot_restart:
+                        strategy.is_bot_restart_recovery = True
+
+                    bot_strategies.append(strategy)
+                    log_info(self.user_id, f"✅ Стратегия для Бота {priority} ({symbol}) создана", module_name=__name__)
+
+                # Создаём координатор с 3 стратегиями
+                coordinator = MultiAccountCoordinator(
+                    user_id=self.user_id,
+                    symbol=symbol,
+                    bot_strategies=bot_strategies
+                )
+
+                # Запускаем координатор (он сам запустит Бот 1)
+                await coordinator.start()
+
+                # Сохраняем координатор
+                self.coordinators[symbol] = coordinator
 
                 # Обновление статистики
                 self.session_stats["strategies_launched"] += 1
 
-                # Публикация события
+                # Публикация события (используем первую стратегию для ID)
                 event = StrategyStartEvent(
                     user_id=self.user_id,
                     strategy_type=strategy_type,
                     symbol=symbol,
-                    strategy_id=strategy.strategy_id  # <-- Добавлен обязательный параметр
+                    strategy_id=f"coordinator_{strategy_type}_{symbol}"
                 )
                 await self.event_bus.publish(event)
 
-                log_info(self.user_id, f"Стратегия {strategy_id} запущена", module_name=__name__)
+                log_info(self.user_id, f"🔀 Multi-Account Coordinator для {symbol} запущен успешно", module_name=__name__)
                 return True
+
+            # === ОБЫЧНЫЙ РЕЖИМ (старая логика) ===
             else:
-                log_error(self.user_id, f"Не удалось запустить стратегию {strategy_id}", module_name=__name__)
-                return False
+                strategy = create_strategy(
+                    strategy_type=strategy_type,
+                    bot=self.bot,
+                    user_id=self.user_id,
+                    symbol=symbol,
+                    signal_data=signal_data_for_strategy,  # Передаем подготовленные данные
+                    api=self.api,
+                    event_bus=self.event_bus,
+                    config=None
+                )
+
+                if not strategy:
+                    log_error(self.user_id, f"Не удалось создать стратегию типа: {strategy_type}", module_name=__name__)
+                    return False
+
+                # КРИТИЧНО: Передаём флаг восстановления в стратегию
+                if hasattr(self, 'is_bot_restart') and self.is_bot_restart:
+                    strategy.is_bot_restart_recovery = True
+                    log_info(self.user_id, f"🔄 Флаг восстановления передан стратегии {strategy_type}_{symbol}", module_name=__name__)
+
+                # Запуск стратегии
+                if await strategy.start():
+                    # ВАЖНО: Отправляем уведомление СРАЗУ после start(), когда strategy_id уже создан
+                    # но ДО добавления в active_strategies (чтобы пользователь получил уведомление раньше)
+                    await self._send_strategy_start_notification(strategy)
+
+                    self.active_strategies[strategy_id] = strategy
+
+                    # Обновление статистики
+                    self.session_stats["strategies_launched"] += 1
+
+                    # Публикация события
+                    event = StrategyStartEvent(
+                        user_id=self.user_id,
+                        strategy_type=strategy_type,
+                        symbol=symbol,
+                        strategy_id=strategy.strategy_id  # <-- Добавлен обязательный параметр
+                    )
+                    await self.event_bus.publish(event)
+
+                    log_info(self.user_id, f"Стратегия {strategy_id} запущена", module_name=__name__)
+                    return True
+                else:
+                    log_error(self.user_id, f"Не удалось запустить стратегию {strategy_id}", module_name=__name__)
+                    return False
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка запуска стратегии {strategy_type}: {e}", module_name=__name__)
@@ -450,16 +461,60 @@ class UserSession:
 
     async def stop_strategy(self, strategy_id: str, reason: str = "Manual stop") -> bool:
         """
-        Остановка стратегии
+        Остановка стратегии (поддерживает multi-account координаторы)
 
         Args:
-            strategy_id: ID стратегии
+            strategy_id: ID стратегии (формат: "strategy_type_symbol")
             reason: Причина остановки
 
         Returns:
             bool: True если стратегия остановлена успешно
         """
         try:
+            # === MULTI-ACCOUNT РЕЖИМ: Проверяем, это координатор? ===
+            # strategy_id имеет формат "signal_scalper_BTCUSDT"
+            # Извлекаем symbol из strategy_id
+            parts = strategy_id.split('_')
+            if len(parts) >= 2:
+                # Последняя часть - symbol (может содержать '_' в названии, например BTC_USDT)
+                # Поэтому берём всё после первого '_'
+                symbol = '_'.join(parts[1:]) if len(parts) > 1 else parts[-1]
+
+                # Проверяем, есть ли координатор для этого символа
+                if symbol in self.coordinators:
+                    log_info(self.user_id, f"🔀 Остановка Multi-Account Coordinator для {symbol}", module_name=__name__)
+
+                    coordinator = self.coordinators[symbol]
+                    await coordinator.stop()
+
+                    # Удаляем координатор
+                    del self.coordinators[symbol]
+
+                    # Обновление статистики
+                    self.session_stats["strategies_stopped"] += 1
+
+                    # Отписываемся от WebSocket если нужно
+                    global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
+                    current_watchlist = set(global_config.get("watchlist_symbols", []))
+
+                    if symbol not in current_watchlist:
+                        await self.global_ws_manager.unsubscribe_symbol(self.user_id, symbol)
+                        log_info(self.user_id, f"✅ WebSocket отписан от {symbol} (координатор остановлен)", module_name=__name__)
+
+                    # Публикация события
+                    event = StrategyStopEvent(
+                        user_id=self.user_id,
+                        strategy_id=f"coordinator_{strategy_id}",
+                        reason=reason,
+                        symbol=symbol,
+                        strategy_type=StrategyType.SIGNAL_SCALPER.value
+                    )
+                    await self.event_bus.publish(event)
+
+                    log_info(self.user_id, f"🔀 Coordinator для {symbol} остановлен: {reason}", module_name=__name__)
+                    return True
+
+            # === ОБЫЧНЫЙ РЕЖИМ: Обработка одиночной стратегии ===
             if strategy_id not in self.active_strategies:
                 log_warning(self.user_id, f"Стратегия {strategy_id} не найдена", module_name=__name__)
                 return True
@@ -522,26 +577,53 @@ class UserSession:
 
         """Инициализация компонентов сессии"""
         try:
-            # Получаем ключи из БД и создаем API клиент
-            keys = await db_manager.get_api_keys(self.user_id, "bybit")
-            if not keys or not keys[0] or not keys[1]:
-                raise ValueError(f"API ключи для пользователя {self.user_id} не найдены или неполные в БД.")
-
-            api_key, secret_key, _ = keys
-
             exchange_config = system_config.get_exchange_config("bybit")
             use_demo = exchange_config.demo if exchange_config else False
 
-            self.api = BybitAPI(
-                user_id=self.user_id,
-                api_key=api_key,
-                api_secret=secret_key,
-                demo=use_demo,
-                event_bus=self.event_bus
-            )
+            # === MULTI-ACCOUNT SYSTEM: Проверяем наличие 3 API ключей ===
+            all_api_keys = await db_manager.get_all_user_api_keys(self.user_id, "bybit")
+
+            if all_api_keys and len(all_api_keys) == 3:
+                # Пользователь настроил 3 API ключа - используем multi-account режим
+                log_info(self.user_id, f"🔀 Обнаружено 3 API ключа - активирую Multi-Account Coordinator режим", module_name=__name__)
+
+                # Создаём 3 API клиента (для каждого аккаунта)
+                for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
+                    api_client = BybitAPI(
+                        user_id=self.user_id,
+                        api_key=key_data['api_key'],
+                        api_secret=key_data['secret_key'],
+                        demo=use_demo,
+                        event_bus=self.event_bus
+                    )
+                    self.api_clients.append(api_client)
+                    log_info(self.user_id, f"✅ API клиент #{key_data['priority']} (приоритет {key_data['priority']}) инициализирован", module_name=__name__)
+
+                # PRIMARY API клиент (первый) используется для MetaStrategist и других компонентов
+                self.api = self.api_clients[0]
+                log_info(self.user_id, "📌 PRIMARY API клиент установлен для компонентов", module_name=__name__)
+
+            else:
+                # Обычный режим - пользователь настроил только 1 API ключ (старая логика)
+                log_info(self.user_id, f"📊 Обнаружено {len(all_api_keys) if all_api_keys else 0} API ключей - использую обычный режим", module_name=__name__)
+
+                # Получаем PRIMARY ключ (старая логика для совместимости)
+                keys = await db_manager.get_api_keys(self.user_id, "bybit", account_priority=1)
+                if not keys or not keys[0] or not keys[1]:
+                    raise ValueError(f"API ключи для пользователя {self.user_id} не найдены или неполные в БД.")
+
+                api_key, secret_key, _ = keys
+
+                self.api = BybitAPI(
+                    user_id=self.user_id,
+                    api_key=api_key,
+                    api_secret=secret_key,
+                    demo=use_demo,
+                    event_bus=self.event_bus
+                )
+                log_info(self.user_id, "✅ API клиент инициализирован (обычный режим)", module_name=__name__)
 
             # Инициализация компонентов
-            self.risk_manager = RiskManager(self.user_id, self.api, self.event_bus)
             self.data_feed_handler = DataFeedHandler(self.user_id, self.event_bus, self.global_ws_manager)
 
             # Создаем независимый анализатор
@@ -564,9 +646,6 @@ class UserSession:
     async def _start_components(self):
         """Запуск компонентов сессии"""
         try:
-            # Запуск RiskManager
-            await self.risk_manager.start()
-
             # Запуск DataFeedHandler
             await self.data_feed_handler.start()
 
@@ -593,18 +672,37 @@ class UserSession:
 
             self._component_tasks.clear()
 
+            # === ОСТАНОВКА КООРДИНАТОРОВ (Multi-Account режим) ===
+            if self.coordinators:
+                log_info(self.user_id, f"Остановка {len(self.coordinators)} координаторов...", module_name=__name__)
+                for symbol, coordinator in list(self.coordinators.items()):
+                    try:
+                        await coordinator.stop()
+                        log_info(self.user_id, f"✅ Coordinator для {symbol} остановлен", module_name=__name__)
+                    except Exception as coord_error:
+                        log_error(self.user_id, f"Ошибка остановки coordinator для {symbol}: {coord_error}", module_name=__name__)
+                self.coordinators.clear()
+
             # Остановка компонентов
             if self.meta_strategist:
                 await self.meta_strategist.stop()
 
-            if self.risk_manager:
-                await self.risk_manager.stop()
-
             if self.data_feed_handler:
                 await self.data_feed_handler.stop()
 
-            # Закрытие API соединения
-            if self.api:
+            # === ЗАКРЫТИЕ API СОЕДИНЕНИЙ ===
+            # Закрываем все API клиенты в multi-account режиме
+            if self.api_clients:
+                log_info(self.user_id, f"Закрытие {len(self.api_clients)} API клиентов...", module_name=__name__)
+                for priority, api_client in enumerate(self.api_clients, start=1):
+                    try:
+                        await api_client.close()
+                        log_info(self.user_id, f"✅ API клиент #{priority} закрыт", module_name=__name__)
+                    except Exception as api_error:
+                        log_error(self.user_id, f"Ошибка закрытия API клиента #{priority}: {api_error}", module_name=__name__)
+                self.api_clients.clear()
+            # Закрываем основной API клиент (обычный режим или PRIMARY в multi-account)
+            elif self.api:
                 await self.api.close()
                 log_info(self.user_id, "API соединение закрыто", module_name=__name__)
 
@@ -970,8 +1068,7 @@ class UserSession:
         """Отправка уведомления о запуске стратегии пользователю"""
         try:
             strategy_display_names = {
-                "signal_scalper": "Signal Scalper",
-                "impulse_trailing": "Impulse Trailing"
+                "signal_scalper": "Signal Scalper"
             }
 
             strategy_name = strategy_display_names.get(strategy.strategy_type.value, strategy.strategy_type.value)
@@ -1230,6 +1327,10 @@ class UserSession:
                 - "blocked" - запуск заблокирован (все слоты заняты активными позициями)
         """
         try:
+            # ИСПРАВЛЕНО: Получаем динамический лимит из конфигурации
+            risk_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
+            max_concurrent_trades = risk_config.get("max_concurrent_trades", self.MAX_STRATEGY_SLOTS)
+
             # Получаем все стратегии данного типа
             same_type_strategies = [
                 (sid, strategy) for sid, strategy in self.active_strategies.items()
@@ -1239,8 +1340,8 @@ class UserSession:
             log_info(self.user_id, f"🔍 Проверка слотов для {strategy_type}_{symbol}: найдено {len(same_type_strategies)} стратегий того же типа", module_name=__name__)
 
             # Если меньше лимита - можно запускать сразу
-            if len(same_type_strategies) < self.MAX_STRATEGY_SLOTS:
-                log_info(self.user_id, f"✅ Есть свободный слот: {len(same_type_strategies)}/{self.MAX_STRATEGY_SLOTS}", module_name=__name__)
+            if len(same_type_strategies) < max_concurrent_trades:
+                log_info(self.user_id, f"✅ Есть свободный слот: {len(same_type_strategies)}/{max_concurrent_trades}", module_name=__name__)
                 return "start_immediately"
 
             # Все слоты заняты - ищем неактивные стратегии для замены
@@ -1331,6 +1432,10 @@ class UserSession:
     async def _send_queue_notification(self, strategy_type: str, symbol: str, queue_position: int):
         """Отправляет уведомление о добавлении в очередь."""
         try:
+            # ИСПРАВЛЕНО: Получаем актуальный лимит из конфигурации
+            risk_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
+            max_concurrent_trades = risk_config.get("max_concurrent_trades", self.MAX_STRATEGY_SLOTS)
+
             strategy_name = strategy_type.replace('_', ' ').title()
             message = (
                 f"⏳ <b>СИМВОЛ ДОБАВЛЕН В ОЧЕРЕДЬ</b>\n\n"
@@ -1338,7 +1443,7 @@ class UserSession:
                 f"▫️ Символ: <code>{symbol}</code>\n"
                 f"▫️ Позиция в очереди: {queue_position}\n\n"
                 f"🔍 <b>Причина ожидания:</b>\n"
-                f"Все {self.MAX_STRATEGY_SLOTS} слота заняты активными позициями.\n\n"
+                f"Все {max_concurrent_trades} слота заняты активными позициями.\n\n"
                 f"✅ Символ автоматически запустится, как только освободится слот!"
             )
 

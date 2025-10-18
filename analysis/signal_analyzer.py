@@ -1,9 +1,8 @@
 # analysis/signal_analyzer.py
 import pandas as pd
-import numpy as np
 import talib
 from decimal import Decimal
-from typing import Optional, Dict, List
+from typing import Optional, Dict
 from dataclasses import dataclass
 
 from api.bybit_api import BybitAPI

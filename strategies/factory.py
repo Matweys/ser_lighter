@@ -10,7 +10,6 @@ from api.bybit_api import BybitAPI
 from core.events import EventBus
 from .base_strategy import BaseStrategy
 from .signal_scalper_strategy import SignalScalperStrategy
-from .impulse_trailing_strategy import ImpulseTrailingStrategy
 from .flash_drop_catcher_strategy import FlashDropCatcherStrategy
 from core.logger import log_error
 
@@ -29,7 +28,6 @@ def create_strategy(
     """
     strategy_map = {
         "signal_scalper": SignalScalperStrategy,
-        "impulse_trailing": ImpulseTrailingStrategy,
         "flash_drop_catcher": FlashDropCatcherStrategy,
     }
 

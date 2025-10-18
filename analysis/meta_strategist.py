@@ -3,15 +3,11 @@
 Профессиональный анализатор рынка и стратег для многопользовательской системы
 Реализует многотаймфреймовый анализ с динамическими настройками из Redis
 """
-import asyncio
-import pandas as pd
-import pandas_ta as ta
 from decimal import Decimal, getcontext
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
-from api.bybit_api import BybitAPI
-from core.logger import log_info, log_error, log_debug
-from core.events import EventType, SignalEvent, UserSettingsChangedEvent, EventBus, GlobalCandleEvent
+from core.logger import log_info, log_error
+from core.events import EventType, UserSettingsChangedEvent, EventBus
 from cache.redis_manager import redis_manager, ConfigType
 
 # Настройка точности для Decimal
@@ -45,8 +41,6 @@ class MetaStrategist:
         try:
             await self._load_user_config()
 
-            # Глобальное событие подписываем без user_id
-            await self.event_bus.subscribe(EventType.GLOBAL_CANDLE, self._handle_global_candle)
             # Пользовательское событие - с user_id
             await self.event_bus.subscribe(EventType.USER_SETTINGS_CHANGED, self._handle_settings_changed, user_id=self.user_id)
 
@@ -62,7 +56,6 @@ class MetaStrategist:
             return
 
         # Отписка от событий
-        await self.event_bus.unsubscribe(self._handle_global_candle)
         await self.event_bus.unsubscribe(self._handle_settings_changed)
 
         self.running = False
@@ -74,63 +67,6 @@ class MetaStrategist:
         Вызывает внутренний защищенный обработчик.
         """
         await self._handle_settings_changed(event)
-
-    async def _handle_global_candle(self, event: GlobalCandleEvent):
-        """Обработчик глобального события о новой свече от ImpulseScanner."""
-        symbol = event.candle_data.get("symbol")
-        if not symbol:
-            log_debug(self.user_id, "GlobalCandleEvent без символа", "meta_strategist")
-            return
-
-        # --- УЛУЧШЕННЫЙ ФИЛЬТР СИМВОЛОВ ---
-        if '-' in symbol or not symbol.endswith("USDT"):
-            return  # Немедленно выходим, если это срочный контракт или не USDT пара
-
-        log_debug(self.user_id, f"Обработка GlobalCandleEvent для {symbol}", "meta_strategist")
-
-        now = datetime.now()
-        last_analysis = self.last_analysis_time.get(symbol)
-        if last_analysis and (now - last_analysis) < self.analysis_cooldown:
-            log_debug(self.user_id, f"Пропуск {symbol} - анализ был недавно", "meta_strategist")
-            return
-
-        try:
-            impulse_config = await redis_manager.get_config(self.user_id, ConfigType.STRATEGY_IMPULSE_TRAILING)
-            if not impulse_config:
-                log_debug(self.user_id, "Конфигурация impulse_trailing не найдена", "meta_strategist")
-                return
-            if not impulse_config.get("is_enabled", False):
-                log_debug(self.user_id, "Стратегия impulse_trailing отключена в настройках", "meta_strategist")
-                return
-
-            analysis_timeframe = impulse_config.get("analysis_timeframe", "5m")
-            log_debug(self.user_id, f"Запуск анализа для {symbol} на таймфрейме {analysis_timeframe}", "meta_strategist")
-            analysis = await self.analyzer.get_market_analysis(symbol, timeframe=analysis_timeframe)
-
-            self.last_analysis_time[symbol] = now
-
-            if analysis:
-                log_debug(self.user_id, f"Анализ {symbol}: panic_bar={analysis.is_panic_bar}, ema_trend={analysis.ema_trend}, consolidating={analysis.is_consolidating_now}", "meta_strategist")
-            else:
-                log_debug(self.user_id, f"Анализ для {symbol} не получен", "meta_strategist")
-
-            if analysis and (analysis.is_panic_bar or (analysis.ema_trend == "UP" and analysis.is_consolidating_now)):
-            # ПОСЛЕ (менее строгое условие)
-            #if analysis and (analysis.is_panic_bar or analysis.is_consolidating_now):
-                log_info(self.user_id,
-                         f"Условия для сигнала 'impulse_trailing' для {symbol} выполнены. Отправка триггера.",
-                         "meta_strategist")
-
-                signal_event = SignalEvent(
-                    user_id=self.user_id,
-                    symbol=symbol,
-                    strategy_type="impulse_trailing",
-                    signal_strength=100
-                )
-                await self.event_bus.publish(signal_event)
-                log_info(self.user_id, f"Сигнал 'impulse_trailing' отправлен для {symbol}", "meta_strategist")
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка обработки глобальной свечи {symbol}: {e}", "meta_strategist")
 
     async def _handle_settings_changed(self, event: UserSettingsChangedEvent):
         """Обработчик изменения настроек пользователя"""

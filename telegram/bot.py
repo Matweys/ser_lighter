@@ -9,7 +9,6 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, BotCommandScope, BotCommandScopeDefault
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
-import aioredis
 from contextlib import asynccontextmanager
 
 from core.settings_config import system_config

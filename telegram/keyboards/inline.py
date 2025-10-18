@@ -52,7 +52,6 @@ def get_strategy_settings_keyboard(configs: Dict[str, Dict[str, Any]]) -> Inline
 
     buttons = [
         [{"text": f"{get_status_icon('signal_scalper')} Сигнальный скальпер", "callback_data": "configure_strategy_signal_scalper"}],
-        [{"text": f"{get_status_icon('impulse_trailing')} Асимметричный Импульс", "callback_data": "configure_strategy_impulse_trailing"}],
         [{"text": f"{get_status_icon('flash_drop_catcher')} 🚀 Flash Drop Catcher", "callback_data": "configure_strategy_flash_drop_catcher"}],
         [{"text": "⚙️ Назад в Настройки", "callback_data": "settings"}]
     ]
@@ -71,15 +70,6 @@ def get_strategy_config_keyboard(strategy_type: str, config: Dict[str, Any]) -> 
             "leverage": f"Кредитное плечо: x{config.get('leverage', 2)}",
             "order_amount": f"Сумма ордера: {config.get('order_amount', 50)} USDT",
             "max_loss_usd": f"Стоп-лосс: {config.get('max_loss_usd', 15.0)} USDT",
-        }
-    elif strategy_type == StrategyType.IMPULSE_TRAILING.value:
-        editable_params = {
-            "leverage": f"🎚️ Плечо: x{config.get('leverage', 2)}",
-            "order_amount": f"💰 Сумма ордера: {config.get('order_amount', 50)} USDT",
-            "initial_sl_usdt": f"🛡️ Начальный SL: {config.get('initial_sl_usdt', 20.91)} USDT",
-            "min_profit_activation_usdt": f"🎯 Активация трейлинга: +{config.get('min_profit_activation_usdt', 5.0)} USDT",
-            "trailing_distance_usdt": f"📏 Расстояние трейлинга: {config.get('trailing_distance_usdt', 11.77)} USDT",
-            "pullback_close_usdt": f"📉 Откат для закрытия: {config.get('pullback_close_usdt', 5.87)} USDT",
         }
     elif strategy_type == StrategyType.FLASH_DROP_CATCHER.value:
         editable_params = {
@@ -131,10 +121,6 @@ def get_back_keyboard(back_to: str = "main_menu") -> InlineKeyboardMarkup:
     """Простая клавиатура с кнопкой 'Назад'."""
     return KeyboardBuilder.build_keyboard([[{"text": "🔙 Назад", "callback_data": back_to}]])
 
-def get_cancel_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура отмены текущего действия (возврат в главное меню)."""
-    return KeyboardBuilder.build_keyboard([[{"text": "❌ Отменить", "callback_data": "main_menu"}]])
-
 # Не давно добавленные
 def get_help_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура помощи."""
@@ -162,17 +148,53 @@ def get_quick_actions_keyboard(session_running: bool = False) -> InlineKeyboardM
         ]
     return KeyboardBuilder.build_keyboard(buttons)
 
-def get_api_keys_keyboard(keys_exist: bool = False) -> InlineKeyboardMarkup:
-    """Клавиатура управления API ключами."""
-    if keys_exist:
-        buttons = [
-            [{"text": "🔄 Обновить ключи", "callback_data": "update_api_keys"}],
-            [{"text": "🗑️ Удалить ключи", "callback_data": "delete_api_keys"}],
-            [{"text": "🏠 Главное меню", "callback_data": "main_menu"}]
-        ]
-    else:
-        buttons = [
-            [{"text": "➕ Добавить ключи", "callback_data": "add_api_keys"}],
-            [{"text": "🏠 Главное меню", "callback_data": "main_menu"}]
-        ]
+def get_api_keys_keyboard(api_keys_count: int = 0, api_keys_list: list = None) -> InlineKeyboardMarkup:
+    """
+    Клавиатура управления API ключами (Multi-Account Support).
+
+    Args:
+        api_keys_count: Количество сохраненных API ключей (0-3)
+        api_keys_list: Список приоритетов существующих ключей [1, 2, 3]
+    """
+    buttons = []
+
+    if api_keys_count == 0:
+        # Нет ключей - предлагаем добавить PRIMARY
+        buttons.append([{"text": "➕ Добавить PRIMARY ключ (Bot 1)", "callback_data": "add_api_key_priority_1"}])
+
+    elif api_keys_count == 1:
+        # Есть PRIMARY - предлагаем добавить SECONDARY или удалить PRIMARY
+        buttons.append([{"text": "➕ Добавить SECONDARY ключ (Bot 2)", "callback_data": "add_api_key_priority_2"}])
+        buttons.append([{"text": "🔄 Обновить PRIMARY ключ", "callback_data": "update_api_key_priority_1"}])
+        buttons.append([{"text": "🗑️ Удалить PRIMARY ключ", "callback_data": "delete_api_key_priority_1"}])
+
+    elif api_keys_count == 2:
+        # Есть PRIMARY и SECONDARY - предлагаем добавить TERTIARY
+        buttons.append([{"text": "➕ Добавить TERTIARY ключ (Bot 3)", "callback_data": "add_api_key_priority_3"}])
+        buttons.append([
+            {"text": "🔄 Обновить PRIMARY", "callback_data": "update_api_key_priority_1"},
+            {"text": "🔄 Обновить SECONDARY", "callback_data": "update_api_key_priority_2"}
+        ])
+        buttons.append([
+            {"text": "🗑️ Удалить PRIMARY", "callback_data": "delete_api_key_priority_1"},
+            {"text": "🗑️ Удалить SECONDARY", "callback_data": "delete_api_key_priority_2"}
+        ])
+
+    elif api_keys_count >= 3:
+        # Все 3 ключа настроены - только обновление и удаление
+        buttons.append([{"text": "✅ Multi-Account режим АКТИВЕН (3 бота)", "callback_data": "noop"}])
+        buttons.append([
+            {"text": "🔄 PRIMARY", "callback_data": "update_api_key_priority_1"},
+            {"text": "🔄 SECONDARY", "callback_data": "update_api_key_priority_2"},
+            {"text": "🔄 TERTIARY", "callback_data": "update_api_key_priority_3"}
+        ])
+        buttons.append([
+            {"text": "🗑️ PRIMARY", "callback_data": "delete_api_key_priority_1"},
+            {"text": "🗑️ SECONDARY", "callback_data": "delete_api_key_priority_2"},
+            {"text": "🗑️ TERTIARY", "callback_data": "delete_api_key_priority_3"}
+        ])
+
+    # Кнопка "Назад"
+    buttons.append([{"text": "🏠 Главное меню", "callback_data": "main_menu"}])
+
     return KeyboardBuilder.build_keyboard(buttons)

@@ -364,6 +364,7 @@ class BybitAPI:
                             "avgPrice": to_decimal(position.get("avgPrice", "0")),
                             "markPrice": to_decimal(position.get("markPrice", "0")),
                             "unrealisedPnl": to_decimal(position.get("unrealisedPnl", "0")),
+                            "breakEvenPrice": to_decimal(position.get("breakEvenPrice", "0")),  # Цена безубыточности от биржи
                         })
 
                 return positions

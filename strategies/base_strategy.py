@@ -40,14 +40,15 @@ class BaseStrategy(ABC):
     - Мониторинг состояния и статистики
     """
     
-    def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, event_bus: EventBus, bot: "Bot", config: Optional[Dict] = None):
+    def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, event_bus: EventBus, bot: "Bot", config: Optional[Dict] = None, account_priority: int = 1):
         """
         Инициализация базовой стратегии
-        
+
         Args:
             user_id: ID пользователя
             symbol: Торговый символ
             signal_data: Данные сигнала от MetaStrategist
+            account_priority: Приоритет аккаунта (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
         """
         self.user_id = user_id
         self.symbol = symbol
@@ -56,6 +57,7 @@ class BaseStrategy(ABC):
         self.event_bus = event_bus
         self.bot = bot
         self.config: Dict[str, Any] = config or {}
+        self.account_priority = account_priority  # Multi-Account Support
 
         # КРИТИЧНО: Флаг восстановления после перезапуска бота
         # True = бот перезапущен, проверка БД/биржи РАЗРЕШЕНА
@@ -106,8 +108,23 @@ class BaseStrategy(ABC):
         self.deferred_stop_reason: Optional[str] = None
 
         self._position_monitor_task: Optional[asyncio.Task] = None
+
+        # Recovery handler (инициализируется в дочерних классах)
+        self.recovery_handler = None
+
         log_info(self.user_id,f"Инициализирована стратегия {self.strategy_type.value} для {symbol} (ID: {self.strategy_id})", module_name=__name__)
 
+
+    def _get_bot_prefix(self) -> str:
+        """
+        Возвращает префикс для уведомлений с приоритетом бота (Multi-Account Support).
+
+        Returns:
+            str: Префикс вида "🥇 Bot 1" или "🥈 Bot 2" или "🥉 Bot 3"
+        """
+        priority_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
+        emoji = priority_emojis.get(self.account_priority, "🤖")
+        return f"{emoji} Bot {self.account_priority}"
 
     @staticmethod
     def _convert_to_decimal( value: Any) -> Decimal:
@@ -1005,16 +1022,6 @@ class BaseStrategy(ABC):
                     f"▫️ {hbold('Размер ордера:')} {hcode(f'{self.order_amount} USDT')}\n"
                     f"▫️ {hbold('Плечо:')} {hcode(f'{self.leverage}x')}"
                 )
-            elif self.strategy_type == StrategyType.IMPULSE_TRAILING:
-                text = (
-                    f"🔍 {hbold('СТРАТЕГИЯ ЗАПУЩЕНА')} 🔍\n\n"
-                    f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
-                    f"▫️ {hbold('Символ:')} {hcode(self.symbol)}\n"
-                    f"▫️ {hbold('Статус:')} Активное сканирование и поиск импульсов\n"
-                    f"▫️ {hbold('Размер ордера:')} {hcode(f'{self.order_amount} USDT')}\n"
-                    f"▫️ {hbold('Плечо:')} {hcode(f'{self.leverage}x')}\n\n"
-                    f"🎯 Стратегия отслеживает рыночные импульсы и готова к работе!"
-                )
             else:
                 # Общее сообщение для других стратегий
                 text = (
@@ -1082,8 +1089,12 @@ class BaseStrategy(ABC):
                     f"▫️ {hbold('Проскальзывание:')} {hcode(f'{slippage:.4f} USDT ({slippage_percent:.3f}%)')}\n"
                 )
 
+            # Multi-Account Support: добавляем префикс бота
+            bot_prefix = self._get_bot_prefix()
+
             text = (
                 f"📈 {hbold('ОТКРЫТА НОВАЯ СДЕЛКА')} 📈\n\n"
+                f"▫️ {hbold('Аккаунт:')} {hcode(bot_prefix)}\n"
                 f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
                 f"▫️ {hbold('Символ:')} {hcode(self.symbol)}\n"
                 f"▫️ {hbold('Направление:')} {side_text}\n"
@@ -1154,6 +1165,8 @@ class BaseStrategy(ABC):
 
             strategy_name = self.strategy_type.value.replace('_', ' ').title()
             side_text = "LONG 🟢" if side and side.lower() == 'buy' else "SHORT 🔴"
+            # Multi-Account Support: добавляем префикс бота
+            bot_prefix = self._get_bot_prefix()
 
             # Рассчитываем общую маржу
             leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
@@ -1233,6 +1246,7 @@ class BaseStrategy(ABC):
             # Собираем финальное уведомление
             text = (
                 f"🔄 {hbold('ПОЗИЦИЯ УСРЕДНЕНА')} 🔄\n\n"
+                f"▫️ {hbold('Аккаунт:')} {hcode(bot_prefix)}\n"
                 f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
                 f"▫️ {hbold('Символ:')} {hcode(self.symbol)}\n"
                 f"▫️ {hbold('Направление:')} {side_text}\n\n"
@@ -1291,6 +1305,8 @@ class BaseStrategy(ABC):
                 return
 
             strategy_name = self.strategy_type.value.replace('_', ' ').title()
+            # Multi-Account Support: добавляем префикс бота
+            bot_prefix = self._get_bot_prefix()
 
             # ПРОЗРАЧНОЕ УВЕДОМЛЕНИЕ: показываем честный результат с учётом всех комиссий
             if pnl >= 0:
@@ -1299,6 +1315,7 @@ class BaseStrategy(ABC):
                 result_text = "ПРИБЫЛЬ ✅"
                 text = (
                     f"{icon} {hbold('СДЕЛКА ЗАКРЫТА')} {icon}\n\n"
+                    f"▫️ {hbold('Аккаунт:')} {hcode(bot_prefix)}\n"
                     f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
                     f"▫️ {hbold('Символ:')} {hcode(self.symbol)}\n"
                     f"▫️ {hbold('Результат:')} {result_text}\n"
@@ -1314,6 +1331,7 @@ class BaseStrategy(ABC):
                 total_loss = abs(pnl)
                 text = (
                     f"{icon} {hbold('СДЕЛКА ЗАКРЫТА')} {icon}\n\n"
+                    f"▫️ {hbold('Аккаунт:')} {hcode(bot_prefix)}\n"
                     f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
                     f"▫️ {hbold('Символ:')} {hcode(self.symbol)}\n"
                     f"▫️ {hbold('Результат:')} {result_text}\n"
@@ -1698,8 +1716,18 @@ class BaseStrategy(ABC):
     async def _strategy_specific_recovery(self, additional_data: Dict[str, Any]):
         """
         Переопределяется в конкретных стратегиях для дополнительного восстановления состояния.
-        Например, Signal Scalper может восстановить состояние усреднения.
+        Стратегии с recovery handler делегируют восстановление ему.
         """
+        # Если у стратегии есть recovery handler - используем его
+        if self.recovery_handler:
+            log_info(
+                self.user_id,
+                f"Делегирование восстановления recovery handler для {self.symbol}",
+                "BaseStrategy"
+            )
+            return await self.recovery_handler.recover(additional_data)
+
+        # Для стратегий без recovery handler - пустая реализация (переопределяется в наследниках)
         pass
 
     async def clear_strategy_state(self):

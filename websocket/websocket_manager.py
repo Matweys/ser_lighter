@@ -13,7 +13,7 @@ import hmac
 import hashlib
 import time
 from core.functions import to_decimal
-from core.logger import log_info, log_error, log_warning
+from core.logger import log_info, log_error, log_warning, log_debug
 from core.events import (
     EventType, NewCandleEvent, PriceUpdateEvent, OrderUpdateEvent,
     OrderFilledEvent, PositionUpdateEvent, PositionClosedEvent, EventBus
@@ -461,8 +461,8 @@ class DataFeedHandler:
     async def _load_api_credentials(self):
         """Загрузка API ключей пользователя"""
         try:
-            # Используем db_manager и его метод get_api_keys
-            keys = await db_manager.get_api_keys(self.user_id, "bybit")
+            # ИСПРАВЛЕНО: Multi-Account Support - получаем PRIMARY ключ
+            keys = await db_manager.get_api_keys(self.user_id, "bybit", account_priority=1)
             if keys:
                 # Метод возвращает кортеж (api_key, secret_key, passphrase)
                 self.api_key, self.api_secret, _ = keys
@@ -598,24 +598,41 @@ class DataFeedHandler:
 
     async def _handle_order_update(self, data: List[Dict]):
         """
-        ФИНАЛЬНАЯ ВЕРСИЯ.
-        Анализирует статус ордера и публикует правильное событие:
-        - OrderFilledEvent для исполненных ордеров.
-        - OrderUpdateEvent для всех остальных статусов.
+        ФИНАЛЬНАЯ ВЕРСИЯ С ФИЛЬТРАЦИЕЙ.
+        Анализирует статус ордера и публикует правильное событие ТОЛЬКО для ордеров бота.
+
+        КРИТИЧНО: Игнорируем ордера, которых НЕТ в базе данных (ручные ордера пользователя).
+        Бот работает ТОЛЬКО со своими ордерами, записанными в БД.
         """
         try:
             for order_data in data:
+                order_id = order_data.get("orderId")
                 status = order_data.get("orderStatus")
+
+                # КРИТИЧЕСКАЯ ПРОВЕРКА: Это ордер бота?
+                # Проверяем наличие ордера в БД - если его нет, это ручной ордер пользователя
+                db_order = await db_manager.get_order_by_exchange_id(order_id)
+
+                if not db_order:
+                    # Это не наш ордер - игнорируем полностью
+                    log_debug(self.user_id,
+                             f"⏭️ Пропускаю WebSocket событие для ордера {order_id} - не найден в БД (ручной ордер)",
+                             "DataFeedHandler")
+                    continue
+
+                log_info(self.user_id,
+                         f"✅ WebSocket: Ордер {order_id} найден в БД - обрабатываю (статус: {status})",
+                         "DataFeedHandler")
 
                 # ГЛАВНОЕ УСЛОВИЕ: если ордер исполнен, создаем событие-действие
                 if status == "Filled":
                     log_info(self.user_id,
-                             f"WebSocket: Ордер {order_data.get('orderId')} исполнен. Создаю OrderFilledEvent.",
+                             f"WebSocket: Ордер {order_id} исполнен. Создаю OrderFilledEvent.",
                              "DataFeedHandler")
 
                     filled_event = OrderFilledEvent(
                         user_id=self.user_id,
-                        order_id=order_data.get("orderId"),
+                        order_id=order_id,
                         symbol=order_data.get("symbol"),
                         side=order_data.get("side"),
                         qty=to_decimal(order_data.get("cumExecQty", "0")),

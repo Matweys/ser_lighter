@@ -29,7 +29,6 @@ from ..keyboards.inline import (
 )
 from core.logger import log_info, log_error, log_warning
 from core.settings_config import system_config, DEFAULT_SYMBOLS
-from aiogram.utils.markdown import hbold
 
 
 
@@ -115,7 +114,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
         # 4. Получаем актуальные данные для приветственного сообщения
         session_data = await redis_manager.get_user_session(user_id)
-        is_active = session_data.get('autotrade_enabled', False) if session_data else False
+        is_active = session_data.get('running', False) if session_data else False
 
         user_db_data = await db_manager.get_user(user_id)
         total_profit = user_db_data.total_profit if user_db_data else 0
@@ -257,38 +256,115 @@ async def cmd_status(message: Message, state: FSMContext):
 
 @router.message(Command("orders"))
 async def cmd_orders(message: Message, state: FSMContext):
-    """Обработчик команды /orders для отображения открытых ордеров"""
+    """Обработчик команды /orders с поддержкой multi-account режима"""
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "orders")
-
-    keys = await db_manager.get_api_keys(user_id, "bybit")
-    if not keys:
-        await message.answer("⚠️ API ключи не настроены. Не могу получить список ордеров.")
-        return
 
     try:
         exchange_config = system_config.get_exchange_config("bybit")
         use_demo = exchange_config.demo if exchange_config else False
 
-        async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], demo=use_demo) as api:
-            orders = await api.get_open_orders()
+        # === ПРОВЕРКА MULTI-ACCOUNT РЕЖИМА ===
+        all_api_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
 
-        if not orders:
-            await message.answer("✅ У вас нет открытых ордеров.")
+        if not all_api_keys or len(all_api_keys) == 0:
+            await message.answer("⚠️ API ключи не настроены. Не могу получить список ордеров.")
             return
 
-        orders_text = "📋 <b>Открытые ордера:</b>\n\n"
-        for order in orders:
-            side_emoji = "🟢" if order['side'] == 'Buy' else "🔴"
-            orders_text += (
-                f"<b>{order['symbol']}</b> | {side_emoji} {order['side']}\n"
-                f"  - <b>Тип:</b> {order['orderType']}\n"
-                f"  - <b>Кол-во:</b> {order['qty']}\n"
-                f"  - <b>Цена:</b> {format_currency(order['price'])}\n"
-                f"  - <b>Статус:</b> {order['orderStatus']}\n\n"
-            )
+        # === MULTI-ACCOUNT РЕЖИМ (3 аккаунта) ===
+        if len(all_api_keys) == 3:
+            log_info(user_id, "Получение ордеров в multi-account режиме (3 аккаунта)", "orders")
 
-        await message.answer(orders_text, parse_mode="HTML")
+            all_orders = []  # Все ордера со всех аккаунтов
+
+            # Получаем ордера для каждого аккаунта
+            for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
+                priority = key_data['priority']
+                try:
+                    async with BybitAPI(
+                        user_id=user_id,
+                        api_key=key_data['api_key'],
+                        api_secret=key_data['secret_key'],
+                        demo=use_demo
+                    ) as api:
+                        orders = await api.get_open_orders()
+
+                    if orders:
+                        # Добавляем маркер приоритета к каждому ордеру
+                        for order in orders:
+                            order['_bot_priority'] = priority  # Добавляем метку бота
+                            all_orders.append(order)
+                except Exception as account_error:
+                    log_error(user_id, f"Ошибка получения ордеров для аккаунта {priority}: {account_error}", "orders")
+
+            if not all_orders:
+                await message.answer("✅ У вас нет открытых ордеров на всех аккаунтах.")
+                return
+
+            # Формируем сообщение для multi-account режима
+            orders_text = "📋 <b>ОТКРЫТЫЕ ОРДЕРА (Multi-Account Режим)</b>\n"
+            orders_text += "═" * 35 + "\n\n"
+
+            # Группируем ордера по ботам
+            priority_names = {1: "PRIMARY", 2: "SECONDARY", 3: "TERTIARY"}
+            priority_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+            for priority in [1, 2, 3]:
+                bot_orders = [o for o in all_orders if o['_bot_priority'] == priority]
+
+                if bot_orders:
+                    name = priority_names.get(priority, f"Бот {priority}")
+                    emoji = priority_emojis.get(priority, "🔹")
+
+                    orders_text += f"{emoji} <b>{name} (Бот {priority})</b>\n"
+                    orders_text += "─" * 30 + "\n"
+
+                    for order in bot_orders:
+                        side_emoji = "🟢" if order['side'] == 'Buy' else "🔴"
+                        orders_text += f"\n<b>{order['symbol']}</b> | {side_emoji} {order['side']}\n"
+                        orders_text += f"  • Тип: {order['orderType']}\n"
+                        orders_text += f"  • Кол-во: {order['qty']}\n"
+                        orders_text += f"  • Цена: {format_currency(order['price'])}\n"
+                        orders_text += f"  • Статус: {order['orderStatus']}\n"
+
+                    orders_text += "\n"
+
+            # Агрегированная статистика
+            orders_text += "═" * 35 + "\n"
+            orders_text += f"🌟 <b>ИТОГО:</b> {len(all_orders)} ордеров\n"
+
+            await message.answer(orders_text, parse_mode="HTML")
+
+        # === ОБЫЧНЫЙ РЕЖИМ (1 аккаунт) ===
+        else:
+            log_info(user_id, "Получение ордеров в обычном режиме (1 аккаунт)", "orders")
+
+            # Получаем PRIMARY ключ
+            keys = await db_manager.get_api_keys(user_id, "bybit", account_priority=1)
+            if not keys:
+                await message.answer("⚠️ API ключи не настроены. Не могу получить список ордеров.")
+                return
+
+            async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], demo=use_demo) as api:
+                orders = await api.get_open_orders()
+
+            if not orders:
+                await message.answer("✅ У вас нет открытых ордеров.")
+                return
+
+            orders_text = "📋 <b>Открытые ордера:</b>\n\n"
+            for order in orders:
+                side_emoji = "🟢" if order['side'] == 'Buy' else "🔴"
+                orders_text += (
+                    f"<b>{order['symbol']}</b> | {side_emoji} {order['side']}\n"
+                    f"  - <b>Тип:</b> {order['orderType']}\n"
+                    f"  - <b>Кол-во:</b> {order['qty']}\n"
+                    f"  - <b>Цена:</b> {format_currency(order['price'])}\n"
+                    f"  - <b>Статус:</b> {order['orderStatus']}\n\n"
+                )
+
+            await message.answer(orders_text, parse_mode="HTML")
+
     except Exception as e:
         log_error(user_id, f"Ошибка получения ордеров: {e}", module_name='basic_handlers')
         await message.answer("❌ Произошла ошибка при запросе открытых ордеров.")
@@ -351,15 +427,16 @@ async def cmd_autotrade_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "autotrade_start")
 
-    api_keys = await db_manager.get_api_keys(user_id, "bybit")
-    if not api_keys:
+    # ИСПРАВЛЕНО: Multi-Account Support - проверяем наличие хотя бы одного API ключа
+    all_api_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
+    if not all_api_keys or len(all_api_keys) == 0:
         await message.answer(
             "⚠️ <b>API ключи не настроены.</b>\nПерейдите в 'Настройки' -> 'API ключи' для их добавления.",
             parse_mode="HTML")
         return
 
     session_status = await redis_manager.get_user_session(user_id)
-    if session_status and session_status.get('autotrade_enabled', False):
+    if session_status and session_status.get('running', False):
         await message.answer("✅ Торговля уже запущена.")
         return
 
@@ -384,61 +461,92 @@ async def cmd_autotrade_stop(message: Message, state: FSMContext):
 
     session_status = await redis_manager.get_user_session(user_id)
     # Проверяем флаг, который реально управляет торговлей
-    if not session_status or not session_status.get('autotrade_enabled', False):
+    if not session_status or not session_status.get('running', False):
         await message.answer("🔴 Торговля и так неактивна.")
         return
 
     # Получаем информацию о текущих позициях и ордерах
     try:
-        user_api_keys = await db_manager.get_api_keys(user_id, "bybit")
-
-        if not user_api_keys:
-            await message.answer("❌ API ключи не найдены.")
-            return
-
         # Определяем режим торговли (demo/live)
         exchange_config = system_config.get_exchange_config("bybit")
         use_demo = exchange_config.demo if exchange_config else False
 
+        # === ПРОВЕРКА MULTI-ACCOUNT РЕЖИМА ===
+        all_api_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
+
+        if not all_api_keys or len(all_api_keys) == 0:
+            await message.answer("❌ API ключи не найдены.")
+            return
+
         from api.bybit_api import BybitAPI
-        async with BybitAPI(
-            user_id=user_id,
-            api_key=user_api_keys[0],
-            api_secret=user_api_keys[1],
-            demo=use_demo
-        ) as api:
-            # Получаем открытые позиции и ордера
-            positions = await api.get_positions()
-            open_orders = await api.get_open_orders()
 
-            # Подсчитываем активные позиции и ордера
-            active_positions = []
-            active_orders = []
+        # === MULTI-ACCOUNT РЕЖИМ (3 аккаунта) ===
+        if len(all_api_keys) == 3:
+            log_info(user_id, "Остановка торговли в multi-account режиме (3 аккаунта)", "autotrade_stop")
 
-            if positions:
-                active_positions = [pos for pos in positions if float(pos.get('size', 0)) != 0]
+            all_positions = []
+            all_orders = []
 
-            if open_orders:
-                active_orders = [order for order in open_orders if order.get('orderStatus') in ['New', 'PartiallyFilled']]
+            # Собираем позиции и ордера со всех 3 аккаунтов
+            for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
+                priority = key_data['priority']
+                try:
+                    async with BybitAPI(
+                        user_id=user_id,
+                        api_key=key_data['api_key'],
+                        api_secret=key_data['secret_key'],
+                        demo=use_demo
+                    ) as api:
+                        positions = await api.get_positions()
+                        orders = await api.get_open_orders()
 
-            total_active = len(active_positions) + len(active_orders)
+                        if positions:
+                            for pos in positions:
+                                if float(pos.get('size', 0)) != 0:
+                                    pos['_bot_priority'] = priority
+                                    all_positions.append(pos)
+
+                        if orders:
+                            for order in orders:
+                                if order.get('orderStatus') in ['New', 'PartiallyFilled']:
+                                    order['_bot_priority'] = priority
+                                    all_orders.append(order)
+
+                except Exception as account_error:
+                    log_error(user_id, f"Ошибка получения данных для аккаунта {priority}: {account_error}", "autotrade_stop")
+
+            total_active = len(all_positions) + len(all_orders)
 
             if total_active == 0:
                 # Нет активных позиций/ордеров - можно остановить сразу
                 await basic_handler.event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id, reason="manual_stop_command"))
-                await message.answer("✅ <b>Торговля остановлена</b>\n\nАктивных позиций и ордеров не обнаружено.", parse_mode="HTML")
+                await message.answer("✅ <b>Торговля остановлена</b>\n\nАктивных позиций и ордеров не обнаружено на всех аккаунтах.", parse_mode="HTML")
                 return
             else:
-                # Есть активные позиции/ордера - останавливаем стратегии но ждём закрытия
-                position_info = ""
-                if active_positions:
-                    position_info += f"📈 Открытых позиций: {len(active_positions)}\n"
-                if active_orders:
-                    position_info += f"📋 Активных ордеров: {len(active_orders)}\n"
+                # Есть активные позиции/ордера - показываем детальную информацию
+                position_info = f"🌟 <b>MULTI-ACCOUNT РЕЖИМ</b>\n\n"
+
+                if all_positions:
+                    position_info += f"📈 Всего открытых позиций: {len(all_positions)}\n"
+                    # Группируем по ботам
+                    for priority in [1, 2, 3]:
+                        bot_positions = [p for p in all_positions if p.get('_bot_priority') == priority]
+                        if bot_positions:
+                            priority_names = {1: "PRIMARY", 2: "SECONDARY", 3: "TERTIARY"}
+                            position_info += f"  • {priority_names[priority]}: {len(bot_positions)} поз.\n"
+
+                if all_orders:
+                    position_info += f"\n📋 Всего активных ордеров: {len(all_orders)}\n"
+                    # Группируем по ботам
+                    for priority in [1, 2, 3]:
+                        bot_orders = [o for o in all_orders if o.get('_bot_priority') == priority]
+                        if bot_orders:
+                            priority_names = {1: "PRIMARY", 2: "SECONDARY", 3: "TERTIARY"}
+                            position_info += f"  • {priority_names[priority]}: {len(bot_orders)} орд.\n"
 
                 await message.answer(
                     f"🛑 <b>Останавливаю автоторговлю...</b>\n\n"
-                    f"❗️ Обнаружены незакрытые позиции/ордера:\n"
+                    f"❗️ Обнаружены незакрытые позиции/ордера:\n\n"
                     f"{position_info}"
                     f"\n🔄 <b>Ожидаю завершения всех операций</b>\n"
                     f"Новые сделки запрещены, текущие доводятся до результата.",
@@ -448,8 +556,67 @@ async def cmd_autotrade_stop(message: Message, state: FSMContext):
                 # Отправляем событие остановки стратегий
                 await basic_handler.event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id, reason="manual_stop_command"))
 
-                # Мониторим закрытие позиций/ордеров
-                await _monitor_pending_trades(user_id, message, api)
+                # Мониторим закрытие позиций/ордеров (передаем все ключи)
+                await _monitor_pending_trades_multi(user_id, message, all_api_keys, use_demo)
+
+        # === ОБЫЧНЫЙ РЕЖИМ (1 аккаунт) ===
+        else:
+            log_info(user_id, "Остановка торговли в обычном режиме (1 аккаунт)", "autotrade_stop")
+
+            user_api_keys = await db_manager.get_api_keys(user_id, "bybit", account_priority=1)
+            if not user_api_keys:
+                await message.answer("❌ API ключи не найдены.")
+                return
+
+            async with BybitAPI(
+                user_id=user_id,
+                api_key=user_api_keys[0],
+                api_secret=user_api_keys[1],
+                demo=use_demo
+            ) as api:
+                # Получаем открытые позиции и ордера
+                positions = await api.get_positions()
+                open_orders = await api.get_open_orders()
+
+                # Подсчитываем активные позиции и ордера
+                active_positions = []
+                active_orders = []
+
+                if positions:
+                    active_positions = [pos for pos in positions if float(pos.get('size', 0)) != 0]
+
+                if open_orders:
+                    active_orders = [order for order in open_orders if order.get('orderStatus') in ['New', 'PartiallyFilled']]
+
+                total_active = len(active_positions) + len(active_orders)
+
+                if total_active == 0:
+                    # Нет активных позиций/ордеров - можно остановить сразу
+                    await basic_handler.event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id, reason="manual_stop_command"))
+                    await message.answer("✅ <b>Торговля остановлена</b>\n\nАктивных позиций и ордеров не обнаружено.", parse_mode="HTML")
+                    return
+                else:
+                    # Есть активные позиции/ордера - останавливаем стратегии но ждём закрытия
+                    position_info = ""
+                    if active_positions:
+                        position_info += f"📈 Открытых позиций: {len(active_positions)}\n"
+                    if active_orders:
+                        position_info += f"📋 Активных ордеров: {len(active_orders)}\n"
+
+                    await message.answer(
+                        f"🛑 <b>Останавливаю автоторговлю...</b>\n\n"
+                        f"❗️ Обнаружены незакрытые позиции/ордера:\n"
+                        f"{position_info}"
+                        f"\n🔄 <b>Ожидаю завершения всех операций</b>\n"
+                        f"Новые сделки запрещены, текущие доводятся до результата.",
+                        parse_mode="HTML"
+                    )
+
+                    # Отправляем событие остановки стратегий
+                    await basic_handler.event_bus.publish(UserSessionStopRequestedEvent(user_id=user_id, reason="manual_stop_command"))
+
+                    # Мониторим закрытие позиций/ордеров
+                    await _monitor_pending_trades(user_id, message, api)
 
     except Exception as e:
         log_error(user_id, f"Ошибка при проверке позиций для умной остановки: {e}", module_name='basic_handlers')
@@ -551,6 +718,143 @@ async def _monitor_pending_trades(user_id: int, message: Message, api):
             await asyncio.sleep(60)  # При ошибке ждём минуту
 
 
+async def _monitor_pending_trades_multi(user_id: int, message: Message, all_api_keys: list, use_demo: bool):
+    """
+    Мониторинг незакрытых позиций и ордеров для MULTI-ACCOUNT режима (3 аккаунта).
+
+    Args:
+        user_id: ID пользователя
+        message: Сообщение для отправки обновлений
+        all_api_keys: Список всех API ключей (PRIMARY, SECONDARY, TERTIARY)
+        use_demo: Флаг демо-режима
+    """
+    last_update_time = 0
+    update_interval = 300  # Обновляем сообщение каждые 5 минут
+    start_time = time.time()
+
+    while True:
+        try:
+            current_time = time.time()
+
+            # Собираем позиции и ордера со всех 3 аккаунтов
+            all_positions = []
+            all_orders = []
+
+            for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
+                priority = key_data['priority']
+                try:
+                    async with BybitAPI(
+                        user_id=user_id,
+                        api_key=key_data['api_key'],
+                        api_secret=key_data['secret_key'],
+                        demo=use_demo
+                    ) as api:
+                        positions = await api.get_positions()
+                        orders = await api.get_open_orders()
+
+                        if positions:
+                            for pos in positions:
+                                if float(pos.get('size', 0)) != 0:
+                                    pos['_bot_priority'] = priority
+                                    all_positions.append(pos)
+
+                        if orders:
+                            for order in orders:
+                                if order.get('orderStatus') in ['New', 'PartiallyFilled']:
+                                    order['_bot_priority'] = priority
+                                    all_orders.append(order)
+
+                except Exception as account_error:
+                    log_error(user_id, f"Ошибка мониторинга аккаунта {priority}: {account_error}", "monitor_multi")
+
+            total_active = len(all_positions) + len(all_orders)
+
+            # Если всё закрыто на всех аккаунтах - завершаем
+            if total_active == 0:
+                await message.answer(
+                    "✅ <b>Все позиции и ордера завершены на всех аккаунтах</b>\n\n"
+                    "🛑 <b>Автоторговля полностью остановлена</b>",
+                    parse_mode="HTML"
+                )
+                return
+
+            # Обновляем статус каждые 5 минут
+            if current_time - last_update_time >= update_interval:
+                elapsed_minutes = int((current_time - start_time) / 60)
+                elapsed_hours = elapsed_minutes // 60
+                elapsed_mins_remainder = elapsed_minutes % 60
+
+                status_text = f"⏳ <b>Ожидание завершения операций (Multi-Account)</b>\n\n"
+
+                # Группируем по ботам
+                priority_names = {1: "PRIMARY", 2: "SECONDARY", 3: "TERTIARY"}
+                priority_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+                for priority in [1, 2, 3]:
+                    bot_positions = [p for p in all_positions if p.get('_bot_priority') == priority]
+                    bot_orders = [o for o in all_orders if o.get('_bot_priority') == priority]
+
+                    if bot_positions or bot_orders:
+                        name = priority_names.get(priority, f"Бот {priority}")
+                        emoji = priority_emojis.get(priority, "🔹")
+
+                        status_text += f"{emoji} <b>{name}:</b>\n"
+
+                        if bot_positions:
+                            status_text += f"  📈 Позиций: {len(bot_positions)}\n"
+
+                            # Детали по символам
+                            symbol_summary = {}
+                            for pos in bot_positions:
+                                symbol = pos.get('symbol', 'Unknown')
+                                side = pos.get('side', 'Unknown')
+                                unrealized_pnl = float(pos.get('unrealisedPnl', 0))
+
+                                if symbol not in symbol_summary:
+                                    symbol_summary[symbol] = {'long': 0, 'short': 0, 'pnl': 0}
+
+                                if side.lower() == 'buy':
+                                    symbol_summary[symbol]['long'] += 1
+                                else:
+                                    symbol_summary[symbol]['short'] += 1
+                                symbol_summary[symbol]['pnl'] += unrealized_pnl
+
+                            for symbol, data in symbol_summary.items():
+                                pnl_emoji = "🟢" if data['pnl'] >= 0 else "🔴"
+                                symbol_short = symbol.replace('USDT', '')
+                                status_text += f"    • {symbol_short}: {data['long']}L/{data['short']}S {pnl_emoji}{data['pnl']:.2f}$\n"
+
+                        if bot_orders:
+                            status_text += f"  📋 Ордеров: {len(bot_orders)}\n"
+
+                        status_text += "\n"
+
+                # Общая статистика
+                status_text += f"🌟 <b>ИТОГО:</b> {len(all_positions)} поз. + {len(all_orders)} орд.\n"
+
+                # Красивое отображение времени
+                if elapsed_hours > 0:
+                    status_text += f"⏰ Ожидание: {elapsed_hours}ч {elapsed_mins_remainder}мин\n"
+                else:
+                    status_text += f"⏰ Ожидание: {elapsed_minutes} мин\n"
+
+                status_text += f"\n💡 <i>Сделки доводятся до естественного завершения</i>"
+
+                try:
+                    await message.answer(status_text, parse_mode="HTML")
+                except Exception:
+                    # Игнорируем ошибки отправки обновлений
+                    pass
+
+                last_update_time = current_time
+
+            await asyncio.sleep(30)  # Проверяем каждые 30 секунд
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка в monitor_multi для user {user_id}: {e}", module_name='basic_handlers')
+            await asyncio.sleep(60)  # При ошибке ждём минуту
+
+
 @router.message(Command("autotrade_status"))
 async def cmd_autotrade_status(message: Message, state: FSMContext):
     """Расширенный обработчик команды /autotrade_status с детальной информацией"""
@@ -564,7 +868,7 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
             await message.answer("🔴 <b>Статус: Неактивен</b>\nТорговля не запущена.", parse_mode="HTML")
             return
 
-        is_active = session_status.get('autotrade_enabled', False)
+        is_active = session_status.get('running', False)
         active_strategies = session_status.get('active_strategies', [])
 
         # Начинаем формировать статус
@@ -593,14 +897,14 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
 
         if user_config:
             # Получаем список символов из настроек пользователя
-            watchlist = user_config.get('watchlist', [])
+            watchlist = user_config.get('watchlist_symbols', [])
             for symbol in watchlist:
                 configured_symbols.add(symbol)
 
             # Проверяем, какие стратегии должны быть активны, но не запущены
             strategy_configs = [
                 (ConfigType.STRATEGY_SIGNAL_SCALPER, "SIGNAL_SCALPER"),
-                (ConfigType.STRATEGY_IMPULSE_TRAILING, "IMPULSE_TRAILING")
+                (ConfigType.STRATEGY_FLASH_DROP_CATCHER, "FLASH_DROP_CATCHER")
             ]
 
             for config_type, strategy_name in strategy_configs:
@@ -614,36 +918,81 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
                                 inactive_strategies[strategy_name] = []
                             inactive_strategies[strategy_name].append(symbol)
 
-        # Получаем API для проверки позиций
-        api_keys = await db_manager.get_api_keys(user_id, "bybit")
-        positions_data = {}
+        # === ПОЛУЧАЕМ ПОЗИЦИИ ПО ВСЕМ АККАУНТАМ (MULTI-ACCOUNT SUPPORT) ===
+        all_api_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
+        positions_data = {}  # {symbol: {aggregated data from all accounts}}
 
-        if api_keys:
+        if all_api_keys:
             try:
                 # Определяем режим торговли (demo/live)
                 exchange_config = system_config.get_exchange_config("bybit")
                 use_demo = exchange_config.demo if exchange_config else False
 
-                async with BybitAPI(
-                    user_id=user_id,
-                    api_key=api_keys[0],
-                    api_secret=api_keys[1],
-                    demo=use_demo
-                ) as api:
-                    # Получаем все позиции пользователя
-                    all_positions = await api.get_positions()
-                    if all_positions:
-                        for pos in all_positions:
-                            symbol = pos.get('symbol', '')
-                            size = float(pos.get('size', 0))
-                            if size != 0:  # Только активные позиции (и лонги, и шорты)
-                                positions_data[symbol] = {
-                                    'side': pos.get('side', ''),
-                                    'size': size,
-                                    'unrealizedPnl': float(pos.get('unrealisedPnl', 0)),
-                                    'avgPrice': float(pos.get('avgPrice', 0)),
-                                    'markPrice': float(pos.get('markPrice', 0))
-                                }
+                # === MULTI-ACCOUNT РЕЖИМ (3 аккаунта) - агрегируем позиции ===
+                if len(all_api_keys) == 3:
+                    log_info(user_id, "Получение позиций в autotrade_status (multi-account режим)", "autotrade_status")
+
+                    # Собираем позиции со всех 3 аккаунтов
+                    for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
+                        priority = key_data['priority']
+                        try:
+                            async with BybitAPI(
+                                user_id=user_id,
+                                api_key=key_data['api_key'],
+                                api_secret=key_data['secret_key'],
+                                demo=use_demo
+                            ) as api:
+                                account_positions = await api.get_positions()
+
+                                if account_positions:
+                                    for pos in account_positions:
+                                        symbol = pos.get('symbol', '')
+                                        size = float(pos.get('size', 0))
+                                        if size != 0:  # Только активные позиции
+                                            # Агрегируем позиции по символу (суммируем PnL)
+                                            if symbol not in positions_data:
+                                                positions_data[symbol] = {
+                                                    'side': pos.get('side', ''),
+                                                    'size': 0,
+                                                    'unrealizedPnl': 0,
+                                                    'avgPrice': float(pos.get('avgPrice', 0)),
+                                                    'markPrice': float(pos.get('markPrice', 0)),
+                                                    'accounts': []
+                                                }
+                                            # Суммируем размер и PnL
+                                            positions_data[symbol]['size'] += size
+                                            positions_data[symbol]['unrealizedPnl'] += float(pos.get('unrealisedPnl', 0))
+                                            positions_data[symbol]['accounts'].append(priority)
+
+                        except Exception as account_error:
+                            log_warning(user_id, f"Ошибка получения позиций для аккаунта {priority}: {account_error}", "autotrade_status")
+
+                # === ОБЫЧНЫЙ РЕЖИМ (1 аккаунт) ===
+                else:
+                    log_info(user_id, "Получение позиций в autotrade_status (обычный режим)", "autotrade_status")
+
+                    api_keys = await db_manager.get_api_keys(user_id, "bybit", account_priority=1)
+                    if api_keys:
+                        async with BybitAPI(
+                            user_id=user_id,
+                            api_key=api_keys[0],
+                            api_secret=api_keys[1],
+                            demo=use_demo
+                        ) as api:
+                            # Получаем все позиции пользователя
+                            all_positions = await api.get_positions()
+                            if all_positions:
+                                for pos in all_positions:
+                                    symbol = pos.get('symbol', '')
+                                    size = float(pos.get('size', 0))
+                                    if size != 0:  # Только активные позиции (и лонги, и шорты)
+                                        positions_data[symbol] = {
+                                            'side': pos.get('side', ''),
+                                            'size': size,
+                                            'unrealizedPnl': float(pos.get('unrealisedPnl', 0)),
+                                            'avgPrice': float(pos.get('avgPrice', 0)),
+                                            'markPrice': float(pos.get('markPrice', 0))
+                                        }
             except Exception as e:
                 log_warning(user_id, f"Не удалось получить данные позиций: {e}", "autotrade_status")
 
@@ -668,8 +1017,8 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
             # Переводим название стратегии
             if strategy_type == "SIGNAL_SCALPER":
                 display_name = "📈 Signal Scalper"
-            elif strategy_type == "IMPULSE_TRAILING":
-                display_name = "⚡ Impulse Trailing"
+            elif strategy_type == "FLASH_DROP_CATCHER":
+                display_name = "🚀 Flash Drop Catcher"
             else:
                 display_name = f"🔧 {strategy_type.replace('_', ' ').title()}"
 
@@ -712,8 +1061,8 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
                 # Переводим название стратегии
                 if strategy_type == "SIGNAL_SCALPER":
                     display_name = "📈 Signal Scalper"
-                elif strategy_type == "IMPULSE_TRAILING":
-                    display_name = "⚡ Impulse Trailing"
+                elif strategy_type == "FLASH_DROP_CATCHER":
+                    display_name = "🚀 Flash Drop Catcher"
                 else:
                     display_name = f"🔧 {strategy_type.replace('_', ' ').title()}"
 
@@ -746,39 +1095,126 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
 
 @router.message(Command("balance"))
 async def cmd_balance(message: Message, state: FSMContext):
-    """Обработчик команды /balance"""
+    """Обработчик команды /balance с поддержкой multi-account режима"""
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "balance")
-
-    keys = await db_manager.get_api_keys(user_id, "bybit")
-    if not keys:
-        await message.answer("⚠️ API ключи не настроены. Не могу получить баланс.")
-        return
 
     try:
         exchange_config = system_config.get_exchange_config("bybit")
         use_demo = exchange_config.demo if exchange_config else False
 
-        # Используем контекстный менеджер и передаем флаг testnet
-        async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], demo=use_demo) as api:
-            balance_data = await api.get_wallet_balance()
+        # === ПРОВЕРКА MULTI-ACCOUNT РЕЖИМА ===
+        all_api_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
 
-        if balance_data and 'totalEquity' in balance_data:
-            total_equity = format_currency(balance_data['totalEquity'])
-            available_balance = format_currency(balance_data['totalAvailableBalance'])
-            unrealised_pnl = format_currency(balance_data['totalUnrealisedPnl'])
+        if not all_api_keys or len(all_api_keys) == 0:
+            await message.answer("⚠️ API ключи не настроены. Не могу получить баланс.")
+            return
 
-            pnl_emoji = "📈" if balance_data['totalUnrealisedPnl'] >= 0 else "📉"
+        # === MULTI-ACCOUNT РЕЖИМ (3 аккаунта) ===
+        if len(all_api_keys) == 3:
+            log_info(user_id, "Получение баланса в multi-account режиме (3 аккаунта)", "balance")
 
-            balance_text = (
-                f"💰 <b>Баланс аккаунта (Bybit)</b>\n\n"
-                f"<b>Общий капитал:</b> {total_equity}\n"
-                f"<b>Доступно для вывода:</b> {available_balance}\n"
-                f"<b>Нереализованный PnL:</b> {pnl_emoji} {unrealised_pnl}"
-            )
+            total_equity_sum = 0
+            total_available_sum = 0
+            total_unrealised_pnl_sum = 0
+            accounts_data = []
+
+            # Получаем баланс для каждого аккаунта
+            for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
+                priority = key_data['priority']
+                try:
+                    async with BybitAPI(
+                        user_id=user_id,
+                        api_key=key_data['api_key'],
+                        api_secret=key_data['secret_key'],
+                        demo=use_demo
+                    ) as api:
+                        balance_data = await api.get_wallet_balance()
+
+                    if balance_data and 'totalEquity' in balance_data:
+                        equity = float(balance_data['totalEquity'])
+                        available = float(balance_data['totalAvailableBalance'])
+                        unrealised_pnl = float(balance_data['totalUnrealisedPnl'])
+
+                        total_equity_sum += equity
+                        total_available_sum += available
+                        total_unrealised_pnl_sum += unrealised_pnl
+
+                        accounts_data.append({
+                            'priority': priority,
+                            'equity': equity,
+                            'available': available,
+                            'unrealised_pnl': unrealised_pnl
+                        })
+                    else:
+                        log_warning(user_id, f"Не удалось получить баланс для аккаунта {priority}", "balance")
+                except Exception as account_error:
+                    log_error(user_id, f"Ошибка получения баланса для аккаунта {priority}: {account_error}", "balance")
+
+            if not accounts_data:
+                await message.answer("❌ Не удалось получить баланс ни с одного аккаунта.")
+                return
+
+            # Формируем сообщение для multi-account режима
+            balance_text = "💰 <b>БАЛАНС (Multi-Account Режим)</b>\n"
+            balance_text += "═" * 30 + "\n\n"
+
+            # Агрегированные данные
+            pnl_emoji = "📈" if total_unrealised_pnl_sum >= 0 else "📉"
+            balance_text += f"🌟 <b>ОБЩИЙ БАЛАНС ПО ВСЕМ АККАУНТАМ:</b>\n"
+            balance_text += f"  • Капитал: {format_currency(total_equity_sum)}\n"
+            balance_text += f"  • Доступно: {format_currency(total_available_sum)}\n"
+            balance_text += f"  • PnL: {pnl_emoji} {format_currency(total_unrealised_pnl_sum)}\n\n"
+
+            balance_text += "─" * 30 + "\n\n"
+
+            # Детали по каждому аккаунту
+            priority_names = {1: "PRIMARY", 2: "SECONDARY", 3: "TERTIARY"}
+            priority_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+            for acc in accounts_data:
+                priority = acc['priority']
+                name = priority_names.get(priority, f"Бот {priority}")
+                emoji = priority_emojis.get(priority, "🔹")
+                pnl_emoji_acc = "📈" if acc['unrealised_pnl'] >= 0 else "📉"
+
+                balance_text += f"{emoji} <b>{name} (Бот {priority})</b>\n"
+                balance_text += f"  • Капитал: {format_currency(acc['equity'])}\n"
+                balance_text += f"  • Доступно: {format_currency(acc['available'])}\n"
+                balance_text += f"  • PnL: {pnl_emoji_acc} {format_currency(acc['unrealised_pnl'])}\n\n"
+
             await message.answer(balance_text, parse_mode="HTML")
+
+        # === ОБЫЧНЫЙ РЕЖИМ (1 аккаунт) ===
         else:
-            await message.answer("❌ Не удалось получить данные о балансе. Проверьте права API ключей.")
+            log_info(user_id, "Получение баланса в обычном режиме (1 аккаунт)", "balance")
+
+            # Получаем PRIMARY ключ
+            keys = await db_manager.get_api_keys(user_id, "bybit", account_priority=1)
+            if not keys:
+                await message.answer("⚠️ API ключи не настроены. Не могу получить баланс.")
+                return
+
+            async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], demo=use_demo) as api:
+                balance_data = await api.get_wallet_balance()
+
+            if balance_data and 'totalEquity' in balance_data:
+                total_equity = format_currency(balance_data['totalEquity'])
+                available_balance = format_currency(balance_data['totalAvailableBalance'])
+                unrealised_pnl = format_currency(balance_data['totalUnrealisedPnl'])
+
+                pnl_emoji = "📈" if balance_data['totalUnrealisedPnl'] >= 0 else "📉"
+
+                balance_text = (
+                    f"💰 <b>Баланс аккаунта (Bybit)</b>\n\n"
+                    f"<b>Общий капитал:</b> {total_equity}\n"
+                    f"<b>Доступно для вывода:</b> {available_balance}\n"
+                    f"<b>Нереализованный PnL:</b> {pnl_emoji} {unrealised_pnl}"
+                )
+                await message.answer(balance_text, parse_mode="HTML")
+            else:
+                await message.answer("❌ Не удалось получить данные о балансе. Проверьте права API ключей.")
+
     except Exception as e:
         log_error(user_id, f"Ошибка получения баланса: {e}", module_name='basic_handlers')
         await message.answer("❌ Произошла ошибка при запросе баланса.")
@@ -786,41 +1222,135 @@ async def cmd_balance(message: Message, state: FSMContext):
 
 @router.message(Command("positions"))
 async def cmd_positions(message: Message, state: FSMContext):
-    """Обработчик команды /positions"""
+    """Обработчик команды /positions с поддержкой multi-account режима"""
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "positions")
 
-    keys = await db_manager.get_api_keys(user_id, "bybit")
-    if not keys:
-        await message.answer("⚠️ API ключи не настроены. Не могу получить позиции.")
-        return
-
     try:
-        # Явно получаем флаг 'demo' из глобальной конфигурации
         exchange_config = system_config.get_exchange_config("bybit")
         use_demo = exchange_config.demo if exchange_config else False
 
-        # Используем контекстный менеджер и передаем флаг testnet
-        async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], demo=use_demo) as api:
-            positions = await api.get_positions()
+        # === ПРОВЕРКА MULTI-ACCOUNT РЕЖИМА ===
+        all_api_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
 
-        if not positions:
-            await message.answer("✅ У вас нет открытых позиций.")
+        if not all_api_keys or len(all_api_keys) == 0:
+            await message.answer("⚠️ API ключи не настроены. Не могу получить позиции.")
             return
 
-        positions_text = "📈 <b>Открытые позиции:</b>\n\n"
-        for pos in positions:
-            side_emoji = "🟢 LONG" if pos['side'] == 'Buy' else "🔴 SHORT"
-            pnl_emoji = "📈" if pos['unrealisedPnl'] >= 0 else "📉"
+        # === MULTI-ACCOUNT РЕЖИМ (3 аккаунта) ===
+        if len(all_api_keys) == 3:
+            log_info(user_id, "Получение позиций в multi-account режиме (3 аккаунта)", "positions")
 
-            positions_text += (
-                f"<b>{pos['symbol']}</b> | {side_emoji}\n"
-                f"  - <b>Размер:</b> {pos['size']} {pos.get('baseCoin', '')}\n"
-                f"  - <b>Цена входа:</b> {format_currency(pos['avgPrice'])}\n"
-                f"  - <b>PnL:</b> {pnl_emoji} {format_currency(pos['unrealisedPnl'])} ({format_percentage(pos.get('percentage', 0) * 100)})\n\n"
-            )
+            all_positions = []  # Все позиции со всех аккаунтов
 
-        await message.answer(positions_text, parse_mode="HTML")
+            # Получаем позиции для каждого аккаунта
+            for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
+                priority = key_data['priority']
+                try:
+                    async with BybitAPI(
+                        user_id=user_id,
+                        api_key=key_data['api_key'],
+                        api_secret=key_data['secret_key'],
+                        demo=use_demo
+                    ) as api:
+                        positions = await api.get_positions()
+
+                    if positions:
+                        # Фильтруем только активные позиции и добавляем маркер приоритета
+                        for pos in positions:
+                            if float(pos.get('size', 0)) != 0:  # Только открытые позиции
+                                pos['_bot_priority'] = priority  # Добавляем метку бота
+                                all_positions.append(pos)
+                except Exception as account_error:
+                    log_error(user_id, f"Ошибка получения позиций для аккаунта {priority}: {account_error}", "positions")
+
+            if not all_positions:
+                await message.answer("✅ У вас нет открытых позиций на всех аккаунтах.")
+                return
+
+            # Формируем сообщение для multi-account режима
+            positions_text = "📈 <b>ОТКРЫТЫЕ ПОЗИЦИИ (Multi-Account Режим)</b>\n"
+            positions_text += "═" * 35 + "\n\n"
+
+            # Группируем позиции по ботам
+            priority_names = {1: "PRIMARY", 2: "SECONDARY", 3: "TERTIARY"}
+            priority_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+            for priority in [1, 2, 3]:
+                bot_positions = [p for p in all_positions if p['_bot_priority'] == priority]
+
+                if bot_positions:
+                    name = priority_names.get(priority, f"Бот {priority}")
+                    emoji = priority_emojis.get(priority, "🔹")
+
+                    positions_text += f"{emoji} <b>{name} (Бот {priority})</b>\n"
+                    positions_text += "─" * 30 + "\n"
+
+                    for pos in bot_positions:
+                        symbol = pos['symbol']
+                        side_emoji = "🟢 LONG" if pos['side'] == 'Buy' else "🔴 SHORT"
+                        pnl_emoji = "📈" if pos['unrealisedPnl'] >= 0 else "📉"
+                        pnl_value = float(pos['unrealisedPnl'])
+
+                        # Определяем статус (для multi-account координатора)
+                        status_emoji = ""
+                        pnl_percent = (pnl_value / float(pos.get('avgPrice', 1)) / float(pos.get('size', 1))) * 100
+                        if pnl_percent < -10:
+                            status_emoji = " 🔴 STUCK"  # Застрял
+                        elif pnl_value > 0:
+                            status_emoji = " 🟢 ACTIVE"  # Активный в прибыли
+                        else:
+                            status_emoji = " 🟡 ACTIVE"  # Активный в убытке
+
+                        positions_text += f"\n<b>{symbol}</b> | {side_emoji}{status_emoji}\n"
+                        positions_text += f"  • Размер: {pos['size']} {pos.get('baseCoin', '')}\n"
+                        positions_text += f"  • Вход: {format_currency(pos['avgPrice'])}\n"
+                        positions_text += f"  • PnL: {pnl_emoji} {format_currency(pos['unrealisedPnl'])}\n"
+
+                    positions_text += "\n"
+
+            # Агрегированная статистика
+            total_pnl = sum(float(p['unrealisedPnl']) for p in all_positions)
+            total_pnl_emoji = "📈" if total_pnl >= 0 else "📉"
+
+            positions_text += "═" * 35 + "\n"
+            positions_text += f"🌟 <b>ИТОГО:</b>\n"
+            positions_text += f"  • Всего позиций: {len(all_positions)}\n"
+            positions_text += f"  • Общий PnL: {total_pnl_emoji} {format_currency(total_pnl)}\n"
+
+            await message.answer(positions_text, parse_mode="HTML")
+
+        # === ОБЫЧНЫЙ РЕЖИМ (1 аккаунт) ===
+        else:
+            log_info(user_id, "Получение позиций в обычном режиме (1 аккаунт)", "positions")
+
+            # Получаем PRIMARY ключ
+            keys = await db_manager.get_api_keys(user_id, "bybit", account_priority=1)
+            if not keys:
+                await message.answer("⚠️ API ключи не настроены. Не могу получить позиции.")
+                return
+
+            async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], demo=use_demo) as api:
+                positions = await api.get_positions()
+
+            if not positions:
+                await message.answer("✅ У вас нет открытых позиций.")
+                return
+
+            positions_text = "📈 <b>Открытые позиции:</b>\n\n"
+            for pos in positions:
+                side_emoji = "🟢 LONG" if pos['side'] == 'Buy' else "🔴 SHORT"
+                pnl_emoji = "📈" if pos['unrealisedPnl'] >= 0 else "📉"
+
+                positions_text += (
+                    f"<b>{pos['symbol']}</b> | {side_emoji}\n"
+                    f"  - <b>Размер:</b> {pos['size']} {pos.get('baseCoin', '')}\n"
+                    f"  - <b>Цена входа:</b> {format_currency(pos['avgPrice'])}\n"
+                    f"  - <b>PnL:</b> {pnl_emoji} {format_currency(pos['unrealisedPnl'])} ({format_percentage(pos.get('percentage', 0) * 100)})\n\n"
+                )
+
+            await message.answer(positions_text, parse_mode="HTML")
+
     except Exception as e:
         log_error(user_id, f"Ошибка получения позиций: {e}", module_name='basic_handlers')
         await message.answer("❌ Произошла ошибка при запросе позиций.")
@@ -835,14 +1365,14 @@ async def cmd_stop_all(message: Message, state: FSMContext):
     # Получаем информацию о текущих позициях и стратегиях
     try:
         session_status = await redis_manager.get_user_session(user_id)
-        if not session_status or not session_status.get('autotrade_enabled', False):
+        if not session_status or not session_status.get('running', False):
             await message.answer("🔴 Торговля уже неактивна.")
             return
 
-        # Получаем API ключи
-        user_api_keys = await db_manager.get_api_keys(user_id, "bybit")
+        # === ПОЛУЧАЕМ API КЛЮЧИ И ДАННЫЕ (MULTI-ACCOUNT SUPPORT) ===
+        all_api_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
 
-        if not user_api_keys:
+        if not all_api_keys or len(all_api_keys) == 0:
             await message.answer("❌ API ключи не найдены.")
             return
 
@@ -853,33 +1383,115 @@ async def cmd_stop_all(message: Message, state: FSMContext):
         exchange_config = system_config.get_exchange_config("bybit")
         use_demo = exchange_config.demo if exchange_config else False
 
-        async with BybitAPI(
-            user_id=user_id,
-            api_key=user_api_keys[0],
-            api_secret=user_api_keys[1],
-            demo=use_demo
-        ) as api:
-            positions = await api.get_positions()
-            open_orders = await api.get_open_orders()
+        # Собираем позиции и ордера со ВСЕХ аккаунтов
+        all_positions = []
+        all_orders = []
 
-            # Формируем сообщение со статистикой
-            warning_text = "🚨 <b>ЭКСТРЕННАЯ ОСТАНОВКА</b>\n"
-            warning_text += "═" * 30 + "\n\n"
-            warning_text += "⚠️ <b>ВНИМАНИЕ!</b> Все открытые позиции будут закрыты по рыночной цене.\n\n"
+        # === MULTI-ACCOUNT РЕЖИМ (3 аккаунта) - агрегируем данные ===
+        if len(all_api_keys) == 3:
+            log_info(user_id, "Экстренная остановка в multi-account режиме (3 аккаунта)", "stop_all")
 
-            # Анализируем позиции
-            active_positions = []
-            total_pnl = 0
-            profitable_count = 0
-            losing_count = 0
+            for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
+                priority = key_data['priority']
+                try:
+                    async with BybitAPI(
+                        user_id=user_id,
+                        api_key=key_data['api_key'],
+                        api_secret=key_data['secret_key'],
+                        demo=use_demo
+                    ) as api:
+                        positions = await api.get_positions()
+                        orders = await api.get_open_orders()
 
-            if positions:
-                active_positions = [pos for pos in positions if float(pos.get('size', 0)) != 0]
+                        if positions:
+                            for pos in positions:
+                                if float(pos.get('size', 0)) != 0:
+                                    pos['_bot_priority'] = priority
+                                    all_positions.append(pos)
 
-            if active_positions:
-                warning_text += f"📈 <b>Открытые позиции ({len(active_positions)}):</b>\n"
+                        if orders:
+                            for order in orders:
+                                if order.get('orderStatus') in ['New', 'PartiallyFilled']:
+                                    order['_bot_priority'] = priority
+                                    all_orders.append(order)
 
-                for pos in active_positions:
+                except Exception as account_error:
+                    log_error(user_id, f"Ошибка получения данных для аккаунта {priority} (stop_all): {account_error}", "stop_all")
+
+        # === ОБЫЧНЫЙ РЕЖИМ (1 аккаунт) ===
+        else:
+            log_info(user_id, "Экстренная остановка в обычном режиме (1 аккаунт)", "stop_all")
+
+            user_api_keys = await db_manager.get_api_keys(user_id, "bybit", account_priority=1)
+            if not user_api_keys:
+                await message.answer("❌ API ключи не найдены.")
+                return
+
+            async with BybitAPI(
+                user_id=user_id,
+                api_key=user_api_keys[0],
+                api_secret=user_api_keys[1],
+                demo=use_demo
+            ) as api:
+                positions = await api.get_positions()
+                orders = await api.get_open_orders()
+
+                if positions:
+                    all_positions = [pos for pos in positions if float(pos.get('size', 0)) != 0]
+
+                if orders:
+                    all_orders = [order for order in orders if order.get('orderStatus') in ['New', 'PartiallyFilled']]
+
+        # === ФОРМИРУЕМ СООБЩЕНИЕ СО СТАТИСТИКОЙ ===
+        warning_text = "🚨 <b>ЭКСТРЕННАЯ ОСТАНОВКА</b>\n"
+        warning_text += "═" * 30 + "\n\n"
+        warning_text += "⚠️ <b>ВНИМАНИЕ!</b> Все открытые позиции будут закрыты по рыночной цене.\n\n"
+
+        # Анализируем позиции
+        total_pnl = 0
+        profitable_count = 0
+        losing_count = 0
+
+        if all_positions:
+            # Для multi-account показываем группировку
+            if len(all_api_keys) == 3:
+                warning_text += f"📈 <b>Открытые позиции ({len(all_positions)}) - MULTI-ACCOUNT:</b>\n"
+
+                priority_names = {1: "PRIMARY", 2: "SECONDARY", 3: "TERTIARY"}
+                priority_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+                for priority in [1, 2, 3]:
+                    bot_positions = [p for p in all_positions if p.get('_bot_priority') == priority]
+                    if bot_positions:
+                        emoji = priority_emojis.get(priority, "🔹")
+                        warning_text += f"\n{emoji} <b>{priority_names[priority]}:</b>\n"
+
+                        for pos in bot_positions:
+                            symbol = pos.get('symbol', 'Unknown')
+                            side = pos.get('side', 'Unknown')
+                            size = float(pos.get('size', 0))
+                            unrealized_pnl = float(pos.get('unrealisedPnl', 0))
+                            total_pnl += unrealized_pnl
+
+                            if unrealized_pnl >= 0:
+                                profitable_count += 1
+                                pnl_emoji = "🟢"
+                                pnl_text = f"+${unrealized_pnl:.2f}"
+                            else:
+                                losing_count += 1
+                                pnl_emoji = "🔴"
+                                pnl_text = f"${unrealized_pnl:.2f}"
+
+                            side_emoji = "📈" if side == 'Buy' else "📉"
+                            symbol_short = symbol.replace('USDT', '')
+
+                            warning_text += f"  • {symbol_short} {side_emoji} {size} {pnl_emoji} {pnl_text}\n"
+
+            # Для обычного режима - простой список
+            else:
+                warning_text += f"📈 <b>Открытые позиции ({len(all_positions)}):</b>\n"
+
+                for pos in all_positions:
                     symbol = pos.get('symbol', 'Unknown')
                     side = pos.get('side', 'Unknown')
                     size = float(pos.get('size', 0))
@@ -900,54 +1512,51 @@ async def cmd_stop_all(message: Message, state: FSMContext):
 
                     warning_text += f"  • {symbol_short} {side_emoji} {size} {pnl_emoji} {pnl_text}\n"
 
-                warning_text += f"\n💰 <b>Общий нереализованный PnL:</b> "
-                if total_pnl >= 0:
-                    warning_text += f"🟢 +${total_pnl:.2f}\n"
-                else:
-                    warning_text += f"🔴 ${total_pnl:.2f}\n"
-
-                warning_text += f"📊 В прибыли: {profitable_count} | В убытке: {losing_count}\n\n"
+            warning_text += f"\n💰 <b>Общий нереализованный PnL:</b> "
+            if total_pnl >= 0:
+                warning_text += f"🟢 +${total_pnl:.2f}\n"
             else:
-                warning_text += "✅ Открытых позиций нет\n\n"
+                warning_text += f"🔴 ${total_pnl:.2f}\n"
 
-            # Проверяем открытые ордера
-            active_orders = []
-            if open_orders:
-                active_orders = [order for order in open_orders if order.get('orderStatus') in ['New', 'PartiallyFilled']]
-                if active_orders:
-                    warning_text += f"📋 <b>Активные ордера:</b> {len(active_orders)}\n\n"
+            warning_text += f"📊 В прибыли: {profitable_count} | В убытке: {losing_count}\n\n"
+        else:
+            warning_text += "✅ Открытых позиций нет\n\n"
 
-            # Проверяем активные стратегии
-            active_strategies = session_status.get('active_strategies', [])
-            if active_strategies:
-                warning_text += f"🔄 <b>Активных стратегий:</b> {len(active_strategies)}\n\n"
+        # Проверяем открытые ордера
+        if all_orders:
+            warning_text += f"📋 <b>Активные ордера:</b> {len(all_orders)}\n\n"
 
-            # Добавляем предупреждение о последствиях
-            warning_text += "⚠️ <b>Последствия экстренной остановки:</b>\n"
-            warning_text += "• Все позиции закроются по рыночной цене\n"
-            warning_text += "• Все ордера будут отменены\n"
-            warning_text += "• Автоторговля будет остановлена\n"
-            warning_text += "• Действие необратимо\n\n"
+        # Проверяем активные стратегии
+        active_strategies = session_status.get('active_strategies', [])
+        if active_strategies:
+            warning_text += f"🔄 <b>Активных стратегий:</b> {len(active_strategies)}\n\n"
 
-            if total_pnl < 0:
-                warning_text += f"🚨 <b>Внимание:</b> Убыток составит ${abs(total_pnl):.2f}\n\n"
+        # Добавляем предупреждение о последствиях
+        warning_text += "⚠️ <b>Последствия экстренной остановки:</b>\n"
+        warning_text += "• Все позиции закроются по рыночной цене\n"
+        warning_text += "• Все ордера будут отменены\n"
+        warning_text += "• Автоторговля будет остановлена\n"
+        warning_text += "• Действие необратимо\n\n"
 
-            warning_text += "Вы уверены, что хотите продолжить?"
+        if total_pnl < 0:
+            warning_text += f"🚨 <b>Внимание:</b> Убыток составит ${abs(total_pnl):.2f}\n\n"
 
-            # Создаём специальную клавиатуру с ясным подтверждением
-            emergency_buttons = [
-                [
-                    {"text": "🚨 ДА, остановить немедленно", "callback_data": "confirm_emergency_stop"},
-                    {"text": "❌ НЕТ, отменить", "callback_data": "cancel_emergency_stop"}
-                ]
+        warning_text += "Вы уверены, что хотите продолжить?"
+
+        # Создаём специальную клавиатуру с ясным подтверждением
+        emergency_buttons = [
+            [
+                {"text": "🚨 ДА, остановить немедленно", "callback_data": "confirm_emergency_stop"},
+                {"text": "❌ НЕТ, отменить", "callback_data": "cancel_emergency_stop"}
             ]
-            emergency_keyboard = KeyboardBuilder.build_keyboard(emergency_buttons)
+        ]
+        emergency_keyboard = KeyboardBuilder.build_keyboard(emergency_buttons)
 
-            await message.answer(
-                warning_text,
-                parse_mode="HTML",
-                reply_markup=emergency_keyboard
-            )
+        await message.answer(
+            warning_text,
+            parse_mode="HTML",
+            reply_markup=emergency_keyboard
+        )
 
     except Exception as e:
         log_error(user_id, f"Ошибка при подготовке экстренной остановки: {e}", module_name='basic_handlers')

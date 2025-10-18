@@ -23,6 +23,7 @@ from core.default_configs import DefaultConfigs
 from core.enums import ConfigType
 from core.settings_config import system_config
 from core.impulse_scanner import ImpulseScanner
+from database.db_trades import db_manager
 
 
 
@@ -602,63 +603,89 @@ class BotApplication:
 
     async def _restore_strategies_for_user(self, user_id: int, session: 'UserSession'):
         """
+        ПОЛНОСТЬЮ ПЕРЕПИСАННАЯ ВЕРСИЯ.
         Восстанавливает активные стратегии пользователя после перезагрузки сервера.
-        Проверяет статус автоторговли и запускает стратегии для активных пользователей.
+
+        РАБОТАЕТ ТОЛЬКО С ОРДЕРАМИ БОТА ИЗ БД!
+        Игнорирует ручные ордера пользователя.
         """
         try:
-            # Отправляем общее уведомление о начале восстановления
+            # Уведомляем пользователя о начале восстановления
             await self._notify_user_about_server_restart(user_id)
 
-            # Получаем список всех возможных стратегий для поиска сохранённых состояний
+            # Импорты
             from core.enums import StrategyType
             from strategies.base_strategy import BaseStrategy
 
-            strategy_types = [StrategyType.SIGNAL_SCALPER, StrategyType.IMPULSE_TRAILING]
+            strategy_types = [StrategyType.SIGNAL_SCALPER]
             restored_strategies = []
 
             # Получаем конфигурацию пользователя
             global_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+            if not global_config:
+                log_error(user_id, "Нет конфигурации пользователя", "BotApplication")
+                return
+
             watchlist_symbols = global_config.get("watchlist_symbols", [])
             auto_trading_enabled = global_config.get("auto_trading_enabled", False)
 
             if not watchlist_symbols:
                 log_info(user_id, "Список символов пуст, восстановление стратегий пропущено", "BotApplication")
+                await self.bot.send_message(
+                    chat_id=user_id,
+                    text="ℹ️ <b>Проверка завершена</b>\n\nСписок символов watchlist пуст.",
+                    parse_mode="HTML"
+                )
                 return
 
-            # КРИТИЧЕСКИ ВАЖНО: Проверяем активные позиции на бирже для определения реального статуса автоторговли
-            has_active_positions = False
-            active_positions_info = []
+            # ===================================================================
+            # КЛЮЧЕВАЯ ЧАСТЬ: Получаем активные ордера БОТА из БД
+            # ===================================================================
+            active_orders_from_db = []
+            has_active_orders = False
 
             try:
-                # Получаем активные позиции пользователя с биржи
-                api_instance = session.api  # Используем API из сессии пользователя
-                if api_instance:
-                    positions = await api_instance.get_positions()
-                    for position in positions:
-                        if position.get('size', 0) > 0:  # Есть активная позиция
-                            symbol = position.get('symbol', '')
-                            if symbol in watchlist_symbols:  # Позиция по символу из watchlist
-                                has_active_positions = True
-                                active_positions_info.append({
-                                    'symbol': symbol,
-                                    'side': position.get('side', ''),
-                                    'size': position.get('size', 0),
-                                    'entry_price': position.get('entryPrice', 0)
-                                })
-                                log_info(user_id, f"🎯 Найдена активная позиция: {symbol} {position.get('side')} размер={position.get('size')}", "BotApplication")
+                active_orders_from_db = await db_manager.get_active_orders_by_user(
+                    user_id=user_id,
+                    symbol=None,  # Все символы
+                    strategy_type=None  # Все стратегии
+                )
+
+                if active_orders_from_db:
+                    has_active_orders = True
+                    log_info(user_id, f"🎯 Найдено {len(active_orders_from_db)} активных ордеров бота в БД", "BotApplication")
+
+                    # Группируем ордера по символам
+                    orders_by_symbol = {}
+                    for order in active_orders_from_db:
+                        symbol = order['symbol']
+                        if symbol not in orders_by_symbol:
+                            orders_by_symbol[symbol] = []
+                        orders_by_symbol[symbol].append(order)
+
+                    log_info(user_id, f"📊 Активные ордера по символам: {list(orders_by_symbol.keys())}", "BotApplication")
+                else:
+                    log_info(user_id, "✅ Активных ордеров бота не найдено", "BotApplication")
+
             except Exception as e:
-                log_error(user_id, f"Ошибка проверки активных позиций: {e}", "BotApplication")
+                log_error(user_id, f"Ошибка проверки активных ордеров в БД: {e}", "BotApplication")
 
-            # ИСПРАВЛЕННАЯ ЛОГИКА: Если есть активные позиции, автоторговля точно была активна
-            real_auto_trading_status = auto_trading_enabled or has_active_positions
+            # ===================================================================
+            # Определяем: нужно ли восстанавливать стратегии
+            # ===================================================================
+            real_auto_trading_status = auto_trading_enabled or has_active_orders
 
-            log_info(user_id, f"Статус автоторговли: конфиг={'✅' if auto_trading_enabled else '❌'}, активные позиции={'✅' if has_active_positions else '❌'}, итог={'✅ АКТИВНА' if real_auto_trading_status else '❌ НЕАКТИВНА'}", "BotApplication")
+            log_info(user_id,
+                    f"Статус: autotrade={'✅' if auto_trading_enabled else '❌'}, "
+                    f"active_orders={'✅' if has_active_orders else '❌'}, "
+                    f"итог={'✅ ВОССТАНАВЛИВАЕМ' if real_auto_trading_status else '❌ НЕ ВОССТАНАВЛИВАЕМ'}",
+                    "BotApplication")
 
             if not real_auto_trading_status:
-                # Если автоторговля действительно неактивна И нет активных позиций
+                # Автоторговля отключена И нет активных ордеров
                 recovery_message = (
                     f"ℹ️ <b>Проверка завершена</b>\n\n"
-                    f"Автоторговля отключена и активных позиций не найдено.\n"
+                    f"Автоторговля отключена и активных ордеров бота не найдено.\n"
                     f"Включите автоторговлю в настройках для запуска стратегий."
                 )
                 await self.bot.send_message(
@@ -668,17 +695,25 @@ class BotApplication:
                 )
                 return
 
-            # Если есть активные позиции, уведомляем пользователя
-            if has_active_positions:
-                positions_text = "\n".join([f"📊 {pos['symbol']}: {pos['side']} {pos['size']} @ {pos['entry_price']}" for pos in active_positions_info])
-                position_alert = (
-                    f"🚨 <b>ОБНАРУЖЕНЫ АКТИВНЫЕ ПОЗИЦИИ</b>\n\n"
-                    f"{positions_text}\n\n"
-                    f"🔄 Запускаю восстановление для защиты позиций..."
+            # ===================================================================
+            # Уведомляем об активных ордерах
+            # ===================================================================
+            if has_active_orders:
+                orders_text = "\n".join([
+                    f"📊 {order['symbol']}: {order.get('side', 'N/A')} - ID:{order['order_id']}"
+                    for order in active_orders_from_db[:5]
+                ])
+                if len(active_orders_from_db) > 5:
+                    orders_text += f"\n...и ещё {len(active_orders_from_db) - 5} ордеров"
+
+                order_alert = (
+                    f"🚨 <b>ОБНАРУЖЕНЫ АКТИВНЫЕ ОРДЕРА БОТА</b>\n\n"
+                    f"{orders_text}\n\n"
+                    f"🔄 Запускаю восстановление стратегий для управления ордерами..."
                 )
                 await self.bot.send_message(
                     chat_id=user_id,
-                    text=position_alert,
+                    text=order_alert,
                     parse_mode="HTML"
                 )
 
@@ -704,126 +739,81 @@ class BotApplication:
                         log_error(user_id, f"Ошибка восстановления стратегии {strategy_type.value} для {symbol}: {strategy_error}", "BotApplication")
                         continue
 
-            # КРИТИЧЕСКИ ВАЖНО: Если у пользователя активна автоторговля, но не было сохранённых стратегий,
-            # СНАЧАЛА восстанавливаем мониторинг для символов с позициями, ПОТОМ запускаем для остальных
+            # ===================================================================
+            # ШАГ 2: Если не восстановили из Redis, запускаем стратегии заново
+            # ===================================================================
             if not restored_strategies:
-                log_info(user_id, "Сохранённые стратегии не найдены, но автоторговля активна - восстанавливаю мониторинг позиций", "BotApplication")
+                log_info(user_id, "Сохранённых стратегий в Redis не найдено", "BotApplication")
 
-                # Получаем список символов БЕЗ активных позиций
-                symbols_with_positions = {pos['symbol'] for pos in active_positions_info}
-                symbols_to_start = [symbol for symbol in watchlist_symbols if symbol not in symbols_with_positions]
+                if has_active_orders:
+                    # Есть активные ордера - восстанавливаем для их символов
+                    log_info(user_id, f"Восстанавливаю стратегии для символов с активными ордерами", "BotApplication")
 
-                log_info(user_id, f"Символы с позициями: {symbols_with_positions}, для запуска: {symbols_to_start}", "BotApplication")
+                    symbols_with_orders = set(order['symbol'] for order in active_orders_from_db)
+                    log_info(user_id, f"Символы с ордерами: {symbols_with_orders}", "BotApplication")
 
-                # ПЕРВЫЙ ПРИОРИТЕТ: Восстанавливаем мониторинг для символов С ПОЗИЦИЯМИ
-                monitoring_strategies = []
-                if symbols_with_positions:
-                    log_info(user_id, f"Восстанавливаю мониторинг для {len(symbols_with_positions)} символов с активными позициями...", "BotApplication")
-                    for position_info in active_positions_info:
+                    for symbol in symbols_with_orders:
                         try:
-                            # Создаём стратегию мониторинга для каждой активной позиции
-                            success = await session.create_strategy_from_active_position(
-                                position_info=position_info,
-                                strategy_type=StrategyType.SIGNAL_SCALPER
+                            # Запускаем стратегию для символа с ордерами
+                            success = await session.start_strategy(
+                                strategy_type=StrategyType.SIGNAL_SCALPER.value,
+                                symbol=symbol,
+                                analysis_data={'trigger': 'order_recovery', 'recovery_mode': True}
                             )
 
                             if success:
-                                monitoring_strategies.append(f"SignalScalper({position_info['symbol']})")
-                                log_info(user_id, f"✅ Создана стратегия мониторинга для {position_info['symbol']}", "BotApplication")
+                                restored_strategies.append(f"SignalScalper({symbol})")
+                                log_info(user_id, f"✅ Восстановлена стратегия для {symbol} с активными ордерами", "BotApplication")
                             else:
-                                log_error(user_id, f"❌ Не удалось создать стратегию мониторинга для {position_info['symbol']}", "BotApplication")
+                                log_error(user_id, f"❌ Не удалось восстановить стратегию для {symbol}", "BotApplication")
 
-                        except Exception as monitor_error:
-                            log_error(user_id, f"Ошибка создания мониторинга для {position_info.get('symbol', 'unknown')}: {monitor_error}", "BotApplication")
+                        except Exception as e:
+                            log_error(user_id, f"Ошибка восстановления стратегии для {symbol}: {e}", "BotApplication")
 
-                # ВТОРОЙ ПРИОРИТЕТ: Запускаем автоторговлю для символов БЕЗ позиций
-                if symbols_to_start:
-                    # Запускаем автоторговлю только для символов без активных позиций
-                    try:
-                        # Временно изменяем watchlist только на символы без позиций
-                        original_watchlist = global_config.get("watchlist_symbols", [])
-                        temp_config = global_config.copy()
-                        temp_config["watchlist_symbols"] = symbols_to_start
+                    # Запускаем стратегии для остальных символов из watchlist (без ордеров)
+                    symbols_without_orders = [s for s in watchlist_symbols if s not in symbols_with_orders]
+                    if symbols_without_orders:
+                        log_info(user_id, f"Запускаю стратегии для {len(symbols_without_orders)} символов без ордеров", "BotApplication")
+                        for symbol in symbols_without_orders:
+                            try:
+                                await session.start_strategy(
+                                    strategy_type=StrategyType.SIGNAL_SCALPER.value,
+                                    symbol=symbol,
+                                    analysis_data={'trigger': 'autotrade_restart'}
+                                )
+                            except Exception as e:
+                                log_error(user_id, f"Ошибка запуска стратегии для {symbol}: {e}", "BotApplication")
 
-                        # Сохраняем временную конфигурацию
-                        await redis_manager.save_config(user_id, ConfigType.GLOBAL, temp_config)
+                    recovery_message = (
+                        f"✅ <b>ВОССТАНОВЛЕНИЕ ЗАВЕРШЕНО</b>\n\n"
+                        f"🔄 Восстановлено стратегий с активными ордерами: <b>{len(restored_strategies)}</b>\n"
+                        f"{'📋 ' + ', '.join(restored_strategies) if restored_strategies else ''}\n\n"
+                        f"🚀 Запущено новых стратегий: <b>{len(symbols_without_orders)}</b>\n\n"
+                        f"✅ <b>Все ордера под контролем бота!</b>\n"
+                        f"📊 Отслеживание активно"
+                    )
 
-                        # Запускаем автоторговлю
-                        await session.start_auto_trading()
-
-                        # Восстанавливаем оригинальную конфигурацию
-                        restore_config = global_config.copy()
-                        restore_config["watchlist_symbols"] = original_watchlist
-                        await redis_manager.save_config(user_id, ConfigType.GLOBAL, restore_config)
-
-                        # Получаем количество запущенных стратегий
-                        active_strategies_count = len(session.active_strategies)
-
-                        if active_strategies_count > 0:
-                            recovery_message = (
-                                f"🚀 <b>Автоторговля частично запущена</b>\n\n"
-                                f"🚨 <b>ВНИМАНИЕ:</b> Найдены активные позиции по {len(symbols_with_positions)} символам.\n"
-                                f"Запущены стратегии только для символов БЕЗ активных позиций: <b>{len(symbols_to_start)}</b>\n\n"
-                                f"📊 Символы с позициями: {', '.join(symbols_with_positions)}\n"
-                                f"🚀 Запущено стратегий: <b>{active_strategies_count}</b>\n\n"
-                                f"⚠️ <b>Восстановите стратегии для символов с позициями вручную!</b>"
-                            )
-                        else:
-                            recovery_message = (
-                                f"⚠️ <b>Не удалось запустить стратегии</b>\n\n"
-                                f"Найдены активные позиции, но новые стратегии не запустились.\n"
-                                f"Проверьте настройки или запустите вручную."
-                            )
-
-                    except Exception as e:
-                        log_error(user_id, f"Ошибка частичного запуска автоторговли: {e}", "BotApplication")
-                        recovery_message = (
-                            f"❌ <b>Ошибка запуска автоторговли</b>\n\n"
-                            f"Найдены активные позиции, но не удалось запустить стратегии для остальных символов.\n"
-                            f"⚠️ <b>СРОЧНО восстановите отслеживание активных позиций вручную!</b>"
-                        )
                 else:
-                    # Все символы имеют активные позиции - создаём стратегии мониторинга
-                    log_info(user_id, "Все символы имеют активные позиции - создаю стратегии мониторинга", "BotApplication")
+                    # Нет активных ордеров, но автоторговля была включена
+                    log_info(user_id, "Автоторговля была включена - запускаю обычные стратегии", "BotApplication")
 
-                    monitoring_strategies = []
-                    for position_info in active_positions_info:
+                    for symbol in watchlist_symbols:
                         try:
-                            # Создаём стратегию мониторинга для каждой активной позиции
-                            success = await session.create_strategy_from_active_position(
-                                position_info=position_info,
-                                strategy_type=StrategyType.SIGNAL_SCALPER
+                            success = await session.start_strategy(
+                                strategy_type=StrategyType.SIGNAL_SCALPER.value,
+                                symbol=symbol,
+                                analysis_data={'trigger': 'autotrade_restart'}
                             )
-
                             if success:
-                                monitoring_strategies.append(f"SignalScalper({position_info['symbol']})")
-                                log_info(user_id, f"✅ Создана стратегия мониторинга для {position_info['symbol']}", "BotApplication")
-                            else:
-                                log_error(user_id, f"❌ Не удалось создать стратегию мониторинга для {position_info['symbol']}", "BotApplication")
+                                restored_strategies.append(f"SignalScalper({symbol})")
+                        except Exception as e:
+                            log_error(user_id, f"Ошибка запуска стратегии для {symbol}: {e}", "BotApplication")
 
-                        except Exception as monitor_error:
-                            log_error(user_id, f"Ошибка создания мониторинга для {position_info.get('symbol', 'unknown')}: {monitor_error}", "BotApplication")
-
-                    # Сообщение о результатах автоматического восстановления
-                    if monitoring_strategies:
-                        recovery_message = (
-                            f"🛡️ <b>АВТОМАТИЧЕСКОЕ ВОССТАНОВЛЕНИЕ ЗАВЕРШЕНО</b>\n\n"
-                            f"Все символы имели активные позиции. Автоматически созданы стратегии мониторинга:\n\n"
-                            f"📋 Восстановлено стратегий: <b>{len(monitoring_strategies)}</b>\n"
-                            f"{'🔄 ' + chr(10).join(monitoring_strategies)}\n\n"
-                            f"✅ <b>Все позиции под полным контролем бота!</b>\n"
-                            f"🛡️ Стоп-лоссы установлены\n"
-                            f"📊 P&L отслеживается\n"
-                            f"🎯 Трейлинг активирован"
-                        )
-                    else:
-                        positions_list = '\n'.join([f'• {pos["symbol"]}: {pos["side"]} {pos["size"]}' for pos in active_positions_info])
-                        recovery_message = (
-                            f"❌ <b>ОШИБКА ВОССТАНОВЛЕНИЯ МОНИТОРИНГА</b>\n\n"
-                            f"Найдены активные позиции, но не удалось создать стратегии мониторинга.\n\n"
-                            f"📊 Активные позиции:\n{positions_list}\n\n"
-                            f"⚠️ <b>СРОЧНО проверьте позиции и запустите мониторинг вручную!</b>"
-                        )
+                    recovery_message = (
+                        f"✅ <b>Восстановление завершено</b>\n\n"
+                        f"Запущены стратегии для {len(restored_strategies)} символов\n"
+                        f"🔄 Автоторговля возобновлена"
+                    )
             else:
                 # Отправляем итоговое уведомление о восстановлении из сохранённых состояний
                 recovery_message = (

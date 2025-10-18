@@ -133,8 +133,10 @@ class MarketAnalyzer:
             return None
 
     def _analyze_timeframe(self, candles: pd.DataFrame, symbol: str) -> Optional[Dict]:
-        """Анализ одного таймфрейма по новой, асимметричной логике."""
+        """Анализ одного таймфрейма по технической логике."""
         try:
+            # Используем конфигурацию impulse_trailing как шаблон для технических параметров
+            # (EMA, Bollinger Bands, ATR и т.д.)
             config = DefaultConfigs.get_impulse_trailing_config()
 
             # Приведение типов данных к float для pandas_ta

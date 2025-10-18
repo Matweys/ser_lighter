@@ -442,19 +442,19 @@ class FlashDropCatcherStrategy(BaseStrategy):
         Автоматически подстраивается под размер депозита и плечо
         """
         order_amount = max(self._convert_to_decimal(self.get_config_value("order_amount", 200.0)), Decimal('10.0'))
-        leverage = self._convert_to_decimal(self.get_config_value("leverage", 3.0))
+        leverage = self._convert_to_decimal(self.get_config_value("leverage", 2.0))
 
         # Номинальная стоимость позиции
         notional_value = order_amount * leverage
 
         # Проценты для уровней трейлинга
         level_percentages = {
-            1: Decimal('0.0030'),   # 0.20% - МГНОВЕННЫЙ
-            2: Decimal('0.0055'),   # 0.45% - РАННИЙ
+            1: Decimal('0.0035'),   # 0.20% - МГНОВЕННЫЙ
+            2: Decimal('0.0065'),   # 0.45% - РАННИЙ
             3: Decimal('0.0095'),   # 0.85% - СРЕДНИЙ
-            4: Decimal('0.0140'),   # 1.30% - ХОРОШИЙ
+            4: Decimal('0.0145'),   # 1.30% - ХОРОШИЙ
             5: Decimal('0.0195'),   # 1.85% - ОТЛИЧНЫЙ
-            6: Decimal('0.0300')    # 2.50% - МАКСИМАЛЬНЫЙ
+            6: Decimal('0.0350')    # 2.50% - МАКСИМАЛЬНЫЙ
         }
 
         # Рассчитываем пороги в USDT
@@ -494,11 +494,11 @@ class FlashDropCatcherStrategy(BaseStrategy):
         levels = self._calculate_dynamic_levels()
 
         level_names = {
-            1: f"МГНОВЕННЫЙ УРОВЕНЬ (${levels[1]:.2f}+, 0.20%)",
-            2: f"РАННИЙ УРОВЕНЬ (${levels[2]:.2f}+, 0.45%)",
-            3: f"СРЕДНИЙ УРОВЕНЬ (${levels[3]:.2f}+, 0.85%)",
-            4: f"ХОРОШИЙ УРОВЕНЬ (${levels[4]:.2f}+, 1.30%)",
-            5: f"ОТЛИЧНЫЙ УРОВЕНЬ (${levels[5]:.2f}+, 1.85%)",
+            1: f"МГНОВЕННЫЙ УРОВЕНЬ (${levels[1]:.2f}+, 0.35%)",
+            2: f"РАННИЙ УРОВЕНЬ (${levels[2]:.2f}+, 0.65%)",
+            3: f"СРЕДНИЙ УРОВЕНЬ (${levels[3]:.2f}+, 0.95%)",
+            4: f"ХОРОШИЙ УРОВЕНЬ (${levels[4]:.2f}+, 1.45%)",
+            5: f"ОТЛИЧНЫЙ УРОВЕНЬ (${levels[5]:.2f}+, 1.95%)",
             6: f"МАКСИМАЛЬНЫЙ УРОВЕНЬ (${levels[6]:.2f}+, 2.50%)"
         }
         return level_names.get(level, "НЕИЗВЕСТНЫЙ УРОВЕНЬ")
@@ -524,14 +524,14 @@ class FlashDropCatcherStrategy(BaseStrategy):
                             "FlashDropCatcher")
                     self.last_trailing_notification_level = new_level
 
-        # Проверяем откат для закрытия (20% от максимума)
+        # Проверяем откат для закрытия (25% от максимума)
         if self.current_trailing_level > 0:
-            # Откат 20%
-            pullback_threshold = self.highest_pnl * Decimal('0.80')
+            # Откат 25%
+            pullback_threshold = self.highest_pnl * Decimal('0.75')
 
             if current_pnl <= pullback_threshold:
                 log_warning(self.user_id,
-                           f"💰 TRAILING STOP! Откат 20% от максимума. Max PnL=${self.highest_pnl:.2f}, Current=${current_pnl:.2f}",
+                           f"💰 TRAILING STOP! Откат 25% от максимума. Max PnL=${self.highest_pnl:.2f}, Current=${current_pnl:.2f}",
                            "FlashDropCatcher")
                 await self._close_position("trailing_stop_profit")
 

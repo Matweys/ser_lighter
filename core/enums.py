@@ -9,7 +9,6 @@ from enum import Enum, IntEnum
 class StrategyType(Enum):
     """Типы торговых стратегий"""
     SIGNAL_SCALPER = "signal_scalper"
-    IMPULSE_TRAILING = "impulse_trailing"
     FLASH_DROP_CATCHER = "flash_drop_catcher"
 
 
@@ -216,12 +215,10 @@ class ConfigType(Enum):
 
     # Типы для каждой стратегии
     STRATEGY_SIGNAL_SCALPER = "strategy_signal_scalper"
-    STRATEGY_IMPULSE_TRAILING = "strategy_impulse_trailing"
     STRATEGY_FLASH_DROP_CATCHER = "strategy_flash_drop_catcher"
 
     # Типы для каждого компонента
     COMPONENT_META_STRATEGIST = "component_meta_strategist"
-    COMPONENT_RISK_MANAGER = "component_risk_manager"
 
     USER_SETTINGS = "user_settings"
 

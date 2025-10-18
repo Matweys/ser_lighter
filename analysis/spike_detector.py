@@ -10,13 +10,12 @@
 - Предоставляет анализ последних всплесков для принятия решений
 """
 
-import asyncio
 from decimal import Decimal
 from collections import deque
 from typing import Optional, List, Dict
 from datetime import datetime
 
-from core.logger import log_info, log_debug, log_error
+from core.logger import log_info, log_debug
 
 
 class SpikeDetector:
@@ -227,7 +226,7 @@ class SpikeDetector:
 
         # ========== ПРИОРИТЕТ: ПРОВЕРКА СИЛЬНЫХ ПРОТИВОПОЛОЖНЫХ ВСПЛЕСКОВ ==========
         # Порог для "сильного" всплеска: 0.30% (0.003)
-        strong_spike_threshold = Decimal('0.003')
+        strong_spike_threshold = Decimal('0.0035')
 
         # Ищем сильные противоположные всплески за последние 10 минут
         strong_opposite_spikes = []
@@ -298,7 +297,6 @@ class SpikeDetector:
             # Сценарий 2: Подтверждение тренда (сильный вход)
             if momentum == "BEARISH":
                 return True, "SHORT", f"✅ Медвежий импульс подтверждает SHORT ({down_spikes} всплесков ВНИЗ)"
-
             # Сценарий 3: Резкое ускорение ВНИЗ (цена убежала, ждем отката)
             if consecutive_down and overall_direction == "DOWN" and len(self.get_recent_spikes(180)) >= 3:
                 return False, "SHORT", f"⏸️ Цена резко ускорилась ВНИЗ ({down_spikes} всплесков), ждем отката"

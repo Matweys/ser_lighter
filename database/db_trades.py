@@ -57,6 +57,7 @@ class UserApiKeys:
     exchange: str
     api_key: str
     secret_key: str
+    account_priority: int = 1  # 1=PRIMARY, 2=SECONDARY, 3=TERTIARY
     passphrase: Optional[str] = None
     is_active: bool = True
     created_at: Optional[datetime] = None
@@ -358,7 +359,7 @@ class _DatabaseManager:
                 )
             """)
             
-            # Таблица API ключей
+            # Таблица API ключей (MULTI-ACCOUNT SUPPORT)
             await self._execute_query("""
                 CREATE TABLE IF NOT EXISTS user_api_keys (
                     id SERIAL PRIMARY KEY,
@@ -366,11 +367,12 @@ class _DatabaseManager:
                     exchange VARCHAR(50) NOT NULL,
                     api_key_encrypted TEXT NOT NULL,
                     secret_key_encrypted TEXT NOT NULL,
+                    account_priority INTEGER NOT NULL DEFAULT 1,
                     passphrase_encrypted TEXT,
                     is_active BOOLEAN DEFAULT TRUE,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     updated_at TIMESTAMPTZ DEFAULT NOW(),
-                    UNIQUE(user_id, exchange)
+                    UNIQUE(user_id, exchange, account_priority)
                 )
             """)
             
@@ -622,57 +624,122 @@ class _DatabaseManager:
             log_error(user_id, f"Ошибка получения пользователя: {e}", module_name='database')
             return None
     
-    async def save_api_keys(self, user_id: int, exchange: str, api_key: str, secret_key: str, passphrase: str = None) -> bool:
-        """Сохранение API ключей"""
+    async def save_api_keys(self, user_id: int, exchange: str, api_key: str, secret_key: str,
+                           account_priority: int = 1, passphrase: str = None) -> bool:
+        """
+        Сохранение API ключей (MULTI-ACCOUNT SUPPORT)
+
+        Args:
+            user_id: ID пользователя
+            exchange: Биржа (bybit)
+            api_key: API ключ
+            secret_key: Секретный ключ
+            account_priority: Приоритет аккаунта (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
+            passphrase: Passphrase (опционально)
+
+        Returns:
+            bool: True если успешно сохранено
+        """
         try:
             encrypted_api_key = self.encrypt_data(api_key)
             encrypted_secret_key = self.encrypt_data(secret_key)
             encrypted_passphrase = self.encrypt_data(passphrase) if passphrase else None
-            
+
             query = """
-                INSERT INTO user_api_keys (user_id, exchange, api_key_encrypted, secret_key_encrypted, passphrase_encrypted)
-                VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT (user_id, exchange) DO UPDATE SET
+                INSERT INTO user_api_keys (user_id, exchange, api_key_encrypted, secret_key_encrypted, account_priority, passphrase_encrypted)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (user_id, exchange, account_priority) DO UPDATE SET
                     api_key_encrypted = EXCLUDED.api_key_encrypted,
                     secret_key_encrypted = EXCLUDED.secret_key_encrypted,
                     passphrase_encrypted = EXCLUDED.passphrase_encrypted,
                     updated_at = NOW()
             """
-            
+
             await self._execute_query(query, (
-                user_id, exchange, encrypted_api_key, encrypted_secret_key, encrypted_passphrase
+                user_id, exchange, encrypted_api_key, encrypted_secret_key, account_priority, encrypted_passphrase
             ))
-            
-            log_info(user_id, f"API ключи для биржи {exchange} сохранены", module_name='database')
+
+            log_info(user_id, f"API ключи для биржи {exchange} (приоритет {account_priority}) сохранены", module_name='database')
             return True
-            
+
         except Exception as e:
             log_error(user_id, f"Ошибка сохранения API ключей: {e}", module_name='database')
             return False
     
-    async def get_api_keys(self, user_id: int, exchange: str) -> Optional[Tuple[str, str, str]]:
-        """Получение API ключей"""
+    async def get_api_keys(self, user_id: int, exchange: str, account_priority: int = 1) -> Optional[Tuple[str, str, str]]:
+        """
+        Получение API ключей для конкретного аккаунта
+
+        Args:
+            user_id: ID пользователя
+            exchange: Биржа (bybit)
+            account_priority: Приоритет аккаунта (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
+
+        Returns:
+            Optional[Tuple]: (api_key, secret_key, passphrase) или None
+        """
         try:
             query = """
-                SELECT api_key_encrypted, secret_key_encrypted, passphrase_encrypted 
-                FROM user_api_keys 
-                WHERE user_id = $1 AND exchange = $2 AND is_active = TRUE
+                SELECT api_key_encrypted, secret_key_encrypted, passphrase_encrypted
+                FROM user_api_keys
+                WHERE user_id = $1 AND exchange = $2 AND account_priority = $3 AND is_active = TRUE
             """
-            
-            result = await self._execute_query(query, (user_id, exchange), fetch_one=True)
-            
+
+            result = await self._execute_query(query, (user_id, exchange, account_priority), fetch_one=True)
+
             if result:
                 api_key = self.decrypt_data(result['api_key_encrypted'])
                 secret_key = self.decrypt_data(result['secret_key_encrypted'])
                 passphrase = self.decrypt_data(result['passphrase_encrypted']) if result['passphrase_encrypted'] else None
 
                 return api_key, secret_key, passphrase
-            
+
             return None
-            
+
         except Exception as e:
-            log_error(user_id, f"Ошибка получения API ключей: {e}", module_name='database')
+            log_error(user_id, f"Ошибка получения API ключей для приоритета {account_priority}: {e}", module_name='database')
             return None
+
+    async def get_all_user_api_keys(self, user_id: int, exchange: str) -> List[Dict[str, Any]]:
+        """
+        Получение ВСЕХ API ключей пользователя (для multi-account системы)
+
+        Args:
+            user_id: ID пользователя
+            exchange: Биржа (bybit)
+
+        Returns:
+            List[Dict]: Список словарей с полями priority, api_key, secret_key, passphrase
+        """
+        try:
+            query = """
+                SELECT account_priority, api_key_encrypted, secret_key_encrypted, passphrase_encrypted
+                FROM user_api_keys
+                WHERE user_id = $1 AND exchange = $2 AND is_active = TRUE
+                ORDER BY account_priority ASC
+            """
+
+            results = await self._execute_query(query, (user_id, exchange), fetch_all=True)
+
+            api_keys_list = []
+            for result in results:
+                api_key = self.decrypt_data(result['api_key_encrypted'])
+                secret_key = self.decrypt_data(result['secret_key_encrypted'])
+                passphrase = self.decrypt_data(result['passphrase_encrypted']) if result['passphrase_encrypted'] else None
+
+                api_keys_list.append({
+                    'priority': result['account_priority'],
+                    'api_key': api_key,
+                    'secret_key': secret_key,
+                    'passphrase': passphrase
+                })
+
+            log_info(user_id, f"Загружено {len(api_keys_list)} API ключей для {exchange}", module_name='database')
+            return api_keys_list
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка получения всех API ключей: {e}", module_name='database')
+            return []
 
     async def save_trade(self, trade: TradeRecord) -> Optional[int]:
         """Сохранение сделки с московским временем"""
@@ -1443,7 +1510,7 @@ class _DatabaseManager:
             quantity: Количество
             price: Цена
             order_id: ID ордера на бирже
-            strategy_type: Тип стратегии ('signal_scalper', 'impulse_trailing')
+            strategy_type: Тип стратегии ('signal_scalper')
             order_purpose: Назначение ('OPEN', 'CLOSE', 'AVERAGING', 'STOPLOSS')
             leverage: Плечо
             trade_id: ID связанной сделки

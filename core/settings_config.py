@@ -18,8 +18,8 @@ from core.enums import ExchangeType, AccountType
 
 # Константы системы
 DEFAULT_SYMBOLS = [
-    'BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'SOLUSDT', 'ASTERUSDT',
-    'XRPUSDT', 'LINKUSDT', 'MYXUSDT', 'ATOMUSDT',
+    'BTCUSDT', 'ETHUSDT', 'SUIUSDT', 'SOLUSDT', 'ASTERUSDT',
+    'XRPUSDT', 'LINKUSDT', 'HYPEUSDT', 'BNBUSDT',
     'NEARUSDT', 'ICPUSDT'
 ]
 # Комиссии бирж для внутреннего расчета PnL
@@ -56,10 +56,17 @@ class RedisConfig:
 
 @dataclass
 class ExchangeConfig:
-    """Конфигурация биржи"""
+    """Конфигурация биржи (Multi-Account Support)"""
     exchange_type: ExchangeType
+    # PRIMARY ключи (Bot 1) - обязательные
     api_key: str
     secret_key: str
+    # SECONDARY ключи (Bot 2) - опциональные
+    api_key_secondary: Optional[str] = None
+    secret_key_secondary: Optional[str] = None
+    # TERTIARY ключи (Bot 3) - опциональные
+    api_key_tertiary: Optional[str] = None
+    secret_key_tertiary: Optional[str] = None
     demo: bool = False
     base_url: Optional[str] = None
     default_leverage: int = 5
@@ -148,17 +155,32 @@ class ConfigLoader:
         return TelegramConfig(token=self.env.str("TELEGRAM_TOKEN"), admin_ids=admin_ids)
 
     def _load_exchange_configs(self, config: SystemConfig):
-        # Bybit
+        # Bybit (Multi-Account Support)
         if self.env.str("BYBIT_API_KEY", None):
             bybit_config = ExchangeConfig(
                 exchange_type=ExchangeType.BYBIT,
+                # PRIMARY ключи (обязательные)
                 api_key=self.env.str("BYBIT_API_KEY"),
                 secret_key=self.env.str("BYBIT_SECRET_KEY"),
+                # SECONDARY ключи (опциональные)
+                api_key_secondary=self.env.str("BYBIT_API_KEY_SECONDARY", None),
+                secret_key_secondary=self.env.str("BYBIT_SECRET_KEY_SECONDARY", None),
+                # TERTIARY ключи (опциональные)
+                api_key_tertiary=self.env.str("BYBIT_API_KEY_TERTIARY", None),
+                secret_key_tertiary=self.env.str("BYBIT_SECRET_KEY_TERTIARY", None),
                 demo=self.env.bool("BYBIT_DEMO", False),
-                base_url=self.env.str("BYBIT_BASE_URL", "https://api.bybit.com" ),
+                base_url=self.env.str("BYBIT_BASE_URL", "https://api.bybit.com"),
                 default_leverage=self.env.int("BYBIT_DEFAULT_LEVERAGE", 5)
             )
             config.add_exchange_config("bybit", bybit_config)
+
+            # Логируем какие ключи загружены
+            keys_info = "PRIMARY"
+            if bybit_config.api_key_secondary:
+                keys_info += ", SECONDARY"
+            if bybit_config.api_key_tertiary:
+                keys_info += ", TERTIARY"
+            log_info(0, f"Загружены Bybit API ключи: {keys_info}", 'system_config')
         # Можно добавить другие биржи по аналогии
     @staticmethod
     def _validate_config(config: SystemConfig):
