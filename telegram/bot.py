@@ -160,6 +160,15 @@ class TelegramBotManager:
         except Exception as e:
             log_error(0, f"Ошибка регистрации обработчиков: {e}", module_name='bot')
             raise
+
+    def set_bot_application(self, bot_app):
+        """Устанавливает BotApplication для обработчиков команд"""
+        try:
+            from .handlers.basic import set_bot_application
+            set_bot_application(bot_app)
+            log_info(0, "BotApplication установлен для обработчиков", module_name='bot')
+        except Exception as e:
+            log_error(0, f"Ошибка установки BotApplication: {e}", module_name='bot')
     
     async def _setup_bot_commands(self) -> None:
         """Настройка команд бота"""

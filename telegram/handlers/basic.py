@@ -41,6 +41,7 @@ class BasicCommandHandler:
         self.command_stats = {}
         self.user_sessions = {}
         self.event_bus: Optional[EventBus] = None
+        self.bot_application: Optional[BotApplication] = None
 
 
     async def log_command_usage(self, user_id: int, command: str):
@@ -59,6 +60,10 @@ basic_handler = BasicCommandHandler()
 def set_event_bus(event_bus: EventBus):
     """Установка EventBus для basic handler"""
     basic_handler.event_bus = event_bus
+
+def set_bot_application(bot_app: BotApplication):
+    """Установка BotApplication для basic handler"""
+    basic_handler.bot_application = bot_app
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -445,9 +450,17 @@ async def cmd_autotrade_start(message: Message, state: FSMContext):
         "🚀 <b>Запускаю автоматическую торговлю...</b>\nСистема инициализирует сессию и подключается к рынку. Вы получите уведомление по завершении.",
         parse_mode="HTML")
 
+    # ДИАГНОСТИКА: Проверяем состояние EventBus
+    log_info(user_id, f"🔍 ДИАГНОСТИКА: basic_handler.event_bus = {basic_handler.event_bus}", module_name='basic_handlers')
+    log_info(user_id, f"🔍 ДИАГНОСТИКА: event_bus.is_running = {basic_handler.event_bus._running if basic_handler.event_bus else 'N/A'}", module_name='basic_handlers')
+
     # Отправляем событие в шину
     if basic_handler.event_bus:
-        await basic_handler.event_bus.publish(UserSessionStartRequestedEvent(user_id=user_id))
+        log_info(user_id, "📤 Публикую UserSessionStartRequestedEvent в EventBus...", module_name='basic_handlers')
+        event = UserSessionStartRequestedEvent(user_id=user_id)
+        log_info(user_id, f"📤 Событие создано: {event}", module_name='basic_handlers')
+        await basic_handler.event_bus.publish(event)
+        log_info(user_id, "✅ Событие UserSessionStartRequestedEvent успешно опубликовано", module_name='basic_handlers')
     else:
         log_error(user_id, "EventBus не инициализирован для отправки команды запуска торговли", module_name='basic_handlers')
         await message.answer("❌ Внутренняя ошибка системы. Попробуйте позже.")
@@ -862,8 +875,35 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
     await basic_handler.log_command_usage(user_id, "autotrade_status")
 
     try:
-        # Получаем сессию пользователя
+        # Получаем сессию пользователя из Redis
         session_status = await redis_manager.get_user_session(user_id)
+
+        # КРИТИЧНО: Валидируем Redis данные против реального состояния в BotApplication
+        if basic_handler.bot_application:
+            # Проверяем, действительно ли сессия активна в BotApplication
+            is_actually_running = user_id in basic_handler.bot_application.active_sessions
+
+            if not is_actually_running:
+                # Сессия не активна в BotApplication, но Redis может содержать stale data
+                if session_status:
+                    # Обнаружены устаревшие данные в Redis - очищаем их
+                    log_warning(user_id,
+                               f"Обнаружены stale данные в Redis: running={session_status.get('running')}, "
+                               f"active_strategies={session_status.get('active_strategies')}. Очищаю...",
+                               "autotrade_status")
+                    await redis_manager.delete_user_session(user_id)
+                    session_status = None
+            else:
+                # Сессия активна - проверяем, совпадает ли running статус
+                actual_session = basic_handler.bot_application.active_sessions[user_id]
+                if session_status and session_status.get('running') != actual_session.running:
+                    log_warning(user_id,
+                               f"Несоответствие состояния: Redis={session_status.get('running')}, "
+                               f"Actual={actual_session.running}. Обновляю Redis...",
+                               "autotrade_status")
+                    # Принудительно обновляем Redis из реального состояния
+                    await actual_session._save_session_state()
+                    session_status = await redis_manager.get_user_session(user_id)
 
         # ИСПРАВЛЕНО: Если сессии нет или running=False - показываем неактивна
         if not session_status or not session_status.get('running', False):

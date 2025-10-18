@@ -502,7 +502,8 @@ class BotApplication:
     async def _handle_session_start_request(self, event: UserSessionStartRequestedEvent):
         """Обработчик запроса на запуск авто-торговли."""
         user_id = event.user_id
-        log_info(user_id, "Получен запрос на запуск авто-торговли...", module_name=__name__)
+        log_info(user_id, "🎯 [SESSION_START_HANDLER] Получен запрос на запуск авто-торговли...", module_name=__name__)
+        log_info(user_id, f"🎯 [SESSION_START_HANDLER] Событие: {event}", module_name=__name__)
 
         session = self.active_sessions.get(user_id)
         if not session or not session.running:

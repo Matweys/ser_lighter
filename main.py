@@ -177,6 +177,10 @@ async def main():
         # Запуск основного приложения с передачей того же EventBus
         bot_app = BotApplication(bot=bot_manager.bot)
         bot_app.event_bus = event_bus  # Передаем тот же EventBus что и в handlers
+
+        # Передаем BotApplication в обработчики команд для проверки состояния сессий
+        bot_manager.set_bot_application(bot_app)
+
         await bot_app.start()
 
         log_info(0, "=== БОТ УСПЕШНО ЗАПУЩЕН И ГОТОВ К РАБОТЕ ===", module_name="main")
