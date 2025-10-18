@@ -181,17 +181,17 @@ class MultiAccountCoordinator:
         - Деактивируем всех менее приоритетных СВОБОДНЫХ ботов
         """
         # 🔍 ДИАГНОСТИКА: Логируем состояние всех ботов перед проверкой
-        log_debug(self.user_id,
-                 f"🔍 [ДИАГНОСТИКА] Состояние активных ботов: {list(self.active_bots)}",
-                 "Coordinator")
+        log_warning(self.user_id,
+                   f"🔍 [ДИАГНОСТИКА] Состояние активных ботов: {list(self.active_bots)}",
+                   "Coordinator")
 
         for priority in [1, 2, 3]:
             bot_data = self.bots[priority]
-            log_debug(self.user_id,
-                     f"🔍 [ДИАГНОСТИКА] Бот {priority}: status='{bot_data.status}', "
-                     f"position_active={bot_data.strategy.position_active}, "
-                     f"is_waiting={getattr(bot_data.strategy, 'is_waiting_for_trade', False)}",
-                     "Coordinator")
+            log_warning(self.user_id,
+                       f"🔍 [ДИАГНОСТИКА] Бот {priority}: status='{bot_data.status}', "
+                       f"position_active={bot_data.strategy.position_active}, "
+                       f"is_waiting={getattr(bot_data.strategy, 'is_waiting_for_trade', False)}",
+                       "Coordinator")
 
         # ШАГ 1: Находим самого приоритетного СВОБОДНОГО бота
         most_priority_free_bot = None
@@ -220,9 +220,10 @@ class MultiAccountCoordinator:
 
         # ШАГ 2: Активируем самого приоритетного свободного бота (если он не активен)
         if most_priority_free_bot not in self.active_bots:
-            log_info(self.user_id,
-                    f"🟢 Возвращаю Бота {most_priority_free_bot} ({self.symbol}) как приоритетного",
-                    "Coordinator")
+            log_warning(self.user_id,
+                       f"🟢 Возвращаю Бота {most_priority_free_bot} ({self.symbol}) как приоритетного "
+                       f"(active_bots={list(self.active_bots)})",
+                       "Coordinator")
             await self._activate_bot(most_priority_free_bot)
 
         # ШАГ 3: Деактивируем всех менее приоритетных СВОБОДНЫХ ботов
