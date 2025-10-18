@@ -85,26 +85,6 @@ class TradeRecord:
     metadata: Optional[Dict[str, Any]] = None
 
 @dataclass
-class PositionRecord:
-    """Запись о позиции"""
-    id: Optional[int] = None
-    user_id: int = 0
-    symbol: str = ""
-    side: str = ""
-    size: Decimal = Decimal('0')
-    entry_price: Decimal = Decimal('0')
-    current_price: Decimal = Decimal('0')
-    unrealized_pnl: Decimal = Decimal('0')
-    realized_pnl: Decimal = Decimal('0')
-    leverage: int = 1
-    margin: Decimal = Decimal('0')
-    status: str = "ACTIVE"
-    strategy_type: str = ""
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-@dataclass
 class OrderRecord:
     """Запись об ордере"""
     id: Optional[int] = None
@@ -401,29 +381,6 @@ class _DatabaseManager:
                 )
             """)
             
-            # Таблица позиций
-            await self._execute_query("""
-                CREATE TABLE IF NOT EXISTS positions (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                    symbol VARCHAR(50) NOT NULL,
-                    side VARCHAR(10) NOT NULL,
-                    size DECIMAL(20,8) NOT NULL,
-                    entry_price DECIMAL(20,8) NOT NULL,
-                    current_price DECIMAL(20,8) DEFAULT 0,
-                    unrealized_pnl DECIMAL(20,8) DEFAULT 0,
-                    realized_pnl DECIMAL(20,8) DEFAULT 0,
-                    leverage INTEGER DEFAULT 1,
-                    margin DECIMAL(20,8) DEFAULT 0,
-                    status VARCHAR(20) DEFAULT 'ACTIVE',
-                    strategy_type VARCHAR(50),
-                    metadata JSONB DEFAULT '{}'::jsonb,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ DEFAULT NOW(),
-                    UNIQUE(user_id, symbol, side)
-                )
-            """)
-            
             # Таблица ордеров (ПОЛНАЯ СТРУКТУРА)
             await self._execute_query("""
                 CREATE TABLE IF NOT EXISTS orders (
@@ -455,45 +412,18 @@ class _DatabaseManager:
                     updated_at TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
-            
-            # Таблица стратегий
+
+            # Таблица статистики по стратегиям
             await self._execute_query("""
-                CREATE TABLE IF NOT EXISTS user_strategies (
+                CREATE TABLE IF NOT EXISTS user_strategy_stats (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
                     strategy_type VARCHAR(50) NOT NULL,
-                    symbol VARCHAR(50) NOT NULL,
-                    is_active BOOLEAN DEFAULT FALSE,
-                    config JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    statistics JSONB DEFAULT '{}'::jsonb,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    total_trades INTEGER DEFAULT 0,
+                    winning_trades INTEGER DEFAULT 0,
+                    total_pnl DECIMAL(20, 8) DEFAULT 0,
                     updated_at TIMESTAMPTZ DEFAULT NOW(),
-                    UNIQUE(user_id, strategy_type, symbol)
-                )
-            """)
-            await self._execute_query("""
-                            CREATE TABLE IF NOT EXISTS user_strategy_stats (
-                                id SERIAL PRIMARY KEY,
-                                user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                                strategy_type VARCHAR(50) NOT NULL,
-                                total_trades INTEGER DEFAULT 0,
-                                winning_trades INTEGER DEFAULT 0,
-                                total_pnl DECIMAL(20, 8) DEFAULT 0,
-                                updated_at TIMESTAMPTZ DEFAULT NOW(),
-                                UNIQUE(user_id, strategy_type)
-                            )
-                        """)
-            # Таблица уведомлений
-            await self._execute_query("""
-                CREATE TABLE IF NOT EXISTS notifications (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                    type VARCHAR(50) NOT NULL,
-                    title VARCHAR(255) NOT NULL,
-                    message TEXT NOT NULL,
-                    is_read BOOLEAN DEFAULT FALSE,
-                    metadata JSONB DEFAULT '{}'::jsonb,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
+                    UNIQUE(user_id, strategy_type)
                 )
             """)
             
@@ -511,24 +441,17 @@ class _DatabaseManager:
                 "CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol)",
                 "CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status)",
                 "CREATE INDEX IF NOT EXISTS idx_trades_entry_time ON trades(entry_time)",
-                "CREATE INDEX IF NOT EXISTS idx_positions_user_id ON positions(user_id)",
-                "CREATE INDEX IF NOT EXISTS idx_positions_symbol ON positions(symbol)",
-                "CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status)",
                 "CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)",
                 "CREATE INDEX IF NOT EXISTS idx_orders_symbol ON orders(symbol)",
                 "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)",
                 "CREATE INDEX IF NOT EXISTS idx_orders_order_id ON orders(order_id)",
-                "CREATE INDEX IF NOT EXISTS idx_user_strategies_user_id ON user_strategies(user_id)",
-                "CREATE INDEX IF NOT EXISTS idx_user_strategies_active ON user_strategies(is_active)",
-                "CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id)",
-                "CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(user_id, is_read)",
             ]
-            
+
             for index_query in indexes:
                 await self._execute_query(index_query)
-            
+
             log_info(0, "Индексы созданы успешно", module_name='database')
-            
+
         except Exception as e:
             log_error(0, f"Ошибка создания индексов: {e}", module_name='database')
             raise

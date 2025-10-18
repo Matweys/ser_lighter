@@ -22,7 +22,6 @@ from websocket.websocket_manager import GlobalWebSocketManager
 from core.default_configs import DefaultConfigs
 from core.enums import ConfigType
 from core.settings_config import system_config
-from core.impulse_scanner import ImpulseScanner
 from database.db_trades import db_manager
 
 
@@ -42,7 +41,6 @@ class BotApplication:
         
         # Глобальные компоненты
         self.global_websocket_manager: Optional[GlobalWebSocketManager] = None
-        self.impulse_scanner: Optional[ImpulseScanner] = None
 
         # Статистика приложения
         self.app_stats = {
@@ -289,10 +287,6 @@ class BotApplication:
             self.global_websocket_manager = GlobalWebSocketManager(self.event_bus, demo=use_demo)
             await self.global_websocket_manager.start()
 
-            # 3. Инициализация глобального сканера импульсов
-            self.impulse_scanner = ImpulseScanner(self.event_bus)
-            await self.impulse_scanner.start()
-
             log_info(0, "Глобальные компоненты инициализированы", module_name=__name__)
 
         except Exception as e:
@@ -304,10 +298,6 @@ class BotApplication:
         try:
             if self.global_websocket_manager:
                 await self.global_websocket_manager.stop()
-
-            # 4. Остановка глобального сканера импульсов
-            if self.impulse_scanner:
-                await self.impulse_scanner.stop()
 
             log_info(0, "Глобальные компоненты остановлены", module_name=__name__)
 

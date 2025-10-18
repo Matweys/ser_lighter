@@ -7,17 +7,6 @@ from core.logger import log_debug, log_error, log_info
 from core.enums import EventType
 
 @dataclass
-class GlobalCandleEvent:
-    """
-    Глобальное событие о новой свече от сканера рынка.
-    Не привязано к конкретному пользователю.
-    """
-    candle_data: Dict[str, Any]
-    timestamp: datetime = field(default_factory=datetime.now, init=False)
-    event_type: EventType = field(default=EventType.GLOBAL_CANDLE, init=False)
-
-
-@dataclass
 class BaseEvent:
     """Базовый класс для всех событий"""
     user_id: int

@@ -88,7 +88,6 @@ class EventType(Enum):
     VOLUME_UPDATE = "volume_update"
     TICKER_UPDATE = "ticker_update"
     NEW_CANDLE = "new_candle"
-    GLOBAL_CANDLE = "global_candle"
 
     # Торговые события
     ORDER_PLACED = "order_placed"

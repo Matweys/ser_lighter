@@ -864,7 +864,9 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
     try:
         # Получаем сессию пользователя
         session_status = await redis_manager.get_user_session(user_id)
-        if not session_status:
+
+        # ИСПРАВЛЕНО: Если сессии нет или running=False - показываем неактивна
+        if not session_status or not session_status.get('running', False):
             await message.answer("🔴 <b>Статус: Неактивен</b>\nТорговля не запущена.", parse_mode="HTML")
             return
 

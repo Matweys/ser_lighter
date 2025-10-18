@@ -45,7 +45,7 @@ async def set_commands():
 async def setup_admin_user():
     """
     Проверяет, существуют ли админы из конфига в БД, добавляет их, если нет,
-    и сохраняет их API ключи из .env в базу данных.
+    и сохраняет их API ключи (MULTI-ACCOUNT: до 3 наборов) из .env в базу данных.
     """
     admin_ids = system_config.telegram.admin_ids
     if not admin_ids:
@@ -55,7 +55,7 @@ async def setup_admin_user():
     # Получаем конфигурацию биржи Bybit из системного конфига
     bybit_config = system_config.get_exchange_config("bybit")
     if not (bybit_config and bybit_config.api_key and bybit_config.secret_key):
-        log_warning(0, "API ключи для Bybit не найдены в .env. Ключи администратора не будут сохранены.", module_name=__name__)
+        log_warning(0, "PRIMARY API ключи для Bybit не найдены в .env. Ключи администратора не будут сохранены.", module_name=__name__)
         return
 
     for admin_id in admin_ids:
@@ -74,18 +74,58 @@ async def setup_admin_user():
                 await db_manager.create_user(admin_profile)
                 log_info(0, f"Администратор с ID {admin_id} успешно добавлен в БД.", module_name=__name__)
 
-            # 2. Сохраняем API ключи для администратора
-            log_info(0, f"Сохранение API ключей для администратора {admin_id}...", module_name=__name__)
+            # 2. Сохраняем PRIMARY API ключи (account_priority=1)
+            log_info(0, f"Сохранение PRIMARY API ключей для администратора {admin_id}...", module_name=__name__)
             success = await db_manager.save_api_keys(
                 user_id=admin_id,
                 exchange="bybit",
                 api_key=bybit_config.api_key,
-                secret_key=bybit_config.secret_key
+                secret_key=bybit_config.secret_key,
+                account_priority=1
             )
             if success:
-                log_info(0, f"API ключи для администратора {admin_id} успешно сохранены/обновлены.", module_name=__name__)
+                log_info(0, f"✅ PRIMARY API ключи для администратора {admin_id} успешно сохранены.", module_name=__name__)
             else:
-                log_error(0, f"Не удалось сохранить API ключи для администратора {admin_id}.", module_name=__name__)
+                log_error(0, f"❌ Не удалось сохранить PRIMARY API ключи для администратора {admin_id}.", module_name=__name__)
+
+            # 3. Сохраняем SECONDARY API ключи (account_priority=2), если есть
+            if bybit_config.api_key_secondary and bybit_config.secret_key_secondary:
+                log_info(0, f"Сохранение SECONDARY API ключей для администратора {admin_id}...", module_name=__name__)
+                success = await db_manager.save_api_keys(
+                    user_id=admin_id,
+                    exchange="bybit",
+                    api_key=bybit_config.api_key_secondary,
+                    secret_key=bybit_config.secret_key_secondary,
+                    account_priority=2
+                )
+                if success:
+                    log_info(0, f"✅ SECONDARY API ключи для администратора {admin_id} успешно сохранены.", module_name=__name__)
+                else:
+                    log_error(0, f"❌ Не удалось сохранить SECONDARY API ключи для администратора {admin_id}.", module_name=__name__)
+
+            # 4. Сохраняем TERTIARY API ключи (account_priority=3), если есть
+            if bybit_config.api_key_tertiary and bybit_config.secret_key_tertiary:
+                log_info(0, f"Сохранение TERTIARY API ключей для администратора {admin_id}...", module_name=__name__)
+                success = await db_manager.save_api_keys(
+                    user_id=admin_id,
+                    exchange="bybit",
+                    api_key=bybit_config.api_key_tertiary,
+                    secret_key=bybit_config.secret_key_tertiary,
+                    account_priority=3
+                )
+                if success:
+                    log_info(0, f"✅ TERTIARY API ключи для администратора {admin_id} успешно сохранены.", module_name=__name__)
+                else:
+                    log_error(0, f"❌ Не удалось сохранить TERTIARY API ключи для администратора {admin_id}.", module_name=__name__)
+
+            # Итоговый отчёт
+            saved_keys_count = 1  # PRIMARY всегда есть
+            if bybit_config.api_key_secondary and bybit_config.secret_key_secondary:
+                saved_keys_count += 1
+            if bybit_config.api_key_tertiary and bybit_config.secret_key_tertiary:
+                saved_keys_count += 1
+
+            log_info(0, f"🔑 Итого для администратора {admin_id}: сохранено {saved_keys_count}/3 наборов API ключей", module_name=__name__)
 
         except Exception as err:
             log_error(0, f"Ошибка при настройке администратора {admin_id}: {err}", module_name=__name__)
