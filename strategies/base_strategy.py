@@ -665,6 +665,10 @@ class BaseStrategy(ABC):
                 log_error(self.user_id, "API клиент не инициализирован в стратегии.", module_name=__name__)
                 return None
 
+            # ДИАГНОСТИКА: Логируем API ключ для проверки правильности распределения
+            api_key_masked = f"{self.api.api_key[:4]}...{self.api.api_key[-4:]}" if len(self.api.api_key) > 8 else "***"
+            log_info(self.user_id, f"[Bot #{self.account_priority}] Размещение ордера {side} {qty} {self.symbol} | API: {api_key_masked}", module_name=__name__)
+
             order_id = await self.api.place_order(
                 symbol=self.symbol, side=side, order_type=order_type, qty=qty, price=price,
                 stop_loss=stop_loss, take_profit=take_profit, reduce_only=reduce_only

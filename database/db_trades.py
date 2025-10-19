@@ -492,28 +492,32 @@ class _DatabaseManager:
     async def create_user(self, user_profile: UserProfile) -> bool:
         """Создание пользователя"""
         try:
+            moscow_tz = timezone(timedelta(hours=3))
+            current_time = datetime.now(moscow_tz)
+
             query = """
-                INSERT INTO users (user_id, username, first_name, last_name, is_active, is_premium)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO users (user_id, username, first_name, last_name, is_active, is_premium, last_activity)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT (user_id) DO UPDATE SET
                     username = EXCLUDED.username,
                     first_name = EXCLUDED.first_name,
                     last_name = EXCLUDED.last_name,
-                    last_activity = NOW()
+                    last_activity = $7
             """
-            
+
             await self._execute_query(query, (
                 user_profile.user_id,
                 user_profile.username,
                 user_profile.first_name,
                 user_profile.last_name,
                 user_profile.is_active,
-                user_profile.is_premium
+                user_profile.is_premium,
+                current_time
             ))
-            
+
             log_info(user_profile.user_id, f"Пользователь {user_profile.user_id} создан/обновлен", module_name='database')
             return True
-            
+
         except Exception as e:
             log_error(user_profile.user_id, f"Ошибка создания пользователя: {e}", module_name='database')
             return False
@@ -564,22 +568,26 @@ class _DatabaseManager:
             bool: True если успешно сохранено
         """
         try:
+            moscow_tz = timezone(timedelta(hours=3))
+            current_time = datetime.now(moscow_tz)
+
             encrypted_api_key = self.encrypt_data(api_key)
             encrypted_secret_key = self.encrypt_data(secret_key)
             encrypted_passphrase = self.encrypt_data(passphrase) if passphrase else None
 
             query = """
-                INSERT INTO user_api_keys (user_id, exchange, api_key_encrypted, secret_key_encrypted, account_priority, passphrase_encrypted)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO user_api_keys (user_id, exchange, api_key_encrypted, secret_key_encrypted, account_priority, passphrase_encrypted, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT (user_id, exchange, account_priority) DO UPDATE SET
                     api_key_encrypted = EXCLUDED.api_key_encrypted,
                     secret_key_encrypted = EXCLUDED.secret_key_encrypted,
                     passphrase_encrypted = EXCLUDED.passphrase_encrypted,
-                    updated_at = NOW()
+                    is_active = TRUE,
+                    updated_at = $7
             """
 
             await self._execute_query(query, (
-                user_id, exchange, encrypted_api_key, encrypted_secret_key, account_priority, encrypted_passphrase
+                user_id, exchange, encrypted_api_key, encrypted_secret_key, account_priority, encrypted_passphrase, current_time
             ))
 
             log_info(user_id, f"API ключи для биржи {exchange} (приоритет {account_priority}) сохранены", module_name='database')
@@ -834,20 +842,22 @@ class _DatabaseManager:
         Обновляет статистику для конкретной стратегии пользователя и возвращает обновленный Win Rate.
         """
         try:
+            moscow_tz = timezone(timedelta(hours=3))
+            current_time = datetime.now(moscow_tz)
             win_increment = 1 if pnl > 0 else 0
 
             query = """
-                INSERT INTO user_strategy_stats (user_id, strategy_type, total_trades, winning_trades, total_pnl)
-                VALUES ($1, $2, 1, $3, $4)
+                INSERT INTO user_strategy_stats (user_id, strategy_type, total_trades, winning_trades, total_pnl, updated_at)
+                VALUES ($1, $2, 1, $3, $4, $5)
                 ON CONFLICT (user_id, strategy_type) DO UPDATE SET
                     total_trades = user_strategy_stats.total_trades + 1,
                     winning_trades = user_strategy_stats.winning_trades + $3,
                     total_pnl = user_strategy_stats.total_pnl + $4,
-                    updated_at = NOW()
+                    updated_at = $5
                 RETURNING total_trades, winning_trades;
             """
 
-            result = await self._execute_query(query, (user_id, strategy_type, win_increment, pnl), fetch_one=True)
+            result = await self._execute_query(query, (user_id, strategy_type, win_increment, pnl, current_time), fetch_one=True)
 
             if result and result['total_trades'] > 0:
                 win_rate = (Decimal(result['winning_trades']) / Decimal(result['total_trades'])) * 100
@@ -876,6 +886,9 @@ class _DatabaseManager:
             # Используем транзакцию для атомарности
             async with conn.transaction():
                 try:
+                    moscow_tz = timezone(timedelta(hours=3))
+                    current_time = datetime.now(moscow_tz)
+
                     # Получаем текущие значения с блокировкой строки
                     user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1 FOR UPDATE", user_id)
 
@@ -893,9 +906,9 @@ class _DatabaseManager:
 
                         await conn.execute("""
                             UPDATE users
-                            SET total_profit = $1, total_trades = $2, winning_trades = $3, win_rate = $4, updated_at = NOW()
+                            SET total_profit = $1, total_trades = $2, winning_trades = $3, win_rate = $4, updated_at = $6
                             WHERE user_id = $5
-                        """, new_total_profit, new_total_trades, new_winning_trades, new_win_rate, user_id)
+                        """, new_total_profit, new_total_trades, new_winning_trades, new_win_rate, user_id, current_time)
 
                 except Exception as e:
                     log_error(user_id, f"Ошибка обновления общей статистики пользователя: {e}", "db_manager")
@@ -1320,7 +1333,10 @@ class _DatabaseManager:
             bool: True если обновление успешно
         """
         try:
-            set_clauses = ["status = $2", "updated_at = NOW()"]
+            moscow_tz = timezone(timedelta(hours=3))
+            current_time = datetime.now(moscow_tz)
+
+            set_clauses = ["status = $2"]
             params = [order_id, status]
             param_count = 2
 
@@ -1338,6 +1354,11 @@ class _DatabaseManager:
                 param_count += 1
                 set_clauses.append(f"metadata = ${param_count}")
                 params.append(json.dumps(metadata, cls=DecimalEncoder))
+
+            # Добавляем updated_at в конец
+            param_count += 1
+            set_clauses.append(f"updated_at = ${param_count}")
+            params.append(current_time)
 
             query = f"""
             UPDATE orders

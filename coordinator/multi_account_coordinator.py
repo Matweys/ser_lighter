@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from core.logger import log_info, log_warning, log_error, log_debug
 from strategies.signal_scalper_strategy import SignalScalperStrategy
+from core.concurrency_manager import coordinator_locked, concurrency_manager
 
 
 @dataclass
@@ -148,6 +149,7 @@ class MultiAccountCoordinator:
                 else:
                     bot_data.status = 'active'
 
+    @coordinator_locked
     async def _check_activation_needed(self):
         """
         Логика активации следующего бота.
@@ -155,6 +157,8 @@ class MultiAccountCoordinator:
         АКТИВИРУЕМ Бот N+1 если:
         - Бот N застрял (status='stuck')
         - Бот N+1 существует и НЕ активен
+
+        THREAD-SAFE: Защищено декоратором @coordinator_locked для предотвращения race conditions.
         """
         for priority in [1, 2]:  # Проверяем Бот 1 и Бот 2
             bot_data = self.bots[priority]
@@ -166,6 +170,7 @@ class MultiAccountCoordinator:
                            "Coordinator")
                 await self._activate_bot(next_priority)
 
+    @coordinator_locked
     async def _check_deactivation_needed(self):
         """
         Логика деактивации и ротации ботов.
@@ -179,11 +184,24 @@ class MultiAccountCoordinator:
         - Ищем самого приоритетного СВОБОДНОГО бота
         - Если он не активен, активируем его
         - Деактивируем всех менее приоритетных СВОБОДНЫХ ботов
+
+        THREAD-SAFE: Защищено декоратором @coordinator_locked для предотвращения race conditions.
         """
         # 🔍 ДИАГНОСТИКА только при проблемах (закомментировано для уменьшения спама)
         # log_debug(self.user_id, f"Активные боты: {list(self.active_bots)}", "Coordinator")
 
-        # ШАГ 1: Находим самого приоритетного СВОБОДНОГО бота
+        # ШАГ 1: Проверяем более приоритетных ботов - не ждут ли они исполнения ордера
+        # Если более приоритетный бот ждёт - НЕ активируем менее приоритетного
+        for priority in [1, 2, 3]:
+            bot_data = self.bots[priority]
+            strategy = bot_data.strategy
+            is_waiting = getattr(strategy, 'is_waiting_for_trade', False)
+
+            if is_waiting:
+                # Бот ждёт исполнения - не делаем ротацию
+                return
+
+        # ШАГ 2: Находим самого приоритетного СВОБОДНОГО бота
         most_priority_free_bot = None
 
         for priority in [1, 2, 3]:
@@ -191,24 +209,17 @@ class MultiAccountCoordinator:
             strategy = bot_data.strategy
 
             is_really_free = not strategy.position_active
-            is_waiting = getattr(strategy, 'is_waiting_for_trade', False)
 
-            # Бот считается СВОБОДНЫМ только если НЕ в позиции И НЕ ожидает исполнения ордера
-            if is_really_free and not is_waiting:
+            # Бот считается СВОБОДНЫМ только если НЕ в позиции
+            if is_really_free:
                 most_priority_free_bot = priority
-                log_debug(self.user_id,
-                         f"🔍 [ДИАГНОСТИКА] Найден самый приоритетный свободный бот: {priority}",
-                         "Coordinator")
                 break  # Нашли - останавливаемся
 
         # Если НЕТ свободных ботов - ничего не делаем
         if most_priority_free_bot is None:
-            log_debug(self.user_id,
-                     f"🔍 [ДИАГНОСТИКА] Нет свободных ботов - пропускаем ротацию",
-                     "Coordinator")
             return
 
-        # ШАГ 2: Активируем самого приоритетного свободного бота (если он не активен)
+        # ШАГ 3: Активируем самого приоритетного свободного бота (если он не активен)
         if most_priority_free_bot not in self.active_bots:
             log_warning(self.user_id,
                        f"🟢 Возвращаю Бота {most_priority_free_bot} ({self.symbol}) как приоритетного "
@@ -233,11 +244,14 @@ class MultiAccountCoordinator:
                         "Coordinator")
                 await self._deactivate_bot(lower_priority)
 
+    @coordinator_locked
     async def _activate_bot(self, priority: int):
         """
         Активирует бота - запускает стратегию.
 
         После активации бот НАЧИНАЕТ обрабатывать события (свечи, цены).
+
+        THREAD-SAFE: Защищено декоратором @coordinator_locked для предотвращения race conditions.
         """
         if priority in self.active_bots:
             return  # Уже активен
@@ -256,6 +270,7 @@ class MultiAccountCoordinator:
                      f"❌ Не удалось активировать Бота {priority} для {self.symbol}",
                      "Coordinator")
 
+    @coordinator_locked
     async def _deactivate_bot(self, priority: int):
         """
         Деактивирует бота - останавливает стратегию.
@@ -263,6 +278,8 @@ class MultiAccountCoordinator:
         После деактивации бот ПЕРЕСТАЁТ обрабатывать события.
 
         ВАЖНО: Вызывается ТОЛЬКО если бот свободен (НЕ в позиции)!
+
+        THREAD-SAFE: Защищено декоратором @coordinator_locked для предотвращения race conditions.
         """
         if priority not in self.active_bots:
             return  # Уже неактивен

@@ -10,6 +10,7 @@ from core.logger import log_info, log_error, log_warning, log_debug
 from core.events import EventBus, NewCandleEvent, PriceUpdateEvent, OrderFilledEvent
 from analysis.signal_analyzer import SignalAnalyzer, SignalAnalysisResult
 from analysis.spike_detector import SpikeDetector
+from core.concurrency_manager import strategy_locked
 
 getcontext().prec = 28
 
@@ -169,8 +170,13 @@ class SignalScalperStrategy(BaseStrategy):
         await self.event_bus.unsubscribe(self._handle_new_candle)
         await super().stop(reason)
 
+    @strategy_locked
     async def _handle_new_candle(self, event: NewCandleEvent):
-        """Главный обработчик логики на каждой новой свече."""
+        """
+        Главный обработчик логики на каждой новой свече.
+
+        THREAD-SAFE: Защищено декоратором @strategy_locked для предотвращения race conditions.
+        """
         if event.symbol != self.symbol:
             return
 
@@ -294,8 +300,13 @@ class SignalScalperStrategy(BaseStrategy):
         """Внутренний метод обработки обновления цены (вызывается из BaseStrategy)"""
         await self.handle_price_update(event)
 
+    @strategy_locked
     async def handle_price_update(self, event: PriceUpdateEvent):
-        """Обработка тиков цены для усреднения и динамического тейк-профита."""
+        """
+        Обработка тиков цены для усреднения и динамического тейк-профита.
+
+        THREAD-SAFE: Защищено декоратором @strategy_locked для предотвращения race conditions.
+        """
         # КРИТИЧЕСКИ ВАЖНО: Проверяем что это цена НАШЕГО символа!
         if event.symbol != self.symbol:
             return
@@ -562,8 +573,13 @@ class SignalScalperStrategy(BaseStrategy):
                    f"Следующему сигналу {new_direction} потребуется {self.reversal_required_confirmations} подтверждения.",
                    "SignalScalper")
 
+    @strategy_locked
     async def _handle_order_filled(self, event: OrderFilledEvent):
-        """Обработка исполненных ордеров."""
+        """
+        Обработка исполненных ордеров.
+
+        THREAD-SAFE: Защищено декоратором @strategy_locked для предотвращения race conditions.
+        """
         # УЛУЧШЕННАЯ ЗАЩИТА ОТ ДВОЙНОЙ ОБРАБОТКИ
         if event.order_id in self.processed_orders:
             log_debug(self.user_id, f"[ДУПЛИКАТ] Ордер {event.order_id} уже обработан, игнорируем EventBus дубликат.", "SignalScalper")

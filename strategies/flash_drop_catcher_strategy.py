@@ -17,6 +17,7 @@ from core.events import EventType, EventBus, PriceUpdateEvent
 from api.bybit_api import BybitAPI
 from .base_strategy import BaseStrategy
 from aiogram.utils.markdown import hbold, hcode
+from core.concurrency_manager import strategy_locked
 
 # Настройка точности для Decimal
 getcontext().prec = 28
@@ -406,8 +407,13 @@ class FlashDropCatcherStrategy(BaseStrategy):
         except Exception as e:
             log_error(self.user_id, f"Ошибка мониторинга позиции: {e}", "FlashDropCatcher")
 
+    @strategy_locked
     async def handle_price_update(self, event: PriceUpdateEvent):
-        """Обработчик обновлений цены для активной позиции"""
+        """
+        Обработчик обновлений цены для активной позиции.
+
+        THREAD-SAFE: Защищено декоратором @strategy_locked для предотвращения race conditions.
+        """
         if not self.position_active or event.symbol != self.symbol:
             return
 

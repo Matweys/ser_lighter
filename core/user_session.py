@@ -37,6 +37,7 @@ from strategies.factory import create_strategy
 
 from telegram.bot import bot_manager
 from coordinator.multi_account_coordinator import MultiAccountCoordinator
+from core.concurrency_manager import user_locked, concurrency_manager
 
 
 
@@ -304,12 +305,15 @@ class UserSession:
             log_error(self.user_id, f"Ошибка получения статуса сессии: {e}", module_name=__name__)
             return {"user_id": self.user_id, "running": self.running, "error": str(e)}
 
+    @user_locked
     async def start_strategy(self, strategy_type: str, symbol: str, analysis_data: Optional[Dict] = None) -> bool:
         """
         Запускает стратегию, предварительно получая для нее самые свежие аналитические данные.
 
         В multi-account режиме (3 API ключа) для SignalScalper создаёт MultiAccountCoordinator.
         В обычном режиме создаёт одну стратегию.
+
+        THREAD-SAFE: Защищено декоратором @user_locked для предотвращения race conditions.
         """
         try:
             # Инициализируем данные по умолчанию. Если пришли данные (для grid/restart), используем их.
@@ -468,6 +472,7 @@ class UserSession:
             log_error(self.user_id, f"Ошибка запуска стратегии {strategy_type}: {e}", module_name=__name__)
             return False
 
+    @user_locked
     async def stop_strategy(self, strategy_id: str, reason: str = "Manual stop") -> bool:
         """
         Остановка стратегии (поддерживает multi-account координаторы)
@@ -478,6 +483,8 @@ class UserSession:
 
         Returns:
             bool: True если стратегия остановлена успешно
+
+        THREAD-SAFE: Защищено декоратором @user_locked для предотвращения race conditions.
         """
         try:
             # === MULTI-ACCOUNT РЕЖИМ: Проверяем, это координатор? ===
@@ -613,7 +620,9 @@ class UserSession:
                         event_bus=self.event_bus
                     )
                     self.api_clients.append(api_client)
-                    log_info(self.user_id, f"✅ API клиент #{key_data['priority']} (приоритет {key_data['priority']}) инициализирован", module_name=__name__)
+                    # ДИАГНОСТИКА: Логируем первые/последние 4 символа ключа для проверки
+                    api_key_masked = f"{key_data['api_key'][:4]}...{key_data['api_key'][-4:]}" if len(key_data['api_key']) > 8 else "***"
+                    log_info(self.user_id, f"✅ API клиент #{key_data['priority']} инициализирован | Ключ: {api_key_masked}", module_name=__name__)
 
                 # PRIMARY API клиент (первый) используется для MetaStrategist и других компонентов
                 self.api = self.api_clients[0]

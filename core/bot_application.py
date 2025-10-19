@@ -23,6 +23,7 @@ from core.default_configs import DefaultConfigs
 from core.enums import ConfigType
 from core.settings_config import system_config
 from database.db_trades import db_manager
+from core.concurrency_manager import start_cleanup_task
 
 
 
@@ -79,10 +80,14 @@ class BotApplication:
             
             # Восстановление пользовательских сессий
             await self._restore_user_sessions()
-            
+
             # Запуск мониторинга
             self._monitor_task = asyncio.create_task(self._monitoring_loop())
-            
+
+            # Запуск фоновой задачи очистки блокировок ConcurrencyManager
+            asyncio.create_task(start_cleanup_task())
+            log_info(0, "Фоновая задача очистки блокировок ConcurrencyManager запущена", module_name=__name__)
+
             self._running = True
             
             log_info(

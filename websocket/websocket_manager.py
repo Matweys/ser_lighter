@@ -574,19 +574,16 @@ class DataFeedHandler:
     async def _handle_private_message(self, message: str):
         """Обработка приватных сообщений"""
         try:
-            log_info(self.user_id, f"[TRACE] Получено приватное сообщение: {message[:200]}...", module_name=__name__)
             data = json.loads(message)
 
+            # Игнорируем системные сообщения (auth, subscribe) без логирования
             if "topic" not in data:
-                log_warning(self.user_id, f"[TRACE] Сообщение без топика: {data}", module_name=__name__)
                 return
 
             topic = data["topic"]
-            log_info(self.user_id, f"[TRACE] Обрабатываем топик: {topic}", module_name=__name__)
 
             # Обработка ордеров
             if topic == "order":
-                log_info(self.user_id, f"[TRACE] Обрабатываем обновление ордера: {data['data']}", module_name=__name__)
                 await self._handle_order_update(data["data"])
 
             # Обработка позиций
