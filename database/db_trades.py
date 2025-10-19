@@ -173,6 +173,9 @@ class _DatabaseManager:
         log_info(0, "Запуск миграций базы данных...", 'database')
         try:
             async with self.get_connection() as conn:
+                # Устанавливаем timezone для сессии PostgreSQL
+                await conn.execute("SET TIME ZONE 'Europe/Moscow';")
+                log_info(0, "PostgreSQL timezone установлен на Europe/Moscow (МСК)", 'database')
                 # Миграция 1: Добавление колонки winning_trades в таблицу users
                 check_col_query = """
                 SELECT 1 FROM information_schema.columns

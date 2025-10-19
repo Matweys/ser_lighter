@@ -355,8 +355,15 @@ class UserSession:
 
                 # Проверяем, не запущен ли уже координатор для этого символа
                 if symbol in self.coordinators:
-                    log_warning(self.user_id, f"Координатор для {symbol} уже запущен", module_name=__name__)
-                    return True
+                    coordinator = self.coordinators[symbol]
+                    # Проверяем, действительно ли координатор запущен
+                    if coordinator.is_running:
+                        log_warning(self.user_id, f"Координатор для {symbol} уже запущен и активен", module_name=__name__)
+                        return True
+                    else:
+                        # Координатор существует, но остановлен - удаляем его
+                        log_info(self.user_id, f"🔄 Координатор для {symbol} существует но остановлен, пересоздаём...", module_name=__name__)
+                        del self.coordinators[symbol]
 
                 # Создаём 3 стратегии (по одной для каждого API клиента)
                 bot_strategies = []
@@ -497,7 +504,9 @@ class UserSession:
                 symbol = '_'.join(parts[1:]) if len(parts) > 1 else parts[-1]
 
                 # Проверяем, есть ли координатор для этого символа
-                if symbol in self.coordinators:
+                coordinator_exists = symbol in self.coordinators
+
+                if coordinator_exists:
                     log_info(self.user_id, f"🔀 Остановка Multi-Account Coordinator для {symbol}", module_name=__name__)
 
                     coordinator = self.coordinators[symbol]
@@ -505,11 +514,17 @@ class UserSession:
 
                     # Удаляем координатор
                     del self.coordinators[symbol]
+                    log_info(self.user_id, f"✅ Coordinator для {symbol} удалён", module_name=__name__)
 
-                    # КРИТИЧНО: Удаляем из active_strategies для синхронизации с Redis
-                    if strategy_id in self.active_strategies:
-                        del self.active_strategies[strategy_id]
+                # КРИТИЧНО: ВСЕГДА удаляем стратегию из active_strategies (даже если координатора уже нет)
+                strategy_removed = False
+                if strategy_id in self.active_strategies:
+                    del self.active_strategies[strategy_id]
+                    strategy_removed = True
+                    log_info(self.user_id, f"✅ Стратегия {strategy_id} удалена из active_strategies", module_name=__name__)
 
+                # Если была операция удаления (координатор или стратегия)
+                if coordinator_exists or strategy_removed:
                     # Обновление статистики
                     self.session_stats["strategies_stopped"] += 1
 
@@ -522,19 +537,19 @@ class UserSession:
 
                     if symbol not in current_watchlist:
                         await self.global_ws_manager.unsubscribe_symbol(self.user_id, symbol)
-                        log_info(self.user_id, f"✅ WebSocket отписан от {symbol} (координатор остановлен)", module_name=__name__)
+                        log_info(self.user_id, f"✅ WebSocket отписан от {symbol} (стратегия остановлена)", module_name=__name__)
 
                     # Публикация события
                     event = StrategyStopEvent(
                         user_id=self.user_id,
-                        strategy_id=f"coordinator_{strategy_id}",
+                        strategy_id=f"coordinator_{strategy_id}" if coordinator_exists else strategy_id,
                         reason=reason,
                         symbol=symbol,
                         strategy_type=StrategyType.SIGNAL_SCALPER.value
                     )
                     await self.event_bus.publish(event)
 
-                    log_info(self.user_id, f"🔀 Coordinator для {symbol} остановлен: {reason}", module_name=__name__)
+                    log_info(self.user_id, f"🔀 Стратегия {strategy_id} остановлена: {reason}", module_name=__name__)
                     return True
 
             # === ОБЫЧНЫЙ РЕЖИМ: Обработка одиночной стратегии ===
