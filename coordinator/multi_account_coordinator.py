@@ -66,6 +66,11 @@ class MultiAccountCoordinator:
                 f"🔀 MultiAccountCoordinator создан для {symbol}: 3 бота готовы",
                 "Coordinator")
 
+    @property
+    def is_running(self) -> bool:
+        """Возвращает текущий статус работы координатора"""
+        return self.running
+
     async def start(self):
         """Запуск координатора"""
         if self.running:
