@@ -1099,13 +1099,33 @@ class BaseStrategy(ABC):
         """
         async def _send():
             try:
-                if self.bot:
-                    await self.bot.send_message(self.user_id, text, parse_mode=parse_mode)
-            except Exception as e:
-                log_error(self.user_id, f"Ошибка асинхронной отправки уведомления: {e}", "base_strategy")
+                # ДИАГНОСТИКА: Логируем попытку отправки
+                log_debug(self.user_id, f"🔔 Попытка отправки уведомления: bot={'существует' if self.bot else 'None'}", "base_strategy")
 
-        # Запускаем отправку в фоне, не ожидая завершения
-        asyncio.create_task(_send())
+                if not self.bot:
+                    log_error(self.user_id, "❌ Telegram bot не инициализирован! Уведомление не отправлено.", "base_strategy")
+                    log_error(self.user_id, f"Текст пропущенного уведомления:\n{text[:200]}...", "base_strategy")
+                    return
+
+                # Отправляем уведомление
+                await self.bot.send_message(self.user_id, text, parse_mode=parse_mode)
+                log_debug(self.user_id, "✅ Уведомление успешно отправлено в Telegram", "base_strategy")
+
+            except Exception as e:
+                log_error(self.user_id, f"❌ Ошибка асинхронной отправки уведомления: {e}", "base_strategy")
+                log_error(self.user_id, f"Текст неотправленного уведомления:\n{text[:200]}...", "base_strategy")
+
+        # Запускаем отправку в фоне с обработчиком завершения
+        task = asyncio.create_task(_send())
+
+        # Добавляем callback для логирования необработанных исключений
+        def _task_done_callback(task_obj):
+            try:
+                task_obj.result()  # Получаем результат, чтобы поймать исключение
+            except Exception as e:
+                log_error(self.user_id, f"🔥 НЕОБРАБОТАННОЕ ИСКЛЮЧЕНИЕ в задаче отправки уведомления: {e}", "base_strategy")
+
+        task.add_done_callback(_task_done_callback)
 
     async def _send_strategy_start_notification(self):
         """Отправляет уведомление о запуске стратегии"""
@@ -1148,6 +1168,10 @@ class BaseStrategy(ABC):
                                             intended_amount: Optional[Decimal] = None, signal_price: Optional[Decimal] = None):
         """Отправляет уведомление и СОЗДАЕТ запись о сделке в БД."""
         try:
+            # ДИАГНОСТИКА: Логируем вызов метода и состояние bot
+            log_info(self.user_id, f"🔔 _send_trade_open_notification вызван: side={side}, price={price}, qty={quantity}", "base_strategy")
+            log_info(self.user_id, f"🤖 Состояние self.bot: {type(self.bot).__name__ if self.bot else 'None'}", "base_strategy")
+
             # --- БЛОК ДЛЯ ЗАПИСИ В БД ПРИ ОТКРЫТИИ ---
             from database.db_trades import TradeRecord
             new_trade = TradeRecord(

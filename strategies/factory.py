@@ -37,5 +37,12 @@ def create_strategy(
         log_error(user_id, f"Неподдерживаемый тип стратегии: {strategy_type}", module_name="strategy_factory")
         return None
 
+    # КРИТИЧНО: Логируем передачу bot для диагностики пропадающих уведомлений
+    from core.logger import log_info, log_error
+    if bot is None:
+        log_error(user_id, f"❌ КРИТИЧЕСКАЯ ОШИБКА: bot=None при создании стратегии {strategy_type}! Уведомления работать НЕ БУДУТ!", module_name="strategy_factory")
+    else:
+        log_info(user_id, f"✅ Создание стратегии {strategy_type} с bot={type(bot).__name__} (OK)", module_name="strategy_factory")
+
     # Передаем все необходимые аргументы в конструктор
     return strategy_class(user_id, symbol, signal_data, api, event_bus, bot, config, bot_priority)
