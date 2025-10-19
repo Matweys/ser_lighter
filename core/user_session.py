@@ -110,6 +110,9 @@ class UserSession:
         # Задачи компонентов
         self._component_tasks: List[asyncio.Task] = []
 
+        # КРИТИЧНО: Флаг для предотвращения дублирования стратегий при восстановлении
+        self.skip_persistent_strategies = False
+
     async def start(self) -> bool:
         """
         Запуск пользовательской сессии
@@ -143,7 +146,11 @@ class UserSession:
             self.running = True
 
             # Автоматический запуск постоянных стратегий (например, Grid Scalping)
-            await self._launch_persistent_strategies()
+            # КРИТИЧНО: Пропускаем если флаг установлен (восстановление произойдёт через bot_application)
+            if not self.skip_persistent_strategies:
+                await self._launch_persistent_strategies()
+            else:
+                log_info(self.user_id, "⏭️ Пропускаю запуск persistent стратегий (восстановление из Redis/БД)", module_name=__name__)
 
             # Сохранение состояния сессии в Redis
             await self._save_session_state()

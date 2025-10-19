@@ -339,8 +339,9 @@ class BotApplication:
                     # Создание и запуск сессии
                     session = UserSession(user_id, self.event_bus, self.global_websocket_manager, self.bot)
 
-                    # КРИТИЧНО: Устанавливаем флаг восстановления ПЕРЕД стартом сессии
-                    session.is_bot_restart = True
+                    # КРИТИЧНО: Устанавливаем флаги восстановления ПЕРЕД стартом сессии
+                    session.is_bot_restart = True  # Для передачи стратегиям
+                    session.skip_persistent_strategies = True  # Пропускаем автозапуск persistent стратегий
 
                     if await session.start():
                         self.active_sessions[user_id] = session
@@ -351,8 +352,9 @@ class BotApplication:
                         # НОВЫЙ ФУНКЦИОНАЛ: Восстановление активных стратегий после перезагрузки
                         await self._restore_strategies_for_user(user_id, session)
 
-                        # Сбрасываем флаг после восстановления
+                        # Сбрасываем флаги после восстановления
                         session.is_bot_restart = False
+                        session.skip_persistent_strategies = False
 
                 except Exception as e:
                     log_error(0, f"Ошибка восстановления сессии для пользователя {user_id}: {e}", module_name=__name__)
