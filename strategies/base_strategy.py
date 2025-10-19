@@ -1009,6 +1009,27 @@ class BaseStrategy(ABC):
 
         return True
 
+    def _send_notification_async(self, text: str, parse_mode: str = "HTML"):
+        """
+        Отправляет уведомление асинхронно в фоне, не блокируя основной код.
+
+        КРИТИЧНО: Используется для предотвращения блокировок при отправке Telegram-сообщений
+        из методов, защищённых @strategy_locked.
+
+        Args:
+            text: Текст уведомления
+            parse_mode: Режим парсинга (HTML/Markdown)
+        """
+        async def _send():
+            try:
+                if self.bot:
+                    await self.bot.send_message(self.user_id, text, parse_mode=parse_mode)
+            except Exception as e:
+                log_error(self.user_id, f"Ошибка асинхронной отправки уведомления: {e}", "base_strategy")
+
+        # Запускаем отправку в фоне, не ожидая завершения
+        asyncio.create_task(_send())
+
     async def _send_strategy_start_notification(self):
         """Отправляет уведомление о запуске стратегии"""
         try:
@@ -1039,7 +1060,8 @@ class BaseStrategy(ABC):
                     f"▫️ {hbold('Плечо:')} {hcode(f'{self.leverage}x')}"
                 )
 
-            await self.bot.send_message(self.user_id, text, parse_mode="HTML")
+            # Отправляем асинхронно чтобы не блокировать логику стратегии
+            self._send_notification_async(text)
             log_info(self.user_id, f"Уведомление о запуске стратегии {strategy_name} отправлено", "base_strategy")
 
         except Exception as e:
@@ -1135,7 +1157,8 @@ class BaseStrategy(ABC):
                          f"[TRACE] Проверка перед отправкой: self.bot существует? {'Да' if self.bot else 'Нет'}",
                          "base_strategy")
 
-            await self.bot.send_message(self.user_id, text, parse_mode="HTML")
+            # Отправляем асинхронно чтобы не блокировать логику стратегии
+            self._send_notification_async(text)
             log_info(self.user_id, "[TRACE] Уведомление об открытии сделки отправлено успешно.", "base_strategy")
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления об открытии сделки: {e}", "base_strategy")
@@ -1265,7 +1288,8 @@ class BaseStrategy(ABC):
                 f"▫️ {hbold('Ожидаемый убыток:')} {hcode(f'-{sl_loss:.2f} USDT')}"
             )
 
-            await self.bot.send_message(self.user_id, text, parse_mode="HTML")
+            # Отправляем асинхронно чтобы не блокировать логику стратегии
+            self._send_notification_async(text)
             log_info(self.user_id, "✅ Максимально информативное уведомление об усреднении отправлено успешно.", "base_strategy")
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления об усреднении: {e}", "base_strategy")
@@ -1345,7 +1369,8 @@ class BaseStrategy(ABC):
                     f"▫️ {hbold('(включая комиссии:')} {hcode(f'{commission:.2f} USDT)')}\n"
                     f"▫️ {hbold('Win Rate стратегии:')} {hcode(f'{win_rate:.2f}%')}"
                 )
-            await self.bot.send_message(self.user_id, text, parse_mode="HTML")
+            # Отправляем асинхронно чтобы не блокировать логику стратегии
+            self._send_notification_async(text)
             log_info(self.user_id, "Уведомление о закрытии сделки отправлено успешно.", "base_strategy")
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления о закрытии сделки: {e}", "base_strategy")
@@ -1710,11 +1735,8 @@ class BaseStrategy(ABC):
             else:
                 message += f"ℹ️ Активных ордеров не обнаружено"
 
-            await self.bot.send_message(
-                chat_id=self.user_id,
-                text=message,
-                parse_mode="HTML"
-            )
+            # Отправляем асинхронно чтобы не блокировать логику стратегии
+            self._send_notification_async(message)
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления о восстановлении: {e}", "BaseStrategy")
