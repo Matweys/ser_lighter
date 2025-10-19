@@ -33,7 +33,7 @@ class MultiAccountCoordinator:
     """
 
     # Константы (можно будет вынести в конфиг позже)
-    STUCK_THRESHOLD_PERCENT = Decimal('-10')  # Застрял если PnL < -10% от маржи
+    STUCK_THRESHOLD_PERCENT = Decimal('-5')  # Застрял если PnL < -10% от маржи
     MONITOR_INTERVAL = 5  # Проверка каждые 5 секунд
 
     def __init__(self, user_id: int, symbol: str, bot_strategies: List[SignalScalperStrategy]):
