@@ -328,6 +328,78 @@ class BaseStrategy(ABC):
         """Обработка исполнения ордера (реализуется в наследниках)"""
         pass
 
+    async def _handle_order_update(self, event: OrderUpdateEvent):
+        """
+        Обработка обновления статуса ордера (отмена, отклонение и т.д.)
+
+        КРИТИЧНО: Обновляет статус ордера в БД при любых изменениях со стороны биржи.
+        Это гарантирует, что БД всегда актуальна, даже если ордер закрыт вручную.
+        """
+        try:
+            order_data = event.order_data
+            order_id = order_data.get("orderId")
+            status = order_data.get("orderStatus")
+            symbol = order_data.get("symbol")
+
+            # Проверяем, что это ордер нашей стратегии
+            if symbol != self.symbol:
+                return
+
+            # Проверяем, что это наш ордер (есть в active_orders или в БД)
+            if order_id not in self.active_orders:
+                # Проверяем в БД
+                from database.db_trades import db_manager
+                db_order = await db_manager.get_order_by_exchange_id(order_id)
+                if not db_order or db_order.get('user_id') != self.user_id:
+                    return  # Это не наш ордер
+
+            log_info(self.user_id,
+                    f"📋 Обновление ордера {order_id}: {status} ({symbol})",
+                    module_name=__name__)
+
+            # КРИТИЧНО: Обновляем статус в БД
+            from database.db_trades import db_manager
+
+            # Маппинг статусов Bybit → БД
+            status_map = {
+                "Cancelled": "CANCELLED",
+                "Rejected": "REJECTED",
+                "Filled": "FILLED",
+                "PartiallyFilled": "PARTIALLY_FILLED",
+                "New": "NEW",
+                "Untriggered": "PENDING"
+            }
+
+            db_status = status_map.get(status, status.upper())
+
+            # Обновляем статус в БД
+            await db_manager.update_order_status(
+                order_id=order_id,
+                status=db_status,
+                filled_quantity=Decimal(str(order_data.get("cumExecQty", "0"))),
+                average_price=Decimal(str(order_data.get("avgPrice", "0"))) if order_data.get("avgPrice") else None
+            )
+
+            # Если ордер отменён/отклонён, удаляем из active_orders
+            if status in ["Cancelled", "Rejected"]:
+                if order_id in self.active_orders:
+                    del self.active_orders[order_id]
+                    log_warning(self.user_id,
+                              f"⚠️ Ордер {order_id} отменён/отклонён - удалён из активных",
+                              module_name=__name__)
+
+                    # Уведомляем пользователя
+                    reason = "отменён" if status == "Cancelled" else "отклонён биржей"
+                    await self._send_notification_async(
+                        f"⚠️ <b>Ордер {reason}</b>\n\n"
+                        f"Символ: <code>{symbol}</code>\n"
+                        f"ID: <code>{order_id[:8]}...</code>\n"
+                        f"Статус: {status}"
+                    )
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка обработки OrderUpdateEvent: {e}", module_name=__name__)
+
 
 
     async def handle_event(self, event: BaseEvent):
@@ -353,6 +425,10 @@ class BaseStrategy(ABC):
                         "fill_price": str(event.price),
                         "fill_qty": str(event.qty)
                     })
+
+            # КРИТИЧНО: Обработка обновления статуса ордера (отмена, отклонение и т.д.)
+            elif isinstance(event, OrderUpdateEvent):
+                await self._handle_order_update(event)
 
             # Обработка остальных событий без изменений
             elif isinstance(event, PriceUpdateEvent):
@@ -711,6 +787,7 @@ class BaseStrategy(ABC):
                         order_purpose=order_purpose,
                         leverage=leverage,
                         trade_id=trade_id,
+                        bot_priority=getattr(self, 'account_priority', 1),  # Передаём приоритет бота для Multi-Account режима
                         metadata={
                             "stop_loss": str(stop_loss) if stop_loss else None,
                             "take_profit": str(take_profit) if take_profit else None,
@@ -1556,6 +1633,10 @@ class BaseStrategy(ABC):
         try:
             log_info(self.user_id, f"🔄 Начинаю восстановление стратегии {self.symbol} после перезагрузки сервера...", "BaseStrategy")
 
+            # КРИТИЧНО: Устанавливаем is_running = True чтобы стратегия получала события
+            # Без этого handle_event() будет игнорировать все события (проверка if not self.is_running: return)
+            self.is_running = True
+
             # Восстанавливаем базовые параметры
             self.strategy_id = saved_state.get("strategy_id", self.strategy_id)
             self.config = saved_state.get("config", {})
@@ -1600,11 +1681,12 @@ class BaseStrategy(ABC):
             # Проверяем актуальные ордера на бирже и синхронизируем состояние
             await self._sync_orders_after_restart()
 
-            # Уведомляем пользователя о восстановлении
-            await self._notify_user_about_recovery(saved_state)
-
-            # Конкретная стратегия может переопределить этот метод для дополнительного восстановления
+            # КРИТИЧНО: Конкретная стратегия может переопределить этот метод для дополнительного восстановления
+            # Вызываем ДО уведомления, чтобы все компоненты были восстановлены
             await self._strategy_specific_recovery(saved_state.get("additional_data", {}))
+
+            # Уведомляем пользователя о восстановлении ПОСЛЕ полного восстановления всех компонентов
+            await self._notify_user_about_recovery(saved_state)
 
             log_info(self.user_id, f"✅ Стратегия {self.symbol} успешно восстановлена после перезагрузки", "BaseStrategy")
             return True
@@ -1720,6 +1802,11 @@ class BaseStrategy(ABC):
                 minutes = int((downtime.total_seconds() % 3600) / 60)
                 downtime_str = f"{hours}ч {minutes}мин"
 
+            # ИСПРАВЛЕНО: Проверяем наличие ПОЗИЦИИ, а не только ордеров
+            has_position = getattr(self, 'position_active', False)
+            position_size = getattr(self, 'position_size', Decimal('0'))
+            entry_price = getattr(self, 'entry_price', Decimal('0'))
+            active_direction = getattr(self, 'active_direction', None)
             active_orders_count = len(self.active_orders)
 
             message = (
@@ -1729,11 +1816,26 @@ class BaseStrategy(ABC):
                 f"⏰ Время простоя: <b>{downtime_str}</b>\n"
             )
 
+            # Показываем информацию о позиции если она есть
+            if has_position and position_size > 0:
+                direction_emoji = "🟢" if active_direction == "LONG" else "🔴"
+                message += (
+                    f"\n{direction_emoji} <b>Активная позиция:</b>\n"
+                    f"▫️ Направление: <b>{active_direction}</b>\n"
+                    f"▫️ Размер: <b>{position_size}</b>\n"
+                    f"▫️ Цена входа: <b>{entry_price:.4f} USDT</b>\n"
+                )
+
+            # Показываем информацию об ордерах
             if active_orders_count > 0:
-                message += f"📋 Активных ордеров: <b>{active_orders_count}</b>\n"
-                message += f"✅ Отслеживание ордеров возобновлено"
+                message += f"\n📋 Активных ордеров: <b>{active_orders_count}</b>\n"
+                message += f"✅ Отслеживание возобновлено"
+            elif not has_position:
+                # Показываем "ордеров нет" только если НЕТ и позиции
+                message += f"\nℹ️ Активных позиций и ордеров нет"
             else:
-                message += f"ℹ️ Активных ордеров не обнаружено"
+                # Есть позиция, но нет ордеров - это нормально
+                message += f"\n✅ Мониторинг позиции возобновлён"
 
             # Отправляем асинхронно чтобы не блокировать логику стратегии
             self._send_notification_async(message)

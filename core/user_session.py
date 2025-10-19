@@ -1050,6 +1050,9 @@ class UserSession:
         """
         Восстанавливает стратегию из сохраненного состояния после перезагрузки сервера.
 
+        ПОДДЕРЖИВАЕТ MULTI-ACCOUNT COORDINATOR:
+        Если у пользователя 3 API ключа и стратегия SignalScalper, создаёт координатор с 3 ботами.
+
         Args:
             strategy_type: Тип стратегии для восстановления
             symbol: Символ для торговли
@@ -1066,46 +1069,167 @@ class UserSession:
                 log_warning(self.user_id, f"Стратегия {strategy_id} уже активна, пропускаем восстановление", module_name=__name__)
                 return True
 
-            # Создаем стратегию с использованием factory
-            strategy = create_strategy(
-                strategy_type=strategy_type.value,
-                bot=self.bot,
-                user_id=self.user_id,
-                symbol=symbol,
-                signal_data=saved_state.get("signal_data", {}),
-                api=self.api,
-                event_bus=self.event_bus,
-                config=None
-            )
+            # Проверяем, не запущен ли уже координатор для этого символа
+            if symbol in self.coordinators:
+                log_warning(self.user_id, f"Координатор для {symbol} уже запущен, пропускаем восстановление", module_name=__name__)
+                return True
 
-            if not strategy:
-                log_error(self.user_id, f"Не удалось создать стратегию типа: {strategy_type.value} для восстановления", module_name=__name__)
-                return False
+            # === MULTI-ACCOUNT COORDINATOR MODE ===
+            # Если есть 3 API клиента И стратегия = SignalScalper, создаём координатор
+            is_multi_account_mode = len(self.api_clients) == 3
+            is_signal_scalper = strategy_type == StrategyType.SIGNAL_SCALPER
 
-            # Восстанавливаем состояние стратегии
-            success = await strategy.recover_after_restart(saved_state)
+            if is_multi_account_mode and is_signal_scalper:
+                log_info(self.user_id, f"🔀 Восстановление Multi-Account Coordinator для {symbol}", module_name=__name__)
 
-            if success:
-                # Добавляем в активные стратегии
-                self.active_strategies[strategy_id] = strategy
+                # Создаём 3 стратегии (по одной для каждого API клиента)
+                bot_strategies = []
+                for priority, api_client in enumerate(self.api_clients, start=1):
+                    strategy = create_strategy(
+                        strategy_type=strategy_type.value,
+                        bot=self.bot,
+                        user_id=self.user_id,
+                        symbol=symbol,
+                        signal_data=saved_state.get("signal_data", {}),
+                        api=api_client,  # Каждая стратегия использует свой API клиент
+                        event_bus=self.event_bus,
+                        config=None,
+                        bot_priority=priority  # КРИТИЧНО: Передаём приоритет для уникального ID
+                    )
+
+                    if not strategy:
+                        log_error(self.user_id, f"Не удалось создать стратегию для Бота {priority} при восстановлении", module_name=__name__)
+                        return False
+
+                    # Передаём флаг восстановления
+                    strategy.is_bot_restart_recovery = True
+
+                    bot_strategies.append(strategy)
+                    log_info(self.user_id, f"✅ Стратегия для Бота {priority} ({symbol}) создана для восстановления", module_name=__name__)
+
+                # КРИТИЧНО: Восстанавливаем ордера для КАЖДОГО бота из БД
+                # Каждый бот получает только СВОИ ордера по bot_priority
+                from database.db_trades import db_manager
+
+                for priority, strategy in enumerate(bot_strategies, start=1):
+                    bot_orders = await db_manager.get_active_orders_by_bot_priority(
+                        user_id=self.user_id,
+                        symbol=symbol,
+                        bot_priority=priority,
+                        strategy_type=strategy_type.value
+                    )
+
+                    if bot_orders:
+                        log_info(self.user_id,
+                                f"📋 Бот {priority} ({symbol}): найдено {len(bot_orders)} активных ордеров в БД",
+                                module_name=__name__)
+
+                        # Конвертируем ордера из БД в формат стратегии
+                        for order_data in bot_orders:
+                            order_obj = {
+                                'order_id': order_data['order_id'],
+                                'side': order_data['side'],
+                                'quantity': order_data['quantity'],
+                                'price': order_data['price'],
+                                'status': order_data['status'],
+                                'order_purpose': order_data.get('order_purpose', 'UNKNOWN'),
+                                'metadata': order_data.get('metadata', {})
+                            }
+                            strategy.active_orders[order_data['order_id']] = order_obj
+
+                        log_info(self.user_id,
+                                f"✅ Бот {priority} ({symbol}): восстановлено {len(bot_orders)} ордеров",
+                                module_name=__name__)
+                    else:
+                        log_info(self.user_id,
+                                f"ℹ️ Бот {priority} ({symbol}): активных ордеров не найдено",
+                                module_name=__name__)
+
+                # Восстанавливаем состояние ПЕРВОЙ стратегии (Бот 1)
+                # Остальные боты не имеют сохранённого состояния, они спят
+                success = await bot_strategies[0].recover_after_restart(saved_state)
+
+                if not success:
+                    log_error(self.user_id, f"Не удалось восстановить состояние Бота 1 для {symbol}", module_name=__name__)
+                    return False
+
+                # Создаём координатор с 3 стратегиями
+                coordinator = MultiAccountCoordinator(
+                    user_id=self.user_id,
+                    symbol=symbol,
+                    bot_strategies=bot_strategies
+                )
+
+                # Запускаем координатор (он сам запустит Бот 1, который уже восстановлен)
+                await coordinator.start()
+
+                # Сохраняем координатор
+                self.coordinators[symbol] = coordinator
+
+                # КРИТИЧНО: Добавляем в active_strategies для отображения в /autotrade_status
+                # Используем первую стратегию как представителя координатора
+                self.active_strategies[strategy_id] = bot_strategies[0]
 
                 # Обновляем статистику
                 self.session_stats["strategies_launched"] += 1
 
-                # Публикуем событие о запуске стратегии
+                # Публикуем событие
                 event = StrategyStartEvent(
                     user_id=self.user_id,
                     strategy_type=strategy_type.value,
                     symbol=symbol,
-                    strategy_id=strategy.strategy_id
+                    strategy_id=f"coordinator_{strategy_type.value}_{symbol}"
                 )
                 await self.event_bus.publish(event)
 
-                log_info(self.user_id, f"Стратегия {strategy_id} успешно восстановлена из состояния", module_name=__name__)
+                log_info(self.user_id, f"🔀 Multi-Account Coordinator для {symbol} восстановлен успешно", module_name=__name__)
                 return True
+
+            # === ОБЫЧНЫЙ РЕЖИМ (один API клиент) ===
             else:
-                log_error(self.user_id, f"Не удалось восстановить состояние стратегии {strategy_id}", module_name=__name__)
-                return False
+                # Создаем стратегию с использованием factory
+                strategy = create_strategy(
+                    strategy_type=strategy_type.value,
+                    bot=self.bot,
+                    user_id=self.user_id,
+                    symbol=symbol,
+                    signal_data=saved_state.get("signal_data", {}),
+                    api=self.api,
+                    event_bus=self.event_bus,
+                    config=None
+                )
+
+                if not strategy:
+                    log_error(self.user_id, f"Не удалось создать стратегию типа: {strategy_type.value} для восстановления", module_name=__name__)
+                    return False
+
+                # Передаём флаг восстановления
+                strategy.is_bot_restart_recovery = True
+
+                # Восстанавливаем состояние стратегии
+                success = await strategy.recover_after_restart(saved_state)
+
+                if success:
+                    # Добавляем в активные стратегии
+                    self.active_strategies[strategy_id] = strategy
+
+                    # Обновляем статистику
+                    self.session_stats["strategies_launched"] += 1
+
+                    # Публикуем событие о запуске стратегии
+                    event = StrategyStartEvent(
+                        user_id=self.user_id,
+                        strategy_type=strategy_type.value,
+                        symbol=symbol,
+                        strategy_id=strategy.strategy_id
+                    )
+                    await self.event_bus.publish(event)
+
+                    log_info(self.user_id, f"Стратегия {strategy_id} успешно восстановлена из состояния", module_name=__name__)
+                    return True
+                else:
+                    log_error(self.user_id, f"Не удалось восстановить состояние стратегии {strategy_id}", module_name=__name__)
+                    return False
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка восстановления стратегии {strategy_type.value}_{symbol}: {e}", module_name=__name__)

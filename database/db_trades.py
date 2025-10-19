@@ -255,6 +255,67 @@ class _DatabaseManager:
                         await conn.execute(index_query)
                         log_info(0, f"Индекс '{index_name}' успешно добавлен.", 'database')
 
+                # Миграция 5: Добавление поля bot_priority для Multi-Account режима
+                bot_priority_exists = await conn.fetchval("""
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='orders' AND column_name='bot_priority'
+                """)
+                if not bot_priority_exists:
+                    log_warning(0, "Колонка 'bot_priority' отсутствует в таблице 'orders'. Добавляю...", 'database')
+                    await conn.execute("ALTER TABLE orders ADD COLUMN bot_priority INTEGER DEFAULT 1;")
+                    log_info(0, "Колонка 'bot_priority' успешно добавлена в orders (для Multi-Account режима).", 'database')
+
+                    # Добавляем комментарий для документации
+                    await conn.execute("""
+                        COMMENT ON COLUMN orders.bot_priority IS 'Приоритет бота в Multi-Account режиме: 1=PRIMARY, 2=SECONDARY, 3=TERTIARY'
+                    """)
+
+                    # Добавляем индекс для быстрого поиска по bot_priority
+                    await conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_bot_priority ON orders(bot_priority);")
+                    log_info(0, "Индекс 'idx_orders_bot_priority' успешно добавлен.", 'database')
+
+                # Миграция 6: Добавление составного UNIQUE индекса для безопасности многопользовательского режима
+                unique_constraint_exists = await conn.fetchval("""
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'unique_user_order_id'
+                """)
+                if not unique_constraint_exists:
+                    log_warning(0, "UNIQUE constraint (user_id, order_id) отсутствует. Добавляю...", 'database')
+
+                    # КРИТИЧНО: Сначала проверяем, нет ли дубликатов в существующих данных
+                    duplicates = await conn.fetchval("""
+                        SELECT COUNT(*) FROM (
+                            SELECT user_id, order_id
+                            FROM orders
+                            WHERE order_id IS NOT NULL AND order_id != ''
+                            GROUP BY user_id, order_id
+                            HAVING COUNT(*) > 1
+                        ) AS dups
+                    """)
+
+                    if duplicates > 0:
+                        log_warning(0, f"⚠️ Обнаружено {duplicates} дубликатов (user_id, order_id). Очистка перед добавлением UNIQUE constraint...", 'database')
+                        # В production лучше вручную разобраться с дубликатами
+                        # Но для безопасности оставляем только последние записи
+                        await conn.execute("""
+                            DELETE FROM orders
+                            WHERE id NOT IN (
+                                SELECT MAX(id)
+                                FROM orders
+                                WHERE order_id IS NOT NULL AND order_id != ''
+                                GROUP BY user_id, order_id
+                            )
+                        """)
+                        log_info(0, "Дубликаты удалены.", 'database')
+
+                    # Добавляем UNIQUE constraint
+                    await conn.execute("""
+                        ALTER TABLE orders
+                        ADD CONSTRAINT unique_user_order_id UNIQUE (user_id, order_id)
+                    """)
+
+                    log_info(0, "✅ UNIQUE constraint 'unique_user_order_id' успешно добавлен для многопользовательской безопасности.", 'database')
+
             log_info(0, "Миграции базы данных завершены.", 'database')
         except Exception as e:
             log_error(0, f"Ошибка во время выполнения миграций: {e}", 'database')
@@ -1318,6 +1379,63 @@ class _DatabaseManager:
             log_error(user_id, f"Ошибка получения активных ордеров: {e}", module_name='database')
             return []
 
+    async def get_active_orders_by_bot_priority(self, user_id: int, symbol: str,
+                                                bot_priority: int,
+                                                strategy_type: str = None) -> List[Dict[str, Any]]:
+        """
+        Получает активные ордера конкретного бота в Multi-Account режиме.
+
+        КРИТИЧНО для восстановления: каждый бот (1/2/3) должен восстанавливать только СВОИ ордера!
+
+        Args:
+            user_id: ID пользователя
+            symbol: Символ
+            bot_priority: Приоритет бота (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
+            strategy_type: Тип стратегии (опционально)
+
+        Returns:
+            List[Dict]: Список активных ордеров конкретного бота
+        """
+        try:
+            conditions = [
+                "user_id = $1",
+                "symbol = $2",
+                "bot_priority = $3",
+                "status IN ('PENDING', 'PARTIALLY_FILLED', 'NEW')"
+            ]
+            params = [user_id, symbol, bot_priority]
+            param_count = 3
+
+            if strategy_type:
+                param_count += 1
+                conditions.append(f"strategy_type = ${param_count}")
+                params.append(strategy_type)
+
+            query = f"""
+            SELECT id, user_id, symbol, side, order_type, quantity, price,
+                   filled_quantity, average_price, status, order_id,
+                   client_order_id, strategy_type, bot_priority, metadata, created_at, updated_at
+            FROM orders
+            WHERE {' AND '.join(conditions)}
+            ORDER BY created_at DESC
+            """
+
+            rows = await self._execute_query(query, tuple(params), fetch_all=True)
+
+            orders = []
+            for row in rows:
+                order_dict = dict(row)
+                if order_dict.get('metadata'):
+                    order_dict['metadata'] = json.loads(order_dict['metadata'])
+                orders.append(order_dict)
+
+            log_debug(user_id, f"Найдено {len(orders)} активных ордеров для Bot{bot_priority} ({symbol})", module_name='database')
+            return orders
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка получения ордеров для Bot{bot_priority}: {e}", module_name='database')
+            return []
+
     async def update_order_status(self, order_id: str, status: str,
                                 filled_quantity: Decimal = None,
                                 average_price: Decimal = None,
@@ -1445,7 +1563,7 @@ class _DatabaseManager:
                              quantity: Decimal, price: Decimal, order_id: str,
                              strategy_type: str, order_purpose: str, leverage: int,
                              trade_id: int = None, client_order_id: str = None,
-                             metadata: Dict[str, Any] = None) -> Optional[int]:
+                             bot_priority: int = 1, metadata: Dict[str, Any] = None) -> Optional[int]:
         """
         Сохраняет ордер в БД с ПОЛНОЙ информацией
 
@@ -1462,6 +1580,7 @@ class _DatabaseManager:
             leverage: Плечо
             trade_id: ID связанной сделки
             client_order_id: Клиентский ID
+            bot_priority: Приоритет бота (1=PRIMARY, 2=SECONDARY, 3=TERTIARY) для Multi-Account режима
             metadata: Дополнительные данные
 
         Returns:
@@ -1475,10 +1594,10 @@ class _DatabaseManager:
             INSERT INTO orders (
                 user_id, symbol, side, order_type, quantity, price,
                 order_id, client_order_id, strategy_type, order_purpose,
-                leverage, trade_id, is_active, status,
+                leverage, trade_id, bot_priority, is_active, status,
                 metadata, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17)
             RETURNING id
             """
 
@@ -1488,14 +1607,14 @@ class _DatabaseManager:
                 query,
                 (user_id, symbol, side, order_type, quantity, price,
                  order_id, client_order_id, strategy_type, order_purpose,
-                 leverage, trade_id, True, 'PENDING',
+                 leverage, trade_id, bot_priority, True, 'PENDING',
                  metadata_json, current_time),
                 fetch_one=True
             )
 
             if result:
                 log_info(user_id,
-                        f"📝 Ордер сохранён в БД: {order_id} | {order_purpose} {side} {quantity} {symbol} @ {price} | ID в БД: {result['id']}",
+                        f"📝 Ордер сохранён в БД: {order_id} | Bot{bot_priority} | {order_purpose} {side} {quantity} {symbol} @ {price} | ID в БД: {result['id']}",
                         module_name='database')
                 return result['id']
             return None

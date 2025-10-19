@@ -1,0 +1,566 @@
+2025-10-19 19:45:22 MSK | INFO     | User:0          | system_config        | Загружены Bybit API ключи: PRIMARY, SECONDARY, TERTIARY
+2025-10-19 19:45:22 MSK | INFO     | User:0          | system_config        | Конфигурация системы успешно загружена и валидирована.
+2025-10-19 19:45:22 MSK | INFO     | User:0          | main                 | === ЗАПУСК FUTURES TRADING BOT v2.2 ===
+2025-10-19 19:45:22 MSK | INFO     | User:0          | database             | Инициализация DatabaseManager...
+2025-10-19 19:45:22 MSK | INFO     | User:0          | database             | Ключ шифрования успешно настроен.
+2025-10-19 19:45:23 MSK | INFO     | User:0          | database             | Пул соединений с PostgreSQL успешно создан (попытка 1).
+2025-10-19 19:45:23 MSK | INFO     | User:0          | database             | Система шифрования настроена
+2025-10-19 19:45:23 MSK | INFO     | User:0          | database             | Все таблицы созданы успешно
+2025-10-19 19:45:23 MSK | INFO     | User:0          | database             | Запуск миграций базы данных...
+2025-10-19 19:45:23 MSK | INFO     | User:0          | database             | PostgreSQL timezone установлен на Europe/Moscow (МСК)
+2025-10-19 19:45:23 MSK | INFO     | User:0          | database             | Миграции базы данных завершены.
+2025-10-19 19:45:24 MSK | INFO     | User:0          | database             | Индексы созданы успешно
+2025-10-19 19:45:24 MSK | INFO     | User:0          | cache.redis_manager  | Redis подключен успешно
+2025-10-19 19:45:24 MSK | INFO     | User:0          | bot                  | Инициализация Telegram бота...
+2025-10-19 19:45:24 MSK | INFO     | User:0          | bot                  | Redis storage настроен
+2025-10-19 19:45:24 MSK | INFO     | User:0          | bot                  | Бот инициализирован: @Futures_Tbot (Futures Trading)
+2025-10-19 19:45:24 MSK | INFO     | User:0          | bot                  | EventBus middleware зарегистрирован.
+2025-10-19 19:45:24 MSK | INFO     | User:0          | bot                  | Middleware настроены
+2025-10-19 19:45:24 MSK | INFO     | User:0          | bot                  | Обработчики команд зарегистрированы
+2025-10-19 19:45:24 MSK | INFO     | User:0          | bot                  | Диспетчер настроен
+2025-10-19 19:45:24 MSK | INFO     | User:0          | bot                  | Настроено 10 команд бота
+2025-10-19 19:45:24 MSK | INFO     | User:0          | bot                  | Telegram бот успешно инициализирован
+2025-10-19 19:45:24 MSK | INFO     | User:0          | __main__             | Сохранение PRIMARY API ключей для администратора 1143354705...
+2025-10-19 19:45:24 MSK | INFO     | User:1143354705 | database             | API ключи для биржи bybit (приоритет 1) сохранены
+2025-10-19 19:45:24 MSK | INFO     | User:0          | __main__             | ✅ PRIMARY API ключи для администратора 1143354705 успешно сохранены.
+2025-10-19 19:45:24 MSK | INFO     | User:0          | __main__             | Сохранение SECONDARY API ключей для администратора 1143354705...
+2025-10-19 19:45:24 MSK | INFO     | User:1143354705 | database             | API ключи для биржи bybit (приоритет 2) сохранены
+2025-10-19 19:45:24 MSK | INFO     | User:0          | __main__             | ✅ SECONDARY API ключи для администратора 1143354705 успешно сохранены.
+2025-10-19 19:45:24 MSK | INFO     | User:0          | __main__             | Сохранение TERTIARY API ключей для администратора 1143354705...
+2025-10-19 19:45:24 MSK | INFO     | User:1143354705 | database             | API ключи для биржи bybit (приоритет 3) сохранены
+2025-10-19 19:45:24 MSK | INFO     | User:0          | __main__             | ✅ TERTIARY API ключи для администратора 1143354705 успешно сохранены.
+2025-10-19 19:45:24 MSK | INFO     | User:0          | __main__             | 🔑 Итого для администратора 1143354705: сохранено 3/3 наборов API ключей
+2025-10-19 19:45:24 MSK | INFO     | User:0          | __main__             | Шаблоны конфигураций по умолчанию сохранены в Redis.
+2025-10-19 19:45:24 MSK | INFO     | User:0          | bot                  | BotApplication установлен для обработчиков
+2025-10-19 19:45:24 MSK | INFO     | User:0          | core.bot_application | Запуск BotApplication...
+2025-10-19 19:45:24 MSK | INFO     | User:0          | EventBus             | Новая подписка: _handle_session_start на user_session_started (User: Global)
+2025-10-19 19:45:24 MSK | INFO     | User:0          | EventBus             | Новая подписка: _handle_session_stop на user_session_stopped (User: Global)
+2025-10-19 19:45:24 MSK | INFO     | User:0          | EventBus             | Новая подписка: _handle_settings_changed на user_settings_changed (User: Global)
+2025-10-19 19:45:24 MSK | INFO     | User:0          | EventBus             | Новая подписка: _handle_risk_limit на risk_limit_exceeded (User: Global)
+2025-10-19 19:45:24 MSK | INFO     | User:0          | EventBus             | Новая подписка: _handle_session_start_request на user_session_start_requested (User: Global)
+2025-10-19 19:45:24 MSK | INFO     | User:0          | EventBus             | Новая подписка: _handle_session_stop_request на user_session_stop_requested (User: Global)
+2025-10-19 19:45:24 MSK | INFO     | User:0          | websocket.websocket_manager | WebSocket Manager использует Public URL: wss://stream.bybit.com/v5/public/linear
+2025-10-19 19:45:24 MSK | INFO     | User:0          | websocket.websocket_manager | WebSocket Manager использует Private URL Template: wss://stream-demo.bybit.com/v5/private
+2025-10-19 19:45:24 MSK | INFO     | User:0          | websocket.websocket_manager | Запуск GlobalWebSocketManager...
+2025-10-19 19:45:24 MSK | INFO     | User:0          | websocket.websocket_manager | GlobalWebSocketManager запущен
+2025-10-19 19:45:24 MSK | INFO     | User:0          | core.bot_application | Глобальные компоненты инициализированы
+2025-10-19 19:45:24 MSK | INFO     | User:0          | websocket.websocket_manager | Подключение к публичному WebSocket: wss://stream.bybit.com/v5/public/linear
+2025-10-19 19:45:24 MSK | INFO     | User:1143354705 | core.bot_application | Автотрейдинг для пользователя не включен, сессия не будет восстановлена.
+2025-10-19 19:45:24 MSK | INFO     | User:5822609636 | core.bot_application | Автотрейдинг для пользователя не включен, сессия не будет восстановлена.
+2025-10-19 19:45:24 MSK | INFO     | User:0          | core.bot_application | Восстановлено 0 пользовательских сессий
+2025-10-19 19:45:24 MSK | INFO     | User:0          | core.bot_application | Фоновая задача очистки блокировок ConcurrencyManager запущена
+2025-10-19 19:45:24 MSK | INFO     | User:0          | core.bot_application | BotApplication запущен. Активных сессий: 0
+2025-10-19 19:45:24 MSK | INFO     | User:0          | main                 | === БОТ УСПЕШНО ЗАПУЩЕН И ГОТОВ К РАБОТЕ ===
+2025-10-19 19:45:24 MSK | INFO     | User:0          | bot                  | Запуск бота в режиме polling...
+2025-10-19 19:45:24 MSK | INFO     | User:0          | bot                  | Очистка старых webhook и pending updates...
+2025-10-19 19:45:24 MSK | INFO     | User:0          | bot                  | Webhook удален и pending updates очищены
+2025-10-19 19:45:25 MSK | INFO     | User:0          | websocket.websocket_manager | Подключен к публичному WebSocket
+2025-10-19 19:45:25 MSK | INFO     | User:0          | bot                  | Запуск polling с защитой от старых команд...
+2025-10-19 19:45:45 MSK | INFO     | User:1143354705 | bot                  | Получено сообщение: /autotrade_stop...
+2025-10-19 19:45:45 MSK | INFO     | User:1143354705 | basic_handlers       | Команда 'autotrade_stop' выполнена
+2025-10-19 19:45:45 MSK | INFO     | User:1143354705 | database             | Загружено 3 API ключей для bybit
+2025-10-19 19:45:45 MSK | INFO     | User:1143354705 | autotrade_stop       | Остановка торговли в multi-account режиме (3 аккаунта)
+2025-10-19 19:45:45 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI инициализирован с ключом: odhv...MiD7
+2025-10-19 19:45:45 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI использует базовый URL: https://api-demo.bybit.com
+2025-10-19 19:45:46 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI инициализирован с ключом: p99i...PbKm
+2025-10-19 19:45:46 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI использует базовый URL: https://api-demo.bybit.com
+2025-10-19 19:45:46 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI инициализирован с ключом: rsHW...H7TL
+2025-10-19 19:45:46 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI использует базовый URL: https://api-demo.bybit.com
+2025-10-19 19:45:46 MSK | INFO     | User:1143354705 | core.bot_application | Получен запрос на остановку авто-торговли (причина: manual_stop_command)...
+2025-10-19 19:45:46 MSK | INFO     | User:1143354705 | cache.redis_manager  | Пользовательская сессия создана
+2025-10-19 19:45:46 MSK | INFO     | User:1143354705 | core.bot_application | Статус авто-торговли установлен в 'inactive' в Redis.
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | bot                  | Получено сообщение: /autotrade_start...
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | basic_handlers       | Команда 'autotrade_start' выполнена
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | database             | Загружено 3 API ключей для bybit
+2025-10-19 19:45:59 MSK | WARNING  | User:1143354705 | basic_handlers       | ⚠️ Обнаружены stale данные в Redis при запуске: running=True. Очищаю...
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | cache.redis_manager  | Пользовательская сессия удалена
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | basic_handlers       | 🔍 ДИАГНОСТИКА: basic_handler.event_bus = <core.events.EventBus object at 0x7fc856c59900>
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | basic_handlers       | 🔍 ДИАГНОСТИКА: event_bus.is_running = True
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | basic_handlers       | 📤 Публикую UserSessionStartRequestedEvent в EventBus...
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | basic_handlers       | 📤 Событие создано: UserSessionStartRequestedEvent(user_id=1143354705, timestamp=datetime.datetime(2025, 10, 19, 19, 45, 59, 736241), event_type=<EventType.USER_SESSION_START_REQUESTED: 'user_session_start_requested'>)
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | basic_handlers       | ✅ Событие UserSessionStartRequestedEvent успешно опубликовано
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.bot_application | 🎯 [SESSION_START_HANDLER] Получен запрос на запуск авто-торговли...
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.bot_application | 🎯 [SESSION_START_HANDLER] Событие: UserSessionStartRequestedEvent(user_id=1143354705, timestamp=datetime.datetime(2025, 10, 19, 19, 45, 59, 736241), event_type=<EventType.USER_SESSION_START_REQUESTED: 'user_session_start_requested'>)
+2025-10-19 19:45:59 MSK | WARNING  | User:1143354705 | core.bot_application | Активная сессия не найдена, создается новая для старта торговли.
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | Запуск пользовательской сессии...
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | database             | Загружено 3 API ключей для bybit
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | 🔀 Обнаружено 3 API ключа - активирую Multi-Account Coordinator режим
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI инициализирован с ключом: odhv...MiD7
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI использует базовый URL: https://api-demo.bybit.com
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | ✅ API клиент #1 инициализирован | Ключ: odhv...MiD7
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI инициализирован с ключом: p99i...PbKm
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI использует базовый URL: https://api-demo.bybit.com
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | ✅ API клиент #2 инициализирован | Ключ: p99i...PbKm
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI инициализирован с ключом: rsHW...H7TL
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI использует базовый URL: https://api-demo.bybit.com
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | ✅ API клиент #3 инициализирован | Ключ: rsHW...H7TL
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | 📌 PRIMARY API клиент установлен для компонентов
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | market_analyzer      | MarketAnalyzer инициализирован для пользователя 1143354705
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | Компоненты сессии инициализированы
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на signal (User: 1143354705)
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на risk_limit_exceeded (User: 1143354705)
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на user_settings_changed (User: 1143354705)
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на strategy_restart_requested (User: 1143354705)
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на order_filled (User: 1143354705)
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на price_update (User: 1143354705)
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на position_update (User: 1143354705)
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на order_update (User: 1143354705)
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | Успешная подписка на пользовательские события.
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Запуск DataFeedHandler...
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | websocket.websocket_manager | API ключи загружены
+2025-10-19 19:45:59 MSK | INFO     | User:0          | websocket.websocket_manager | ⚡ МГНОВЕННАЯ подписка на SOLUSDT (publicTrade + kline.5 + kline.1) отправлена
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подписка на SOLUSDT
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подписка на watchlist: ['SOLUSDT']
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _handle_position_activity на position_update (User: 1143354705)
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | websocket.websocket_manager | DataFeedHandler запущен
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | analysis.meta_strategist | Запуск MetaStrategist...
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _handle_settings_changed на user_settings_changed (User: 1143354705)
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | analysis.meta_strategist | MetaStrategist запущен
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | Компоненты сессии запущены
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | Проверка и запуск постоянных стратегий...
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключение к приватному WebSocket: wss://stream-demo.bybit.com/v5/private
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | Запуск Signal Scalper для символов из watchlist: ['SOLUSDT']
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | 🔍 Проверка слотов для signal_scalper_SOLUSDT: найдено 0 стратегий того же типа
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | ✅ Есть свободный слот: 0/5
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | ✅ Есть свободный слот для signal_scalper_SOLUSDT
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | 🔀 Запуск Multi-Account Coordinator для SOLUSDT
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | strategies.base_strategy | Инициализирована стратегия signal_scalper для SOLUSDT (ID: 1143354705_SOLUSDT_bot1_20251019_194559)
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | ✅ Стратегия для Бота 1 (SOLUSDT) создана
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | strategies.base_strategy | Инициализирована стратегия signal_scalper для SOLUSDT (ID: 1143354705_SOLUSDT_bot2_20251019_194559)
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | ✅ Стратегия для Бота 2 (SOLUSDT) создана
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | strategies.base_strategy | Инициализирована стратегия signal_scalper для SOLUSDT (ID: 1143354705_SOLUSDT_bot3_20251019_194559)
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | ✅ Стратегия для Бота 3 (SOLUSDT) создана
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | Coordinator          | 🔀 MultiAccountCoordinator создан для SOLUSDT: 3 бота готовы
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | Coordinator          | 🟢 Запуск Coordinator для SOLUSDT
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | Coordinator          | 🟢 АКТИВАЦИЯ БОТА 1 для SOLUSDT
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | strategies.base_strategy | Запуск стратегии signal_scalper...
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | strategies.base_strategy | Конфигурация стратегии signal_scalper загружена
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | SpikeDetector        | 📡 SpikeDetector инициализирован для SOLUSDT: порог=0.10%, lookback=50
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | SignalScalper        | 📡 SpikeDetector инициализирован для SOLUSDT (анализ: 3m/5m/10m)
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | strategies.base_strategy | Стратегия signal_scalper успешно запущена для SOLUSDT
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _handle_new_candle на new_candle (User: 1143354705)
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | Coordinator          | 👁️ Запущен мониторинг для SOLUSDT
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | cache.redis_manager  | Пользовательская сессия создана
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | 🔀 Multi-Account Coordinator для SOLUSDT запущен успешно
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | Стратегия Flash Drop Catcher отключена в настройках.
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | cache.redis_manager  | Пользовательская сессия создана
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.user_session    | Пользовательская сессия запущена
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.bot_application | Пользовательская сессия создана
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | cache.redis_manager  | Пользовательская сессия создана
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.bot_application | Статус авто-торговли установлен в 'active' в Redis.
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.bot_application | 🚀 Запуск стратегий для 1 символов из watchlist: ['SOLUSDT']
+2025-10-19 19:45:59 MSK | WARNING  | User:1143354705 | core.user_session    | Стратегия signal_scalper_SOLUSDT уже запущена
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.bot_application | ✅ Стратегия для SOLUSDT успешно запущена
+2025-10-19 19:45:59 MSK | INFO     | User:1143354705 | core.bot_application | Получено событие запуска сессии
+2025-10-19 19:46:00 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Аутентификация отправлена
+2025-10-19 19:46:00 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подписка на приватные каналы отправлена
+2025-10-19 19:46:00 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключен к приватному WebSocket
+2025-10-19 19:46:05 MSK | INFO     | User:1143354705 | bot                  | Получено сообщение: /autotrade_status...
+2025-10-19 19:46:05 MSK | INFO     | User:1143354705 | basic_handlers       | Команда 'autotrade_status' выполнена
+2025-10-19 19:46:05 MSK | INFO     | User:1143354705 | database             | Загружено 3 API ключей для bybit
+2025-10-19 19:46:05 MSK | INFO     | User:1143354705 | autotrade_status     | Получение позиций в autotrade_status (multi-account режим)
+2025-10-19 19:46:05 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI инициализирован с ключом: odhv...MiD7
+2025-10-19 19:46:05 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI использует базовый URL: https://api-demo.bybit.com
+2025-10-19 19:46:05 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI инициализирован с ключом: p99i...PbKm
+2025-10-19 19:46:05 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI использует базовый URL: https://api-demo.bybit.com
+2025-10-19 19:46:05 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI инициализирован с ключом: rsHW...H7TL
+2025-10-19 19:46:05 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI использует базовый URL: https://api-demo.bybit.com
+2025-10-19 19:50:00 MSK | INFO     | User:1143354705 | SignalScalper        | Анализ для SOLUSDT: Сигнал=LONG, Цена=191.2000, Индикаторы={'ema_short': 190.61734825564466, 'ema_long': 190.04279382854895, 'rsi': 61.01527613818926, 'rsi_neutral': True}
+2025-10-19 19:50:00 MSK | INFO     | User:1143354705 | SignalScalper        | Сигнал LONG подтвержден! (1/1)
+2025-10-19 19:50:00 MSK | INFO     | User:1143354705 | SpikeDetector        | ⏸️ SpikeDetector (SOLUSDT): Недостаточно данных (1/6 всплесков), накапливаю историю...
+2025-10-19 19:50:00 MSK | INFO     | User:1143354705 | SignalScalper        | ⏸️ Spike Detector (5 свечей, 1/1 всплесков за 10мин): ⏸️ Недостаточно данных для анализа (1/6 всплесков)
+2025-10-19 19:55:00 MSK | INFO     | User:1143354705 | SignalScalper        | Анализ для SOLUSDT: Сигнал=LONG, Цена=190.9700, Индикаторы={'ema_short': 190.63034537749652, 'ema_long': 190.075866436719, 'rsi': 57.237503782889206, 'rsi_neutral': True}
+2025-10-19 19:55:00 MSK | INFO     | User:1143354705 | SignalScalper        | Сигнал LONG подтвержден! (2/1)
+2025-10-19 19:55:00 MSK | INFO     | User:1143354705 | SpikeDetector        | ⏸️ SpikeDetector (SOLUSDT): Недостаточно данных (1/6 всплесков), накапливаю историю...
+2025-10-19 19:55:00 MSK | INFO     | User:1143354705 | SignalScalper        | ⏸️ Spike Detector (10 свечей, 1/1 всплесков за 10мин): ⏸️ Недостаточно данных для анализа (1/6 всплесков)
+2025-10-19 19:57:38 MSK | INFO     | User:1143354705 | websocket.websocket_manager | WebSocket переподключение: no close frame received or sent
+2025-10-19 19:57:43 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключение к приватному WebSocket: wss://stream-demo.bybit.com/v5/private
+2025-10-19 19:57:43 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Аутентификация отправлена
+2025-10-19 19:57:43 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подписка на приватные каналы отправлена
+2025-10-19 19:57:43 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключен к приватному WebSocket
+2025-10-19 20:00:00 MSK | INFO     | User:1143354705 | SignalScalper        | Анализ для SOLUSDT: Сигнал=LONG, Цена=190.7800, Индикаторы={'ema_short': 190.62736134745234, 'ema_long': 190.101544279682, 'rsi': 53.95145346674993, 'rsi_neutral': True}
+2025-10-19 20:00:00 MSK | INFO     | User:1143354705 | SignalScalper        | Сигнал LONG подтвержден! (3/1)
+2025-10-19 20:00:00 MSK | INFO     | User:1143354705 | SpikeDetector        | ⏸️ SpikeDetector (SOLUSDT): Недостаточно данных (1/6 всплесков), накапливаю историю...
+2025-10-19 20:00:00 MSK | INFO     | User:1143354705 | SignalScalper        | ⏸️ Spike Detector (15 свечей, 1/1 всплесков за 10мин): ⏸️ Недостаточно данных для анализа (1/6 всплесков)
+2025-10-19 20:05:00 MSK | INFO     | User:1143354705 | SignalScalper        | Анализ для SOLUSDT: Сигнал=LONG, Цена=191.3200, Индикаторы={'ema_short': 190.73410095241326, 'ema_long': 190.17572625987523, 'rsi': 60.7951511563094, 'rsi_neutral': True}
+2025-10-19 20:05:00 MSK | INFO     | User:1143354705 | SignalScalper        | Сигнал LONG подтвержден! (4/1)
+2025-10-19 20:05:00 MSK | INFO     | User:1143354705 | SpikeDetector        | ⏸️ SpikeDetector (SOLUSDT): Недостаточно данных (2/6 всплесков), накапливаю историю...
+2025-10-19 20:05:00 MSK | INFO     | User:1143354705 | SignalScalper        | ⏸️ Spike Detector (20 свечей, 2/2 всплесков за 10мин): ⏸️ Недостаточно данных для анализа (2/6 всплесков)
+2025-10-19 20:09:38 MSK | INFO     | User:1143354705 | websocket.websocket_manager | WebSocket переподключение: no close frame received or sent
+2025-10-19 20:09:43 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключение к приватному WebSocket: wss://stream-demo.bybit.com/v5/private
+2025-10-19 20:09:44 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Аутентификация отправлена
+2025-10-19 20:09:44 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подписка на приватные каналы отправлена
+2025-10-19 20:09:44 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключен к приватному WebSocket
+2025-10-19 20:10:00 MSK | INFO     | User:1143354705 | SignalScalper        | Анализ для SOLUSDT: Сигнал=LONG, Цена=191.7700, Индикаторы={'ema_short': 190.8654286426011, 'ema_long': 190.2602842902823, 'rsi': 65.41889800886578, 'rsi_neutral': True}
+2025-10-19 20:10:00 MSK | INFO     | User:1143354705 | SignalScalper        | Сигнал LONG подтвержден! (5/1)
+2025-10-19 20:10:00 MSK | INFO     | User:1143354705 | SpikeDetector        | ⏸️ SpikeDetector (SOLUSDT): Недостаточно данных (4/6 всплесков), накапливаю историю...
+2025-10-19 20:10:00 MSK | INFO     | User:1143354705 | SignalScalper        | ⏸️ Spike Detector (25 свечей, 4/4 всплесков за 10мин): ⏸️ Недостаточно данных для анализа (4/6 всплесков)
+2025-10-19 20:15:00 MSK | INFO     | User:1143354705 | SignalScalper        | Анализ для SOLUSDT: Сигнал=LONG, Цена=191.8700, Индикаторы={'ema_short': 190.96500150140386, 'ema_long': 190.33483876524622, 'rsi': 66.38981395129088, 'rsi_neutral': True}
+2025-10-19 20:15:00 MSK | INFO     | User:1143354705 | SignalScalper        | Сигнал LONG подтвержден! (6/1)
+2025-10-19 20:15:00 MSK | INFO     | User:1143354705 | SpikeDetector        | ⏸️ SpikeDetector (SOLUSDT): Недостаточно данных (4/6 всплесков), накапливаю историю...
+2025-10-19 20:15:00 MSK | INFO     | User:1143354705 | SignalScalper        | ⏸️ Spike Detector (30 свечей, 4/4 всплесков за 10мин): ⏸️ Недостаточно данных для анализа (4/6 всплесков)
+2025-10-19 20:20:00 MSK | INFO     | User:1143354705 | SignalScalper        | Анализ для SOLUSDT: Сигнал=LONG, Цена=191.5400, Индикаторы={'ema_short': 190.99167562141724, 'ema_long': 190.38028450452097, 'rsi': 60.47934579069906, 'rsi_neutral': True}
+2025-10-19 20:20:00 MSK | INFO     | User:1143354705 | SignalScalper        | Сигнал LONG подтвержден! (7/1)
+2025-10-19 20:20:00 MSK | INFO     | User:1143354705 | SpikeDetector        | 📊 Spike Detector (7 свечей, 7 всплесков за 10мин): ⬆️4 (57%) vs ⬇️3 (43%), импульс 3m/5m/10m = NEUTRAL/NEUTRAL/NEUTRAL
+2025-10-19 20:20:00 MSK | INFO     | User:1143354705 | SignalScalper        | ✅ Spike Detector (35 свечей, 7/7 всплесков за 10мин): ✅ LONG без сильных противоречий (импульс: NEUTRAL)
+2025-10-19 20:20:00 MSK | INFO     | User:1143354705 | strategies.base_strategy | Принудительная перезагрузка конфигурации для стратегии signal_scalper
+2025-10-19 20:20:00 MSK | INFO     | User:1143354705 | strategies.base_strategy | Конфигурация стратегии signal_scalper загружена
+2025-10-19 20:20:00 MSK | INFO     | User:1143354705 | SpikeDetector        | 📡 SpikeDetector инициализирован для SOLUSDT: порог=0.10%, lookback=50
+2025-10-19 20:20:00 MSK | INFO     | User:1143354705 | SignalScalper        | 📡 SpikeDetector инициализирован для SOLUSDT (анализ: 3m/5m/10m)
+2025-10-19 20:20:00 MSK | INFO     | User:1143354705 | SignalScalper        | 🔧 Параметры усреднения обновлены: триггер=15.0%, SL=45.0%, множитель=1.0, лимит=1
+2025-10-19 20:20:00 MSK | INFO     | User:1143354705 | SignalScalper        | Конфигурация заморожена для сделки по SOLUSDT: order_amount=1000.0, leverage=2
+2025-10-19 20:20:00 MSK | INFO     | User:1143354705 | bybit_api            | Плечо успешно установлено 2x для SOLUSDT
+2025-10-19 20:20:00 MSK | INFO     | User:1143354705 | strategies.base_strategy | Плечо для SOLUSDT установлено: 2x
+2025-10-19 20:20:00 MSK | INFO     | User:1143354705 | bybit_api            | --- [QTY CALC START] ---
+2025-10-19 20:20:00 MSK | INFO     | User:1143354705 | bybit_api            | [QTY_CALC] Расчет для SOLUSDT | Сумма: 1000.0 USDT | Плечо: 2x
+2025-10-19 20:20:00 MSK | INFO     | User:1143354705 | bybit_api            | [QTY_CALC] Цена для расчета: 191.54
+2025-10-19 20:20:00 MSK | INFO     | User:1143354705 | bybit_api            | [QTY_CALC] Номинальная стоимость: 2000.0000 USDT | Сырое кол-во: 10.44168319933173227524276913
+2025-10-19 20:20:00 MSK | INFO     | User:1143354705 | bybit_api            | Кэш инструментов пуст или устарел. Запрашиваю ПОЛНЫЙ список с пагинацией...
+2025-10-19 20:20:01 MSK | INFO     | User:1143354705 | bybit_api            | Кэш инструментов обновлен. Загружено 652 символов.
+2025-10-19 20:20:01 MSK | INFO     | User:1143354705 | bybit_api            | [QTY_CALC] Правила инструмента: qtyStep=0.1, minOrderQty=0.1
+2025-10-19 20:20:01 MSK | INFO     | User:1143354705 | bybit_api            | [QTY_CALC] Кол-во после округления до шага: 10.4
+2025-10-19 20:20:01 MSK | INFO     | User:1143354705 | bybit_api            | --- [QTY CALC END] Финальное кол-во (Decimal): 10.4 ---
+2025-10-19 20:20:01 MSK | INFO     | User:1143354705 | strategies.base_strategy | [Bot #1] Размещение ордера Buy 10.4 SOLUSDT | API: odhv...MiD7
+2025-10-19 20:20:01 MSK | INFO     | User:1143354705 | bybit_api            | Ордер успешно размещен: Buy 10.4 SOLUSDT по рынку (ID: eb1b727e-36a2-48e9-9cdb-3880a0485195)
+2025-10-19 20:20:01 MSK | INFO     | User:1143354705 | database             | 📝 Ордер сохранён в БД: eb1b727e-36a2-48e9-9cdb-3880a0485195 | OPEN Buy 10.4 SOLUSDT @ 0 | ID в БД: 25
+2025-10-19 20:20:01 MSK | INFO     | User:1143354705 | strategies.base_strategy | Ордер eb1b727e-36a2-48e9-9cdb-3880a0485195 (Buy 10.4 SOLUSDT) отправлен на биржу.
+2025-10-19 20:20:01 MSK | INFO     | User:1143354705 | strategies.base_strategy | Ожидание исполнения ордера eb1b727e-36a2-48e9-9cdb-3880a0485195 через API-polling (до 22 сек)...
+2025-10-19 20:20:01 MSK | INFO     | User:1143354705 | DataFeedHandler      | ✅ WebSocket: Ордер eb1b727e-36a2-48e9-9cdb-3880a0485195 найден в БД - обрабатываю (статус: Filled)
+2025-10-19 20:20:01 MSK | INFO     | User:1143354705 | DataFeedHandler      | WebSocket: Ордер eb1b727e-36a2-48e9-9cdb-3880a0485195 исполнен. Создаю OrderFilledEvent.
+2025-10-19 20:20:03 MSK | INFO     | User:1143354705 | api.bybit_api        | Статус для ордера eb1b727e-36a2-48e9-9cdb-3880a0485195 пока не найден в истории. Ответ API: {'retCode': 0, 'retMsg': 'OK', 'result': {'nextPageCursor': '', 'category': 'linear', 'list': []}, 'retExtInfo': {}, 'time': 1760894403296}
+2025-10-19 20:20:05 MSK | INFO     | User:1143354705 | api.bybit_api        | Статус для ордера eb1b727e-36a2-48e9-9cdb-3880a0485195 пока не найден в истории. Ответ API: {'retCode': 0, 'retMsg': 'OK', 'result': {'nextPageCursor': '', 'category': 'linear', 'list': []}, 'retExtInfo': {}, 'time': 1760894405001}
+2025-10-19 20:20:06 MSK | INFO     | User:1143354705 | strategies.base_strategy | ПОДТВЕРЖДЕН API: Ордер eb1b727e-36a2-48e9-9cdb-3880a0485195 исполнен.
+2025-10-19 20:32:56 MSK | INFO     | User:1143354705 | websocket.websocket_manager | WebSocket переподключение: no close frame received or sent
+2025-10-19 20:33:01 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключение к приватному WebSocket: wss://stream-demo.bybit.com/v5/private
+2025-10-19 20:33:01 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Аутентификация отправлена
+2025-10-19 20:33:01 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подписка на приватные каналы отправлена
+2025-10-19 20:33:01 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключен к приватному WebSocket
+2025-10-19 20:44:36 MSK | INFO     | User:0          | main                 | === НАЧАЛО ПРОЦЕДУРЫ ЗАВЕРШЕНИЯ РАБОТЫ ===
+2025-10-19 20:44:36 MSK | INFO     | User:0          | core.bot_application | Остановка BotApplication...
+2025-10-19 20:44:36 MSK | INFO     | User:0          | core.bot_application | Мониторинг остановлен
+2025-10-19 20:45:38 MSK | INFO     | User:1143354705 | websocket.websocket_manager | WebSocket переподключение: no close frame received or sent
+2025-10-19 20:45:43 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключение к приватному WebSocket: wss://stream-demo.bybit.com/v5/private
+2025-10-19 20:45:44 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Аутентификация отправлена
+2025-10-19 20:45:44 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подписка на приватные каналы отправлена
+2025-10-19 20:45:44 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключен к приватному WebSocket
+2025-10-19 20:46:07 MSK | INFO     | User:0          | system_config        | Загружены Bybit API ключи: PRIMARY, SECONDARY, TERTIARY
+2025-10-19 20:46:07 MSK | INFO     | User:0          | system_config        | Конфигурация системы успешно загружена и валидирована.
+2025-10-19 20:46:08 MSK | INFO     | User:0          | main                 | === ЗАПУСК FUTURES TRADING BOT v2.2 ===
+2025-10-19 20:46:08 MSK | INFO     | User:0          | database             | Инициализация DatabaseManager...
+2025-10-19 20:46:08 MSK | INFO     | User:0          | database             | Ключ шифрования успешно настроен.
+2025-10-19 20:46:08 MSK | INFO     | User:0          | database             | Пул соединений с PostgreSQL успешно создан (попытка 1).
+2025-10-19 20:46:08 MSK | INFO     | User:0          | database             | Система шифрования настроена
+2025-10-19 20:46:08 MSK | INFO     | User:0          | database             | Все таблицы созданы успешно
+2025-10-19 20:46:08 MSK | INFO     | User:0          | database             | Запуск миграций базы данных...
+2025-10-19 20:46:08 MSK | INFO     | User:0          | database             | PostgreSQL timezone установлен на Europe/Moscow (МСК)
+2025-10-19 20:46:09 MSK | INFO     | User:0          | database             | Миграции базы данных завершены.
+2025-10-19 20:46:09 MSK | INFO     | User:0          | database             | Индексы созданы успешно
+2025-10-19 20:46:09 MSK | INFO     | User:0          | cache.redis_manager  | Redis подключен успешно
+2025-10-19 20:46:09 MSK | INFO     | User:0          | bot                  | Инициализация Telegram бота...
+2025-10-19 20:46:09 MSK | INFO     | User:0          | bot                  | Redis storage настроен
+2025-10-19 20:46:09 MSK | INFO     | User:0          | bot                  | Бот инициализирован: @Futures_Tbot (Futures Trading)
+2025-10-19 20:46:09 MSK | INFO     | User:0          | bot                  | EventBus middleware зарегистрирован.
+2025-10-19 20:46:09 MSK | INFO     | User:0          | bot                  | Middleware настроены
+2025-10-19 20:46:09 MSK | INFO     | User:0          | bot                  | Обработчики команд зарегистрированы
+2025-10-19 20:46:09 MSK | INFO     | User:0          | bot                  | Диспетчер настроен
+2025-10-19 20:46:09 MSK | INFO     | User:0          | bot                  | Настроено 10 команд бота
+2025-10-19 20:46:09 MSK | INFO     | User:0          | bot                  | Telegram бот успешно инициализирован
+2025-10-19 20:46:09 MSK | INFO     | User:0          | __main__             | Сохранение PRIMARY API ключей для администратора 1143354705...
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | database             | API ключи для биржи bybit (приоритет 1) сохранены
+2025-10-19 20:46:09 MSK | INFO     | User:0          | __main__             | ✅ PRIMARY API ключи для администратора 1143354705 успешно сохранены.
+2025-10-19 20:46:09 MSK | INFO     | User:0          | __main__             | Сохранение SECONDARY API ключей для администратора 1143354705...
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | database             | API ключи для биржи bybit (приоритет 2) сохранены
+2025-10-19 20:46:09 MSK | INFO     | User:0          | __main__             | ✅ SECONDARY API ключи для администратора 1143354705 успешно сохранены.
+2025-10-19 20:46:09 MSK | INFO     | User:0          | __main__             | Сохранение TERTIARY API ключей для администратора 1143354705...
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | database             | API ключи для биржи bybit (приоритет 3) сохранены
+2025-10-19 20:46:09 MSK | INFO     | User:0          | __main__             | ✅ TERTIARY API ключи для администратора 1143354705 успешно сохранены.
+2025-10-19 20:46:09 MSK | INFO     | User:0          | __main__             | 🔑 Итого для администратора 1143354705: сохранено 3/3 наборов API ключей
+2025-10-19 20:46:09 MSK | INFO     | User:0          | __main__             | Шаблоны конфигураций по умолчанию сохранены в Redis.
+2025-10-19 20:46:09 MSK | INFO     | User:0          | bot                  | BotApplication установлен для обработчиков
+2025-10-19 20:46:09 MSK | INFO     | User:0          | core.bot_application | Запуск BotApplication...
+2025-10-19 20:46:09 MSK | INFO     | User:0          | EventBus             | Новая подписка: _handle_session_start на user_session_started (User: Global)
+2025-10-19 20:46:09 MSK | INFO     | User:0          | EventBus             | Новая подписка: _handle_session_stop на user_session_stopped (User: Global)
+2025-10-19 20:46:09 MSK | INFO     | User:0          | EventBus             | Новая подписка: _handle_settings_changed на user_settings_changed (User: Global)
+2025-10-19 20:46:09 MSK | INFO     | User:0          | EventBus             | Новая подписка: _handle_risk_limit на risk_limit_exceeded (User: Global)
+2025-10-19 20:46:09 MSK | INFO     | User:0          | EventBus             | Новая подписка: _handle_session_start_request на user_session_start_requested (User: Global)
+2025-10-19 20:46:09 MSK | INFO     | User:0          | EventBus             | Новая подписка: _handle_session_stop_request на user_session_stop_requested (User: Global)
+2025-10-19 20:46:09 MSK | INFO     | User:0          | websocket.websocket_manager | WebSocket Manager использует Public URL: wss://stream.bybit.com/v5/public/linear
+2025-10-19 20:46:09 MSK | INFO     | User:0          | websocket.websocket_manager | WebSocket Manager использует Private URL Template: wss://stream-demo.bybit.com/v5/private
+2025-10-19 20:46:09 MSK | INFO     | User:0          | websocket.websocket_manager | Запуск GlobalWebSocketManager...
+2025-10-19 20:46:09 MSK | INFO     | User:0          | websocket.websocket_manager | GlobalWebSocketManager запущен
+2025-10-19 20:46:09 MSK | INFO     | User:0          | core.bot_application | Глобальные компоненты инициализированы
+2025-10-19 20:46:09 MSK | INFO     | User:0          | websocket.websocket_manager | Подключение к публичному WebSocket: wss://stream.bybit.com/v5/public/linear
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | Запуск пользовательской сессии...
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | database             | Загружено 3 API ключей для bybit
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | 🔀 Обнаружено 3 API ключа - активирую Multi-Account Coordinator режим
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI инициализирован с ключом: odhv...MiD7
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI использует базовый URL: https://api-demo.bybit.com
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | ✅ API клиент #1 инициализирован | Ключ: odhv...MiD7
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI инициализирован с ключом: p99i...PbKm
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI использует базовый URL: https://api-demo.bybit.com
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | ✅ API клиент #2 инициализирован | Ключ: p99i...PbKm
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI инициализирован с ключом: rsHW...H7TL
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI использует базовый URL: https://api-demo.bybit.com
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | ✅ API клиент #3 инициализирован | Ключ: rsHW...H7TL
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | 📌 PRIMARY API клиент установлен для компонентов
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | market_analyzer      | MarketAnalyzer инициализирован для пользователя 1143354705
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | Компоненты сессии инициализированы
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на signal (User: 1143354705)
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на risk_limit_exceeded (User: 1143354705)
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на user_settings_changed (User: 1143354705)
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на strategy_restart_requested (User: 1143354705)
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на order_filled (User: 1143354705)
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на price_update (User: 1143354705)
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на position_update (User: 1143354705)
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на order_update (User: 1143354705)
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | Успешная подписка на пользовательские события.
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Запуск DataFeedHandler...
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | websocket.websocket_manager | API ключи загружены
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подписка на SOLUSDT
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подписка на watchlist: ['SOLUSDT']
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _handle_position_activity на position_update (User: 1143354705)
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | websocket.websocket_manager | DataFeedHandler запущен
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | analysis.meta_strategist | Запуск MetaStrategist...
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _handle_settings_changed на user_settings_changed (User: 1143354705)
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | analysis.meta_strategist | MetaStrategist запущен
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | Компоненты сессии запущены
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | Проверка и запуск постоянных стратегий...
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключение к приватному WebSocket: wss://stream-demo.bybit.com/v5/private
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | Запуск Signal Scalper для символов из watchlist: ['SOLUSDT']
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | 🔍 Проверка слотов для signal_scalper_SOLUSDT: найдено 0 стратегий того же типа
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | ✅ Есть свободный слот: 0/5
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | ✅ Есть свободный слот для signal_scalper_SOLUSDT
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | 🔀 Запуск Multi-Account Coordinator для SOLUSDT
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | strategies.base_strategy | Инициализирована стратегия signal_scalper для SOLUSDT (ID: 1143354705_SOLUSDT_bot1_20251019_204609)
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | ✅ Стратегия для Бота 1 (SOLUSDT) создана
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | strategies.base_strategy | Инициализирована стратегия signal_scalper для SOLUSDT (ID: 1143354705_SOLUSDT_bot2_20251019_204609)
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | ✅ Стратегия для Бота 2 (SOLUSDT) создана
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | strategies.base_strategy | Инициализирована стратегия signal_scalper для SOLUSDT (ID: 1143354705_SOLUSDT_bot3_20251019_204609)
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | ✅ Стратегия для Бота 3 (SOLUSDT) создана
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | Coordinator          | 🔀 MultiAccountCoordinator создан для SOLUSDT: 3 бота готовы
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | Coordinator          | 🟢 Запуск Coordinator для SOLUSDT
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | Coordinator          | 🟢 АКТИВАЦИЯ БОТА 1 для SOLUSDT
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | strategies.base_strategy | Запуск стратегии signal_scalper...
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | strategies.base_strategy | Конфигурация стратегии signal_scalper загружена
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | SpikeDetector        | 📡 SpikeDetector инициализирован для SOLUSDT: порог=0.10%, lookback=50
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | SignalScalper        | 📡 SpikeDetector инициализирован для SOLUSDT (анализ: 3m/5m/10m)
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | strategies.base_strategy | Стратегия signal_scalper успешно запущена для SOLUSDT
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _handle_new_candle на new_candle (User: 1143354705)
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | Coordinator          | 👁️ Запущен мониторинг для SOLUSDT
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | cache.redis_manager  | Пользовательская сессия создана
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | 🔀 Multi-Account Coordinator для SOLUSDT запущен успешно
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | Стратегия Flash Drop Catcher отключена в настройках.
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | cache.redis_manager  | Пользовательская сессия создана
+2025-10-19 20:46:09 MSK | INFO     | User:1143354705 | core.user_session    | Пользовательская сессия запущена
+2025-10-19 20:46:10 MSK | INFO     | User:1143354705 | core.bot_application | Сессия восстановлена, так как автотрейдинг был активен.
+2025-10-19 20:46:10 MSK | INFO     | User:1143354705 | BotApplication       | 🎯 Найдено 1 активных ордеров бота в БД
+2025-10-19 20:46:10 MSK | INFO     | User:1143354705 | BotApplication       | 📊 Активные ордера по символам: ['SOLUSDT']
+2025-10-19 20:46:10 MSK | INFO     | User:1143354705 | BotApplication       | Статус: autotrade=❌, active_orders=✅, итог=✅ ВОССТАНАВЛИВАЕМ
+2025-10-19 20:46:10 MSK | INFO     | User:1143354705 | BaseStrategy         | Найдено сохранённое состояние стратегии SOLUSDT от 2025-10-19 20:46:09.991991 (простой: 0 сек.)
+2025-10-19 20:46:10 MSK | INFO     | User:1143354705 | BotApplication       | 🔄 Найдено сохранённое состояние signal_scalper для SOLUSDT
+2025-10-19 20:46:10 MSK | WARNING  | User:1143354705 | core.user_session    | Стратегия signal_scalper_SOLUSDT уже активна, пропускаем восстановление
+2025-10-19 20:46:10 MSK | INFO     | User:1143354705 | BotApplication       | ✅ Стратегия signal_scalper для SOLUSDT восстановлена из состояния
+2025-10-19 20:46:10 MSK | INFO     | User:5822609636 | core.bot_application | Автотрейдинг для пользователя не включен, сессия не будет восстановлена.
+2025-10-19 20:46:10 MSK | INFO     | User:0          | core.bot_application | Восстановлено 1 пользовательских сессий
+2025-10-19 20:46:10 MSK | INFO     | User:0          | core.bot_application | Фоновая задача очистки блокировок ConcurrencyManager запущена
+2025-10-19 20:46:10 MSK | INFO     | User:0          | core.bot_application | BotApplication запущен. Активных сессий: 1
+2025-10-19 20:46:10 MSK | INFO     | User:0          | main                 | === БОТ УСПЕШНО ЗАПУЩЕН И ГОТОВ К РАБОТЕ ===
+2025-10-19 20:46:10 MSK | INFO     | User:0          | bot                  | Запуск бота в режиме polling...
+2025-10-19 20:46:10 MSK | INFO     | User:0          | bot                  | Очистка старых webhook и pending updates...
+2025-10-19 20:46:10 MSK | INFO     | User:0          | bot                  | Webhook удален и pending updates очищены
+2025-10-19 20:46:10 MSK | INFO     | User:0          | websocket.websocket_manager | Подключен к публичному WebSocket
+2025-10-19 20:46:10 MSK | INFO     | User:0          | websocket.websocket_manager | ⚡ МГНОВЕННАЯ подписка на SOLUSDT (publicTrade + kline.5 + kline.1) отправлена
+2025-10-19 20:46:10 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Аутентификация отправлена
+2025-10-19 20:46:10 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подписка на приватные каналы отправлена
+2025-10-19 20:46:10 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключен к приватному WebSocket
+2025-10-19 20:46:11 MSK | INFO     | User:0          | bot                  | Запуск polling с защитой от старых команд...
+2025-10-19 20:46:38 MSK | INFO     | User:1143354705 | bot                  | Получено сообщение: /autotrade_status...
+2025-10-19 20:46:38 MSK | INFO     | User:1143354705 | basic_handlers       | Команда 'autotrade_status' выполнена
+2025-10-19 20:46:38 MSK | INFO     | User:1143354705 | database             | Загружено 3 API ключей для bybit
+2025-10-19 20:46:38 MSK | INFO     | User:1143354705 | autotrade_status     | Получение позиций в autotrade_status (multi-account режим)
+2025-10-19 20:46:38 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI инициализирован с ключом: odhv...MiD7
+2025-10-19 20:46:38 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI использует базовый URL: https://api-demo.bybit.com
+2025-10-19 20:46:38 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI инициализирован с ключом: p99i...PbKm
+2025-10-19 20:46:38 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI использует базовый URL: https://api-demo.bybit.com
+2025-10-19 20:46:38 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI инициализирован с ключом: rsHW...H7TL
+2025-10-19 20:46:38 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI использует базовый URL: https://api-demo.bybit.com
+2025-10-19 20:50:00 MSK | INFO     | User:1143354705 | SignalScalper        | Анализ для SOLUSDT: Сигнал=LONG, Цена=190.2900, Индикаторы={'ema_short': 190.8839402884344, 'ema_long': 190.51491845444278, 'rsi': 42.44695149913231, 'rsi_neutral': True}
+2025-10-19 20:50:00 MSK | INFO     | User:1143354705 | SignalScalper        | Сигнал LONG подтвержден! (1/1)
+2025-10-19 20:50:00 MSK | INFO     | User:1143354705 | SpikeDetector        | ⏸️ SpikeDetector (SOLUSDT): Недостаточно данных (1/6 всплесков), накапливаю историю...
+2025-10-19 20:50:00 MSK | INFO     | User:1143354705 | SignalScalper        | ⏸️ Spike Detector (4 свечей, 1/1 всплесков за 10мин): ⏸️ Недостаточно данных для анализа (1/6 всплесков)
+2025-10-19 20:55:00 MSK | INFO     | User:1143354705 | SignalScalper        | Анализ для SOLUSDT: Сигнал=LONG, Цена=190.0300, Индикаторы={'ema_short': 190.78490046397295, 'ema_long': 190.49450179021576, 'rsi': 39.693262756520184, 'rsi_neutral': True}
+2025-10-19 20:55:00 MSK | INFO     | User:1143354705 | SignalScalper        | Сигнал LONG подтвержден! (2/1)
+2025-10-19 20:55:00 MSK | INFO     | User:1143354705 | SpikeDetector        | ⏸️ SpikeDetector (SOLUSDT): Недостаточно данных (1/6 всплесков), накапливаю историю...
+2025-10-19 20:55:00 MSK | INFO     | User:1143354705 | SignalScalper        | ⏸️ Spike Detector (9 свечей, 1/1 всплесков за 10мин): ⏸️ Недостаточно данных для анализа (1/6 всплесков)
+2025-10-19 20:57:38 MSK | INFO     | User:1143354705 | websocket.websocket_manager | WebSocket переподключение: no close frame received or sent
+2025-10-19 20:57:43 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключение к приватному WebSocket: wss://stream-demo.bybit.com/v5/private
+2025-10-19 20:57:44 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Аутентификация отправлена
+2025-10-19 20:57:44 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подписка на приватные каналы отправлена
+2025-10-19 20:57:44 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключен к приватному WebSocket
+2025-10-19 21:00:00 MSK | INFO     | User:1143354705 | SignalScalper        | Анализ для SOLUSDT: Сигнал=LONG, Цена=189.9900, Индикаторы={'ema_short': 190.70938112071994, 'ema_long': 190.47619058991157, 'rsi': 39.21973885880971, 'rsi_neutral': True}
+2025-10-19 21:00:00 MSK | INFO     | User:1143354705 | SignalScalper        | Сигнал LONG подтвержден! (3/1)
+2025-10-19 21:00:00 MSK | INFO     | User:1143354705 | SpikeDetector        | ⏸️ SpikeDetector (SOLUSDT): Недостаточно данных (1/6 всплесков), накапливаю историю...
+2025-10-19 21:00:00 MSK | INFO     | User:1143354705 | SignalScalper        | ⏸️ Spike Detector (14 свечей, 1/1 всплесков за 10мин): ⏸️ Недостаточно данных для анализа (1/6 всплесков)
+2025-10-19 21:05:00 MSK | INFO     | User:1143354705 | SignalScalper        | Анализ для SOLUSDT: Сигнал=LONG, Цена=189.8500, Индикаторы={'ema_short': 190.61720156059442, 'ema_long': 190.44279825727733, 'rsi': 37.978592559339056, 'rsi_neutral': True}
+2025-10-19 21:05:00 MSK | INFO     | User:1143354705 | SignalScalper        | Сигнал LONG подтвержден! (4/1)
+2025-10-19 21:05:00 MSK | INFO     | User:1143354705 | SpikeDetector        | ⏸️ SpikeDetector (SOLUSDT): Недостаточно данных (2/6 всплесков), накапливаю историю...
+2025-10-19 21:05:00 MSK | INFO     | User:1143354705 | SignalScalper        | ⏸️ Spike Detector (19 свечей, 2/2 всплесков за 10мин): ⏸️ Недостаточно данных для анализа (2/6 всплесков)
+2025-10-19 21:09:38 MSK | INFO     | User:1143354705 | websocket.websocket_manager | WebSocket переподключение: no close frame received or sent
+2025-10-19 21:09:43 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключение к приватному WebSocket: wss://stream-demo.bybit.com/v5/private
+2025-10-19 21:09:44 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Аутентификация отправлена
+2025-10-19 21:09:44 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подписка на приватные каналы отправлена
+2025-10-19 21:09:44 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключен к приватному WebSocket
+2025-10-19 21:10:00 MSK | INFO     | User:1143354705 | SignalScalper        | Анализ для SOLUSDT: Сигнал=LONG, Цена=189.2400, Индикаторы={'ema_short': 190.44243005458736, 'ema_long': 190.37328193394234, 'rsi': 32.05316975032865, 'rsi_neutral': True}
+2025-10-19 21:10:00 MSK | INFO     | User:1143354705 | SignalScalper        | Сигнал LONG подтвержден! (5/1)
+2025-10-19 21:10:00 MSK | INFO     | User:1143354705 | SpikeDetector        | ⏸️ SpikeDetector (SOLUSDT): Недостаточно данных (3/6 всплесков), накапливаю историю...
+2025-10-19 21:10:00 MSK | INFO     | User:1143354705 | SignalScalper        | ⏸️ Spike Detector (24 свечей, 3/3 всплесков за 10мин): ⏸️ Недостаточно данных для анализа (3/6 всплесков)
+2025-10-19 21:15:00 MSK | INFO     | User:1143354705 | SignalScalper        | Анализ для SOLUSDT: Сигнал=LONG, Цена=189.4600, Индикаторы={'ema_short': 190.3721607851501, 'ema_long': 190.34790606913862, 'rsi': 35.82805611641994, 'rsi_neutral': True}
+2025-10-19 21:15:00 MSK | INFO     | User:1143354705 | SignalScalper        | Сигнал LONG подтвержден! (6/1)
+2025-10-19 21:15:00 MSK | INFO     | User:1143354705 | SpikeDetector        | ⏸️ SpikeDetector (SOLUSDT): Недостаточно данных (4/6 всплесков), накапливаю историю...
+2025-10-19 21:15:00 MSK | INFO     | User:1143354705 | SignalScalper        | ⏸️ Spike Detector (28 свечей, 4/4 всплесков за 10мин): ⏸️ Недостаточно данных для анализа (4/6 всплесков)
+2025-10-19 21:20:01 MSK | INFO     | User:1143354705 | SignalScalper        | Анализ для SOLUSDT: Сигнал=SHORT, Цена=189.2500, Индикаторы={'ema_short': 190.2528338962539, 'ema_long': 190.2984496940126, 'rsi': 33.89756995404213, 'rsi_neutral': True}
+2025-10-19 21:20:01 MSK | INFO     | User:1143354705 | SignalScalper        | Сигнал SHORT подтвержден! (1/1)
+2025-10-19 21:20:01 MSK | INFO     | User:1143354705 | SpikeDetector        | ⏸️ SpikeDetector (SOLUSDT): Недостаточно данных (4/6 всплесков), накапливаю историю...
+2025-10-19 21:20:01 MSK | INFO     | User:1143354705 | SignalScalper        | ⏸️ Spike Detector (34 свечей, 4/4 всплесков за 10мин): ⏸️ Недостаточно данных для анализа (4/6 всплесков)
+2025-10-19 21:21:38 MSK | INFO     | User:1143354705 | websocket.websocket_manager | WebSocket переподключение: no close frame received or sent
+2025-10-19 21:21:43 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключение к приватному WebSocket: wss://stream-demo.bybit.com/v5/private
+2025-10-19 21:21:44 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Аутентификация отправлена
+2025-10-19 21:21:44 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подписка на приватные каналы отправлена
+2025-10-19 21:21:44 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключен к приватному WebSocket
+2025-10-19 21:25:01 MSK | INFO     | User:1143354705 | SignalScalper        | Анализ для SOLUSDT: Сигнал=SHORT, Цена=189.7000, Индикаторы={'ema_short': 190.23898516748778, 'ema_long': 190.290693402884, 'rsi': 41.238385590194575, 'rsi_neutral': True}
+2025-10-19 21:25:01 MSK | INFO     | User:1143354705 | SignalScalper        | Сигнал SHORT подтвержден! (2/1)
+2025-10-19 21:25:01 MSK | INFO     | User:1143354705 | SpikeDetector        | ⏸️ SpikeDetector (SOLUSDT): Недостаточно данных (4/6 всплесков), накапливаю историю...
+2025-10-19 21:25:01 MSK | INFO     | User:1143354705 | SignalScalper        | ⏸️ Spike Detector (38 свечей, 4/4 всплесков за 10мин): ⏸️ Недостаточно данных для анализа (4/6 всплесков)
+2025-10-19 21:26:31 MSK | INFO     | User:0          | main                 | === НАЧАЛО ПРОЦЕДУРЫ ЗАВЕРШЕНИЯ РАБОТЫ ===
+2025-10-19 21:26:31 MSK | INFO     | User:0          | core.bot_application | Остановка BotApplication...
+2025-10-19 21:26:31 MSK | INFO     | User:0          | core.bot_application | Мониторинг остановлен
+2025-10-19 21:28:02 MSK | INFO     | User:0          | system_config        | Загружены Bybit API ключи: PRIMARY, SECONDARY, TERTIARY
+2025-10-19 21:28:02 MSK | INFO     | User:0          | system_config        | Конфигурация системы успешно загружена и валидирована.
+2025-10-19 21:28:02 MSK | INFO     | User:0          | main                 | === ЗАПУСК FUTURES TRADING BOT v2.2 ===
+2025-10-19 21:28:02 MSK | INFO     | User:0          | database             | Инициализация DatabaseManager...
+2025-10-19 21:28:02 MSK | INFO     | User:0          | database             | Ключ шифрования успешно настроен.
+2025-10-19 21:28:03 MSK | INFO     | User:0          | database             | Пул соединений с PostgreSQL успешно создан (попытка 1).
+2025-10-19 21:28:03 MSK | INFO     | User:0          | database             | Система шифрования настроена
+2025-10-19 21:28:03 MSK | INFO     | User:0          | database             | Все таблицы созданы успешно
+2025-10-19 21:28:03 MSK | INFO     | User:0          | database             | Запуск миграций базы данных...
+2025-10-19 21:28:03 MSK | INFO     | User:0          | database             | PostgreSQL timezone установлен на Europe/Moscow (МСК)
+2025-10-19 21:28:03 MSK | INFO     | User:0          | database             | Миграции базы данных завершены.
+2025-10-19 21:28:03 MSK | INFO     | User:0          | database             | Индексы созданы успешно
+2025-10-19 21:28:03 MSK | INFO     | User:0          | cache.redis_manager  | Redis подключен успешно
+2025-10-19 21:28:03 MSK | INFO     | User:0          | bot                  | Инициализация Telegram бота...
+2025-10-19 21:28:03 MSK | INFO     | User:0          | bot                  | Redis storage настроен
+2025-10-19 21:28:03 MSK | INFO     | User:0          | bot                  | Бот инициализирован: @Futures_Tbot (Futures Trading)
+2025-10-19 21:28:03 MSK | INFO     | User:0          | bot                  | EventBus middleware зарегистрирован.
+2025-10-19 21:28:03 MSK | INFO     | User:0          | bot                  | Middleware настроены
+2025-10-19 21:28:04 MSK | INFO     | User:0          | bot                  | Обработчики команд зарегистрированы
+2025-10-19 21:28:04 MSK | INFO     | User:0          | bot                  | Диспетчер настроен
+2025-10-19 21:28:04 MSK | INFO     | User:0          | bot                  | Настроено 10 команд бота
+2025-10-19 21:28:04 MSK | INFO     | User:0          | bot                  | Telegram бот успешно инициализирован
+2025-10-19 21:28:04 MSK | INFO     | User:0          | __main__             | Сохранение PRIMARY API ключей для администратора 1143354705...
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | database             | API ключи для биржи bybit (приоритет 1) сохранены
+2025-10-19 21:28:04 MSK | INFO     | User:0          | __main__             | ✅ PRIMARY API ключи для администратора 1143354705 успешно сохранены.
+2025-10-19 21:28:04 MSK | INFO     | User:0          | __main__             | Сохранение SECONDARY API ключей для администратора 1143354705...
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | database             | API ключи для биржи bybit (приоритет 2) сохранены
+2025-10-19 21:28:04 MSK | INFO     | User:0          | __main__             | ✅ SECONDARY API ключи для администратора 1143354705 успешно сохранены.
+2025-10-19 21:28:04 MSK | INFO     | User:0          | __main__             | Сохранение TERTIARY API ключей для администратора 1143354705...
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | database             | API ключи для биржи bybit (приоритет 3) сохранены
+2025-10-19 21:28:04 MSK | INFO     | User:0          | __main__             | ✅ TERTIARY API ключи для администратора 1143354705 успешно сохранены.
+2025-10-19 21:28:04 MSK | INFO     | User:0          | __main__             | 🔑 Итого для администратора 1143354705: сохранено 3/3 наборов API ключей
+2025-10-19 21:28:04 MSK | INFO     | User:0          | __main__             | Шаблоны конфигураций по умолчанию сохранены в Redis.
+2025-10-19 21:28:04 MSK | INFO     | User:0          | bot                  | BotApplication установлен для обработчиков
+2025-10-19 21:28:04 MSK | INFO     | User:0          | core.bot_application | Запуск BotApplication...
+2025-10-19 21:28:04 MSK | INFO     | User:0          | EventBus             | Новая подписка: _handle_session_start на user_session_started (User: Global)
+2025-10-19 21:28:04 MSK | INFO     | User:0          | EventBus             | Новая подписка: _handle_session_stop на user_session_stopped (User: Global)
+2025-10-19 21:28:04 MSK | INFO     | User:0          | EventBus             | Новая подписка: _handle_settings_changed на user_settings_changed (User: Global)
+2025-10-19 21:28:04 MSK | INFO     | User:0          | EventBus             | Новая подписка: _handle_risk_limit на risk_limit_exceeded (User: Global)
+2025-10-19 21:28:04 MSK | INFO     | User:0          | EventBus             | Новая подписка: _handle_session_start_request на user_session_start_requested (User: Global)
+2025-10-19 21:28:04 MSK | INFO     | User:0          | EventBus             | Новая подписка: _handle_session_stop_request на user_session_stop_requested (User: Global)
+2025-10-19 21:28:04 MSK | INFO     | User:0          | websocket.websocket_manager | WebSocket Manager использует Public URL: wss://stream.bybit.com/v5/public/linear
+2025-10-19 21:28:04 MSK | INFO     | User:0          | websocket.websocket_manager | WebSocket Manager использует Private URL Template: wss://stream-demo.bybit.com/v5/private
+2025-10-19 21:28:04 MSK | INFO     | User:0          | websocket.websocket_manager | Запуск GlobalWebSocketManager...
+2025-10-19 21:28:04 MSK | INFO     | User:0          | websocket.websocket_manager | GlobalWebSocketManager запущен
+2025-10-19 21:28:04 MSK | INFO     | User:0          | core.bot_application | Глобальные компоненты инициализированы
+2025-10-19 21:28:04 MSK | INFO     | User:0          | websocket.websocket_manager | Подключение к публичному WebSocket: wss://stream.bybit.com/v5/public/linear
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | core.user_session    | Запуск пользовательской сессии...
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | database             | Загружено 3 API ключей для bybit
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | core.user_session    | 🔀 Обнаружено 3 API ключа - активирую Multi-Account Coordinator режим
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI инициализирован с ключом: odhv...MiD7
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI использует базовый URL: https://api-demo.bybit.com
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | core.user_session    | ✅ API клиент #1 инициализирован | Ключ: odhv...MiD7
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI инициализирован с ключом: p99i...PbKm
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI использует базовый URL: https://api-demo.bybit.com
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | core.user_session    | ✅ API клиент #2 инициализирован | Ключ: p99i...PbKm
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI инициализирован с ключом: rsHW...H7TL
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | bybit_api            | BybitAPI использует базовый URL: https://api-demo.bybit.com
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | core.user_session    | ✅ API клиент #3 инициализирован | Ключ: rsHW...H7TL
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | core.user_session    | 📌 PRIMARY API клиент установлен для компонентов
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | market_analyzer      | MarketAnalyzer инициализирован для пользователя 1143354705
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | core.user_session    | Компоненты сессии инициализированы
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на signal (User: 1143354705)
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на risk_limit_exceeded (User: 1143354705)
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на user_settings_changed (User: 1143354705)
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на strategy_restart_requested (User: 1143354705)
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на order_filled (User: 1143354705)
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на price_update (User: 1143354705)
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на position_update (User: 1143354705)
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _user_event_handler на order_update (User: 1143354705)
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | core.user_session    | Успешная подписка на пользовательские события.
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Запуск DataFeedHandler...
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | websocket.websocket_manager | API ключи загружены
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подписка на SOLUSDT
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подписка на watchlist: ['SOLUSDT']
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _handle_position_activity на position_update (User: 1143354705)
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | websocket.websocket_manager | DataFeedHandler запущен
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | analysis.meta_strategist | Запуск MetaStrategist...
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: _handle_settings_changed на user_settings_changed (User: 1143354705)
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | analysis.meta_strategist | MetaStrategist запущен
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | core.user_session    | Компоненты сессии запущены
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | core.user_session    | ⏭️ Пропускаю запуск persistent стратегий (восстановление из Redis/БД)
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключение к приватному WebSocket: wss://stream-demo.bybit.com/v5/private
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | cache.redis_manager  | Пользовательская сессия создана
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | core.user_session    | Пользовательская сессия запущена
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | core.bot_application | Сессия восстановлена, так как автотрейдинг был активен.
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | BotApplication       | 🎯 Найдено 1 активных ордеров бота в БД
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | BotApplication       | 📊 Активные ордера по символам: ['SOLUSDT']
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | BotApplication       | Статус: autotrade=❌, active_orders=✅, итог=✅ ВОССТАНАВЛИВАЕМ
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | BaseStrategy         | Найдено сохранённое состояние стратегии SOLUSDT от 2025-10-19 20:46:09.991991 (простой: 41 мин.)
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | BotApplication       | 🔄 Найдено сохранённое состояние signal_scalper для SOLUSDT
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | strategies.base_strategy | Инициализирована стратегия signal_scalper для SOLUSDT (ID: 1143354705_SOLUSDT_20251019_212804)
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | BaseStrategy         | 🔄 Начинаю восстановление стратегии SOLUSDT после перезагрузки сервера...
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | BaseStrategy         | 🔍 Синхронизирую состояние позиции для SOLUSDT с биржей...
+2025-10-19 21:28:04 MSK | INFO     | User:0          | websocket.websocket_manager | Подключен к публичному WebSocket
+2025-10-19 21:28:04 MSK | INFO     | User:0          | websocket.websocket_manager | ⚡ МГНОВЕННАЯ подписка на SOLUSDT (publicTrade + kline.5 + kline.1) отправлена
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | BaseStrategy         | 📊 Анализ состояния позиции SOLUSDT:
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | BaseStrategy         |    Сохранённое состояние: position_active=False
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | BaseStrategy         |    Реальная позиция на бирже: размер=10.4, цена=0
+2025-10-19 21:28:04 MSK | WARNING  | User:1143354705 | BaseStrategy         | ⚠️ НАЙДЕНА РАССИНХРОНИЗАЦИЯ! На бирже есть позиция SOLUSDT, но стратегия не знает об этом
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | BaseStrategy         | ✅ ВОССТАНОВЛЕНО состояние позиции: размер=10.4, цена=0, направление=LONG
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | BaseStrategy         | Нет сохранённых ордеров для синхронизации по SOLUSDT
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | BaseStrategy         | Делегирование восстановления recovery handler для SOLUSDT
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | SignalScalperRecovery | 🔧 Начало восстановления SignalScalper для SOLUSDT...
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | SignalScalperRecovery | 🎯 Восстанавливаю активную позицию SignalScalper
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | EventBus             | Новая подписка: handle_price_update на price_update (User: 1143354705)
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | SignalScalperRecovery | ✅ Восстановлена подписка на обновления цен для SOLUSDT
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | SignalScalperRecovery | 📈 Инициализирован анализатор сигналов
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | SignalScalperRecovery | 🔍 Запущен монитор позиции для SOLUSDT
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | SignalScalperRecovery | ✅ Активная позиция SignalScalper для SOLUSDT полностью восстановлена
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | SignalScalperRecovery | 🔄 Принудительная синхронизация с биржей для SOLUSDT...
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | BaseStrategy         | Запущен API-монитор для позиции SOLUSDT
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | BaseStrategy         | Остановка API-монитора для позиции SOLUSDT
+2025-10-19 21:28:04 MSK | WARNING  | User:1143354705 | SignalScalperRecovery | 🚨 НАЙДЕНА АКТИВНАЯ ПОЗИЦИЯ на бирже: SOLUSDT BUY размер=10.4, вход=$191.5500
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | SignalScalperRecovery | ✅ Восстановление SignalScalper завершено успешно
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | BaseStrategy         | ✅ Стратегия SOLUSDT успешно восстановлена после перезагрузки
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | core.user_session    | Стратегия signal_scalper_SOLUSDT успешно восстановлена из состояния
+2025-10-19 21:28:04 MSK | INFO     | User:1143354705 | BotApplication       | ✅ Стратегия signal_scalper для SOLUSDT восстановлена из состояния
+2025-10-19 21:28:05 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Аутентификация отправлена
+2025-10-19 21:28:05 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подписка на приватные каналы отправлена
+2025-10-19 21:28:05 MSK | INFO     | User:1143354705 | websocket.websocket_manager | Подключен к приватному WebSocket
+2025-10-19 21:28:05 MSK | INFO     | User:5822609636 | core.bot_application | Автотрейдинг для пользователя не включен, сессия не будет восстановлена.
+2025-10-19 21:28:05 MSK | INFO     | User:0          | core.bot_application | Восстановлено 1 пользовательских сессий
+2025-10-19 21:28:05 MSK | INFO     | User:0          | core.bot_application | Фоновая задача очистки блокировок ConcurrencyManager запущена
+2025-10-19 21:28:05 MSK | INFO     | User:0          | core.bot_application | BotApplication запущен. Активных сессий: 1
+2025-10-19 21:28:05 MSK | INFO     | User:0          | main                 | === БОТ УСПЕШНО ЗАПУЩЕН И ГОТОВ К РАБОТЕ ===
+2025-10-19 21:28:05 MSK | INFO     | User:0          | bot                  | Запуск бота в режиме polling...
+2025-10-19 21:28:05 MSK | INFO     | User:0          | bot                  | Очистка старых webhook и pending updates...
+2025-10-19 21:28:05 MSK | INFO     | User:0          | bot                  | Webhook удален и pending updates очищены
+2025-10-19 21:28:06 MSK | INFO     | User:0          | bot                  | Запуск polling с защитой от старых команд...
