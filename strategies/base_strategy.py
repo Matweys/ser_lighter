@@ -1748,7 +1748,18 @@ class BaseStrategy(ABC):
                     # Ордер не найден в активных - возможно исполнен или отменён
                     log_warning(self.user_id, f"⚠️ Ордер {order_id} по {self.symbol} не найден в активных, проверяю статус", "BaseStrategy")
 
-                    # Проверяем статус ордера через историю
+                    # КРИТИЧНО: Проверяем статус в БД ПЕРЕД обработкой
+                    from database.db_trades import db_manager
+                    db_order = await db_manager.get_order_by_exchange_id(order_id)
+                    db_status = db_order.get('status') if db_order else None
+
+                    if db_status == 'FILLED':
+                        # Ордер УЖЕ обработан ранее - пропускаем
+                        log_info(self.user_id, f"⏭️ Ордер {order_id} уже обработан (статус в БД: FILLED), пропускаю", "BaseStrategy")
+                        orders_to_remove.append(order_id)
+                        continue
+
+                    # Проверяем статус ордера через историю биржи
                     order_status = await self.api.get_order_status(order_id)
                     if order_status:
                         status = order_status.get("orderStatus", "Unknown")
@@ -1758,7 +1769,6 @@ class BaseStrategy(ABC):
 
                             # КРИТИЧЕСКИ ВАЖНО: Обновляем статус ордера в БД
                             try:
-                                from database.db_trades import db_manager
                                 await db_manager.update_order_status(
                                     order_id=order_id,
                                     status="FILLED",
@@ -1916,7 +1926,8 @@ class BaseStrategy(ABC):
                     if position_size > 0:
                         has_real_position = True
                         real_position_size = position_size
-                        real_entry_price = self._convert_to_decimal(position.get('entryPrice', 0))
+                        # ИСПРАВЛЕНО: Используем avgPrice вместо entryPrice (Bybit API v5)
+                        real_entry_price = self._convert_to_decimal(position.get('avgPrice', 0))
                         real_side = position.get('side', 'Buy')
                         break
 

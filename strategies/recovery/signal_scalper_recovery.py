@@ -368,6 +368,16 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
             self.strategy.peak_profit_usd = Decimal('0')
             self.strategy.hold_signal_counter = 0
 
+            # КРИТИЧНО: Восстанавливаем initial_margin_usd для координатора
+            leverage = self.strategy._convert_to_decimal(self.strategy.get_config_value("leverage", 1.0))
+            position_value = entry_price * position_size
+            self.strategy.initial_margin_usd = position_value / leverage
+            log_info(
+                self.user_id,
+                f"💰 Восстановлена начальная маржа: ${self.strategy.initial_margin_usd:.2f} (position_value=${position_value:.2f}, leverage={leverage})",
+                "SignalScalperRecovery"
+            )
+
             # КРИТИЧНО: Восстанавливаем _last_known_price для координатора
             current_price = await self._get_current_market_price()
             if current_price:

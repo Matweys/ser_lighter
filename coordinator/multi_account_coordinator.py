@@ -143,6 +143,11 @@ class MultiAccountCoordinator:
             else:
                 pnl_percent = self._calculate_pnl_percent(strategy)
 
+                # ДИАГНОСТИКА: Логируем расчет PnL% только раз в 5 секунд (цикл мониторинга)
+                log_info(self.user_id,
+                         f"📊 [Бот {priority}] PnL: {pnl_percent:.2f}% | Маржа: ${strategy.initial_margin_usd:.2f} | Порог: {self.STUCK_THRESHOLD_PERCENT}%",
+                         "Coordinator")
+
                 if pnl_percent < self.STUCK_THRESHOLD_PERCENT:
                     bot_data.status = 'stuck'
 
