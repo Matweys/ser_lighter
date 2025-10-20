@@ -1950,6 +1950,13 @@ class BaseStrategy(ABC):
                     self.entry_price = real_entry_price
                     self.active_direction = "LONG" if real_side == "Buy" else "SHORT"
 
+                    # КРИТИЧНО: Восстанавливаем initial_margin_usd для SignalScalper
+                    if hasattr(self, 'initial_margin_usd'):
+                        leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
+                        position_value = real_entry_price * real_position_size
+                        self.initial_margin_usd = position_value / leverage
+                        log_info(self.user_id, f"💰 Восстановлена начальная маржа: ${self.initial_margin_usd:.2f} (leverage={leverage})", "BaseStrategy")
+
                     log_info(self.user_id, f"✅ ВОССТАНОВЛЕНО состояние позиции: размер={real_position_size}, цена={real_entry_price}, направление={self.active_direction}", "BaseStrategy")
                 else:
                     log_info(self.user_id, f"✅ Состояние позиции синхронно с биржей", "BaseStrategy")
