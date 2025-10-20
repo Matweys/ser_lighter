@@ -1957,6 +1957,11 @@ class BaseStrategy(ABC):
                         self.initial_margin_usd = position_value / leverage
                         log_info(self.user_id, f"💰 Восстановлена начальная маржа: ${self.initial_margin_usd:.2f} (leverage={leverage})", "BaseStrategy")
 
+                    # КРИТИЧНО: Сбрасываем флаг ожидания для разблокировки обработки цен
+                    if hasattr(self, 'is_waiting_for_trade'):
+                        self.is_waiting_for_trade = False
+                        log_info(self.user_id, f"🔓 Сброшен флаг is_waiting_for_trade для разблокировки обработки цен", "BaseStrategy")
+
                     log_info(self.user_id, f"✅ ВОССТАНОВЛЕНО состояние позиции: размер={real_position_size}, цена={real_entry_price}, направление={self.active_direction}", "BaseStrategy")
                 else:
                     log_info(self.user_id, f"✅ Состояние позиции синхронно с биржей", "BaseStrategy")
