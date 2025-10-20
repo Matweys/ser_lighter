@@ -227,16 +227,6 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
     async def restore_event_subscriptions(self) -> bool:
         """Восстанавливает подписки на события цен."""
         try:
-            # [ДИАГНОСТИКА] Проверяем идентичность экземпляра стратегии
-            log_info(
-                self.user_id,
-                f"[ДИАГНОСТИКА ПОДПИСКИ] strategy_id={id(self.strategy)}, "
-                f"handler={self.strategy.handle_price_update.__name__}, "
-                f"position_active={self.strategy.position_active}, "
-                f"symbol={self.symbol}",
-                "SignalScalperRecovery"
-            )
-
             await self.event_bus.subscribe(
                 EventType.PRICE_UPDATE,
                 self.strategy.handle_price_update,
@@ -247,15 +237,6 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
                 f"✅ Восстановлена подписка на обновления цен для {self.symbol}",
                 "SignalScalperRecovery"
             )
-
-            # [ДИАГНОСТИКА] Проверяем что подписка действительно зарегистрирована
-            log_info(
-                self.user_id,
-                f"[ДИАГНОСТИКА ПОДПИСКИ] Подписка зарегистрирована для user_id={self.user_id}, "
-                f"event_type=PRICE_UPDATE",
-                "SignalScalperRecovery"
-            )
-
             return True
 
         except Exception as e:
@@ -386,6 +367,9 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
             self.strategy.position_size = position_size
             self.strategy.peak_profit_usd = Decimal('0')
             self.strategy.hold_signal_counter = 0
+
+            # КРИТИЧНО: Сбрасываем флаг ожидания, чтобы разблокировать обработку цен
+            self.strategy.is_waiting_for_trade = False
 
             # КРИТИЧНО: Восстанавливаем initial_margin_usd для координатора
             leverage = self.strategy._convert_to_decimal(self.strategy.get_config_value("leverage", 1.0))

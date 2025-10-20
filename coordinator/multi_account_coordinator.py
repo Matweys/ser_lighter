@@ -353,12 +353,6 @@ class MultiAccountCoordinator:
             # Получаем последнюю известную цену из стратегии
             last_price = getattr(strategy, '_last_known_price', None)
 
-            # ДИАГНОСТИКА: Логируем все значения для отладки
-            log_info(self.user_id,
-                    f"[ДИАГНОСТИКА PnL] entry={entry_price}, size={position_size}, "
-                    f"last_price={last_price}, direction={strategy.active_direction}",
-                    "Coordinator")
-
             if last_price and last_price > 0:
                 current_price = Decimal(str(last_price))
             else:

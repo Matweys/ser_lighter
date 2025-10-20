@@ -311,18 +311,7 @@ class SignalScalperStrategy(BaseStrategy):
         if event.symbol != self.symbol:
             return
 
-        # [ДИАГНОСТИКА] Логируем КАЖДОЕ обновление цены для отладки
-        log_info(self.user_id,
-                f"[WS PRICE UPDATE] symbol={event.symbol}, price={event.price}, "
-                f"position_active={self.position_active}, entry_price={self.entry_price}, "
-                f"is_waiting={self.is_waiting_for_trade}",
-                "SignalScalper")
-
         if not self.position_active or not self.entry_price or self.is_waiting_for_trade:
-            log_warning(self.user_id,
-                       f"[WS PRICE UPDATE] ПРОПУЩЕНО! position_active={self.position_active}, "
-                       f"entry_price={self.entry_price}, is_waiting={self.is_waiting_for_trade}",
-                       "SignalScalper")
             return
 
         current_price = event.price
@@ -333,9 +322,6 @@ class SignalScalperStrategy(BaseStrategy):
 
         # СОХРАНЯЕМ ПОСЛЕДНЮЮ ЦЕНУ для координатора multi-account
         self._last_known_price = current_price
-        log_info(self.user_id,
-                f"[WS PRICE UPDATE] ✅ _last_known_price ОБНОВЛЕНА: {self._last_known_price}",
-                "SignalScalper")
 
         # Проверка на адекватность изменения цены (не больше 50% от цены входа)
         price_change_percent = abs((current_price - self.entry_price) / self.entry_price * Decimal('100'))
