@@ -352,12 +352,19 @@ class MultiAccountCoordinator:
 
             # Получаем последнюю известную цену из стратегии
             last_price = getattr(strategy, '_last_known_price', None)
+
+            # ДИАГНОСТИКА: Логируем все значения для отладки
+            log_info(self.user_id,
+                    f"[ДИАГНОСТИКА PnL] entry={entry_price}, size={position_size}, "
+                    f"last_price={last_price}, direction={strategy.active_direction}",
+                    "Coordinator")
+
             if last_price and last_price > 0:
                 current_price = Decimal(str(last_price))
             else:
                 # Fallback на entry_price если нет текущей цены
                 current_price = entry_price
-                log_debug(self.user_id, f"⚠️ _last_known_price не установлена, используем entry_price для расчета PnL%", "Coordinator")
+                log_warning(self.user_id, f"⚠️ _last_known_price не установлена ({last_price}), используем entry_price={entry_price} для расчета PnL%", "Coordinator")
 
             # Расчет PnL
             if strategy.active_direction == "LONG":
