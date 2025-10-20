@@ -18,7 +18,6 @@ from ..keyboards.inline import (
     get_confirmation_keyboard,
     get_symbol_selection_keyboard,
     get_settings_keyboard,
-    get_risk_settings_keyboard,
     get_strategy_settings_keyboard,
     get_back_keyboard
 )
