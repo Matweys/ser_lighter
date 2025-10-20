@@ -325,14 +325,41 @@ class MultiAccountCoordinator:
             return Decimal('0')
 
         try:
-            # Используем данные из стратегии
-            entry_price = strategy.average_entry_price if strategy.average_entry_price > 0 else strategy.entry_price
-            position_size = strategy.total_position_size if strategy.total_position_size > 0 else strategy.position_size
+            # КРИТИЧНО: Проверяем на None и конвертируем в Decimal
+            avg_entry = strategy.average_entry_price
+            base_entry = strategy.entry_price
+
+            # Выбираем цену входа с защитой от None
+            if avg_entry and avg_entry > 0:
+                entry_price = Decimal(str(avg_entry))
+            elif base_entry and base_entry > 0:
+                entry_price = Decimal(str(base_entry))
+            else:
+                log_error(self.user_id, f"⚠️ Не удалось получить цену входа для расчета PnL% (avg={avg_entry}, base={base_entry})", "Coordinator")
+                return Decimal('0')
+
+            # Выбираем размер позиции с защитой от None
+            total_size = strategy.total_position_size
+            base_size = strategy.position_size
+
+            if total_size and total_size > 0:
+                position_size = Decimal(str(total_size))
+            elif base_size and base_size > 0:
+                position_size = Decimal(str(base_size))
+            else:
+                log_error(self.user_id, f"⚠️ Не удалось получить размер позиции для расчета PnL% (total={total_size}, base={base_size})", "Coordinator")
+                return Decimal('0')
 
             # Получаем последнюю известную цену из стратегии
-            # ВАЖНО: Нужно будет добавить это поле в SignalScalperStrategy
-            current_price = getattr(strategy, '_last_known_price', entry_price)
+            last_price = getattr(strategy, '_last_known_price', None)
+            if last_price and last_price > 0:
+                current_price = Decimal(str(last_price))
+            else:
+                # Fallback на entry_price если нет текущей цены
+                current_price = entry_price
+                log_debug(self.user_id, f"⚠️ _last_known_price не установлена, используем entry_price для расчета PnL%", "Coordinator")
 
+            # Расчет PnL
             if strategy.active_direction == "LONG":
                 current_pnl = (current_price - entry_price) * position_size
             else:  # SHORT
