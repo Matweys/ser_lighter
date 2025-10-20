@@ -227,6 +227,16 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
     async def restore_event_subscriptions(self) -> bool:
         """Восстанавливает подписки на события цен."""
         try:
+            # [ДИАГНОСТИКА] Проверяем идентичность экземпляра стратегии
+            log_info(
+                self.user_id,
+                f"[ДИАГНОСТИКА ПОДПИСКИ] strategy_id={id(self.strategy)}, "
+                f"handler={self.strategy.handle_price_update.__name__}, "
+                f"position_active={self.strategy.position_active}, "
+                f"symbol={self.symbol}",
+                "SignalScalperRecovery"
+            )
+
             await self.event_bus.subscribe(
                 EventType.PRICE_UPDATE,
                 self.strategy.handle_price_update,
@@ -237,6 +247,15 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
                 f"✅ Восстановлена подписка на обновления цен для {self.symbol}",
                 "SignalScalperRecovery"
             )
+
+            # [ДИАГНОСТИКА] Проверяем что подписка действительно зарегистрирована
+            log_info(
+                self.user_id,
+                f"[ДИАГНОСТИКА ПОДПИСКИ] Подписка зарегистрирована для user_id={self.user_id}, "
+                f"event_type=PRICE_UPDATE",
+                "SignalScalperRecovery"
+            )
+
             return True
 
         except Exception as e:
