@@ -374,6 +374,44 @@ class BybitAPI:
 
         return None
 
+    async def get_position_info(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Получение информации о конкретной позиции по символу.
+
+        Args:
+            symbol: Торговый символ (например, SOLUSDT)
+
+        Returns:
+            Dict с информацией о позиции или None если позиция не найдена
+        """
+        try:
+            params = {
+                "category": "linear",
+                "symbol": symbol
+            }
+
+            result = await self._make_request("GET", "/v5/position/list", params)
+
+            if result and "list" in result and len(result["list"]) > 0:
+                position = result["list"][0]
+                return {
+                    "symbol": position.get("symbol"),
+                    "side": position.get("side"),
+                    "size": to_decimal(position.get("size", "0")),
+                    "avgPrice": to_decimal(position.get("avgPrice", "0")),
+                    "markPrice": to_decimal(position.get("markPrice", "0")),
+                    "unrealisedPnl": to_decimal(position.get("unrealisedPnl", "0")),
+                    "breakEvenPrice": to_decimal(position.get("breakEvenPrice", "0")),
+                    "stopLoss": position.get("stopLoss", "0"),  # Цена стоп-лосса
+                    "takeProfit": position.get("takeProfit", "0"),  # Цена тейк-профита
+                    "leverage": position.get("leverage", "1")
+                }
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка получения информации о позиции {symbol}: {e}", module_name=__name__)
+
+        return None
+
 
     async def get_klines(
         self,

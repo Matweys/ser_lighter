@@ -1170,6 +1170,9 @@ class UserSession:
                 # Используем первую стратегию как представителя координатора
                 self.active_strategies[strategy_id] = bot_strategies[0]
 
+                # КРИТИЧНО: Сохраняем обновленное состояние в Redis для /autotrade_status
+                await self._save_session_state()
+
                 # Обновляем статистику
                 self.session_stats["strategies_launched"] += 1
 

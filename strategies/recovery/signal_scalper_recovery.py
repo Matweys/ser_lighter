@@ -368,6 +368,24 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
             self.strategy.peak_profit_usd = Decimal('0')
             self.strategy.hold_signal_counter = 0
 
+            # КРИТИЧНО: Восстанавливаем _last_known_price для координатора
+            current_price = await self._get_current_market_price()
+            if current_price:
+                self.strategy._last_known_price = current_price
+                log_info(
+                    self.user_id,
+                    f"📊 Восстановлена последняя цена для расчета PnL: ${current_price:.4f}",
+                    "SignalScalperRecovery"
+                )
+            else:
+                # Fallback: используем entry_price если не удалось получить текущую
+                self.strategy._last_known_price = entry_price
+                log_warning(
+                    self.user_id,
+                    f"⚠️ Не удалось получить текущую цену, используем entry_price=${entry_price:.4f}",
+                    "SignalScalperRecovery"
+                )
+
             # Восстанавливаем подписку на события цены
             await self.restore_event_subscriptions()
 
