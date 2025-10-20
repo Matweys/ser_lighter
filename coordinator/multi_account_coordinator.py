@@ -254,14 +254,13 @@ class MultiAccountCoordinator:
                         "Coordinator")
                 await self._deactivate_bot(lower_priority)
 
-    @coordinator_locked
     async def _activate_bot(self, priority: int):
         """
         Активирует бота - запускает стратегию.
 
         После активации бот НАЧИНАЕТ обрабатывать события (свечи, цены).
 
-        THREAD-SAFE: Защищено декоратором @coordinator_locked для предотвращения race conditions.
+        ВАЖНО: Вызывается ТОЛЬКО из методов с @coordinator_locked, не требует собственной блокировки.
         """
         if priority in self.active_bots:
             return  # Уже активен
@@ -280,16 +279,13 @@ class MultiAccountCoordinator:
                      f"❌ Не удалось активировать Бота {priority} для {self.symbol}",
                      "Coordinator")
 
-    @coordinator_locked
     async def _deactivate_bot(self, priority: int):
         """
         Деактивирует бота - останавливает стратегию.
 
         После деактивации бот ПЕРЕСТАЁТ обрабатывать события.
 
-        ВАЖНО: Вызывается ТОЛЬКО если бот свободен (НЕ в позиции)!
-
-        THREAD-SAFE: Защищено декоратором @coordinator_locked для предотвращения race conditions.
+        ВАЖНО: Вызывается ТОЛЬКО из методов с @coordinator_locked, не требует собственной блокировки.
         """
         if priority not in self.active_bots:
             return  # Уже неактивен
