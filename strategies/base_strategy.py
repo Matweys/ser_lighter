@@ -785,7 +785,7 @@ class BaseStrategy(ABC):
                         order_id=order_id,
                         strategy_type=self.strategy_type.value,
                         order_purpose=order_purpose,
-                        leverage=leverage,
+                        leverage=int(leverage) if leverage else 1,  # ИСПРАВЛЕНО: Конвертируем в int для БД (БД ожидает INTEGER)
                         trade_id=trade_id,
                         bot_priority=getattr(self, 'account_priority', 1),  # Передаём приоритет бота для Multi-Account режима
                         metadata={
@@ -1498,23 +1498,18 @@ class BaseStrategy(ABC):
                                 f"ДЕСИНХРОНИЗАЦИЯ! API сообщает, что позиции по {self.symbol} нет, но стратегия об этом не знала. Принудительное закрытие.",
                                 "BaseStrategy")
 
-                    # Получаем последнюю сделку, чтобы рассчитать PnL
-                    last_trade = await self.api.get_last_trade(self.symbol)
-                    if last_trade:
-                        # Создаем "фейковое" событие исполнения, чтобы запустить всю стандартную логику
-                        fake_filled_event = OrderFilledEvent(
-                            user_id=self.user_id,
-                            order_id=last_trade.get('orderId', 'unknown_fallback'),
-                            symbol=self.symbol,
-                            side="Sell",  # Закрытие всегда Sell для LONG-only
-                            qty=self._convert_to_decimal(last_trade.get('execQty', '0')),
-                            price=self._convert_to_decimal(last_trade.get('execPrice', '0')),
-                            fee=self._convert_to_decimal(last_trade.get('execFee', '0'))
-                        )
-                        await self._handle_order_filled(fake_filled_event)
-                    else:
-                        # Если не удалось получить сделку, просто останавливаемся
-                        await self.stop("position_desync_no_trade_history")
+                    # ИСПРАВЛЕНО: Метод get_last_trade не существует в BybitAPI
+                    # Вместо этого просто сбрасываем флаг position_active и останавливаем стратегию
+                    log_warning(self.user_id,
+                               f"Позиция для {self.symbol} закрыта вне стратегии. Останавливаю отслеживание.",
+                               "BaseStrategy")
+
+                    # Сбрасываем флаг активной позиции
+                    self.position_active = False
+                    self.position_size = Decimal('0')
+
+                    # Останавливаем стратегию
+                    await self.stop("position_closed_externally")
 
                     break  # Выходим из цикла мониторинга
 

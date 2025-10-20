@@ -68,8 +68,15 @@ class MultiAccountCoordinator:
         """Возвращает текущий статус работы координатора"""
         return self.running
 
-    async def start(self):
-        """Запуск координатора"""
+    async def start(self, initial_bot_priority: int = 1):
+        """
+        Запуск координатора.
+
+        Args:
+            initial_bot_priority: Приоритет бота для активации (1, 2 или 3).
+                                  При восстановлении после перезапуска указывается
+                                  тот бот, который реально держит позицию на бирже.
+        """
         if self.running:
             log_warning(self.user_id, f"Coordinator для {self.symbol} уже запущен", "Coordinator")
             return
@@ -77,8 +84,11 @@ class MultiAccountCoordinator:
         self.running = True
         log_info(self.user_id, f"🟢 Запуск Coordinator для {self.symbol}", "Coordinator")
 
-        # Активируем ТОЛЬКО Бот 1 (PRIMARY) при старте
-        await self._activate_bot(1)
+        # Активируем бота с указанным приоритетом (по дефолту Бот 1)
+        log_info(self.user_id,
+                f"🎯 Активация Бота {initial_bot_priority} при старте координатора",
+                "Coordinator")
+        await self._activate_bot(initial_bot_priority)
 
         # Запускаем фоновый мониторинг
         asyncio.create_task(self._monitor_loop())
@@ -88,12 +98,18 @@ class MultiAccountCoordinator:
         if not self.running:
             return
 
+        # КРИТИЧНО: Сначала останавливаем флаг, затем даём время на остановку цикла
         self.running = False
         log_info(self.user_id, f"🔴 Остановка Coordinator для {self.symbol}", "Coordinator")
 
-        # Останавливаем все активные боты
+        # ВАЖНО: Ждём завершения текущей итерации цикла мониторинга (макс 5 сек + запас)
+        await asyncio.sleep(6)
+
+        # Теперь останавливаем все активные боты
         for priority in list(self.active_bots):
             await self._deactivate_bot(priority)
+
+        log_info(self.user_id, f"✅ Coordinator для {self.symbol} полностью остановлен", "Coordinator")
 
     async def _monitor_loop(self):
         """
@@ -109,18 +125,32 @@ class MultiAccountCoordinator:
         while self.running:
             await asyncio.sleep(self.MONITOR_INTERVAL)
 
+            # КРИТИЧНО: Проверяем флаг перед любыми операциями
+            if not self.running:
+                log_info(self.user_id, f"🛑 Цикл мониторинга для {self.symbol} завершён (флаг остановки)", "Coordinator")
+                break
+
             try:
                 # ШАГ 1: Обновляем статусы всех ботов
                 await self._update_statuses()
 
+                # Проверяем флаг после каждого шага
+                if not self.running:
+                    break
+
                 # ШАГ 2: Проверяем необходимость активации
                 await self._check_activation_needed()
+
+                if not self.running:
+                    break
 
                 # ШАГ 3: Проверяем необходимость деактивации
                 await self._check_deactivation_needed()
 
             except Exception as e:
                 log_error(self.user_id, f"Ошибка в monitor_loop для {self.symbol}: {e}", "Coordinator")
+
+        log_info(self.user_id, f"✅ Цикл мониторинга для {self.symbol} полностью остановлен", "Coordinator")
 
     async def _update_statuses(self):
         """
@@ -211,10 +241,15 @@ class MultiAccountCoordinator:
                 # Бот ждёт исполнения - не делаем ротацию
                 return
 
-        # ШАГ 2: Находим самого приоритетного СВОБОДНОГО бота
+        # ШАГ 2: Находим самого приоритетного СВОБОДНОГО И УЖЕ АКТИВНОГО бота
+        # КРИТИЧНО: Ротация должна происходить только СРЕДИ АКТИВНЫХ ботов!
         most_priority_free_bot = None
 
         for priority in [1, 2, 3]:
+            # ПРОВЕРЯЕМ ТОЛЬКО АКТИВНЫХ БОТОВ
+            if priority not in self.active_bots:
+                continue
+
             bot_data = self.bots[priority]
             strategy = bot_data.strategy
 
@@ -225,17 +260,12 @@ class MultiAccountCoordinator:
                 most_priority_free_bot = priority
                 break  # Нашли - останавливаемся
 
-        # Если НЕТ свободных ботов - ничего не делаем
+        # Если НЕТ свободных АКТИВНЫХ ботов - ничего не делаем
         if most_priority_free_bot is None:
             return
 
-        # ШАГ 3: Активируем самого приоритетного свободного бота (если он не активен)
-        if most_priority_free_bot not in self.active_bots:
-            log_warning(self.user_id,
-                       f"🟢 Возвращаю Бота {most_priority_free_bot} ({self.symbol}) как приоритетного "
-                       f"(active_bots={list(self.active_bots)})",
-                       "Coordinator")
-            await self._activate_bot(most_priority_free_bot)
+        # ШАГ 3: Самый приоритетный свободный бот уже активен (мы его нашли среди активных)
+        # Просто деактивируем всех менее приоритетных свободных ботов
 
         # ШАГ 3: Деактивируем всех менее приоритетных СВОБОДНЫХ ботов
         for lower_priority in range(most_priority_free_bot + 1, 4):

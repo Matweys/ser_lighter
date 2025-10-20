@@ -1111,6 +1111,8 @@ class UserSession:
                 # Каждый бот получает только СВОИ ордера по bot_priority
                 from database.db_trades import db_manager
 
+                bot_with_position = None  # Какой бот реально в позиции
+
                 for priority, strategy in enumerate(bot_strategies, start=1):
                     bot_orders = await db_manager.get_active_orders_by_bot_priority(
                         user_id=self.user_id,
@@ -1145,12 +1147,62 @@ class UserSession:
                                 f"ℹ️ Бот {priority} ({symbol}): активных ордеров не найдено",
                                 module_name=__name__)
 
-                # Восстанавливаем состояние ПЕРВОЙ стратегии (Бот 1)
-                # Остальные боты не имеют сохранённого состояния, они спят
-                success = await bot_strategies[0].recover_after_restart(saved_state)
+                # КРИТИЧНО: Определяем КАКОЙ бот реально в позиции на бирже
+                # Проверяем реальную позицию на бирже через API
+                api_client = self.api_clients[0]  # Используем PRIMARY для проверки
+                positions = await api_client.get_positions(symbol=symbol)
+
+                has_real_position = False
+                if positions:
+                    for position in positions:
+                        from decimal import Decimal
+                        position_size = Decimal(str(position.get('size', 0)))
+                        if position_size > 0:
+                            has_real_position = True
+                            log_info(self.user_id,
+                                    f"🔍 Найдена реальная позиция на бирже {symbol}: размер={position_size}",
+                                    module_name=__name__)
+                            break
+
+                # Если есть позиция на бирже, определяем какой бот её открыл
+                if has_real_position:
+                    # Проверяем какой бот имеет OPENING ордер в БД
+                    for priority in [1, 2, 3]:
+                        bot_orders = await db_manager.get_active_orders_by_bot_priority(
+                            user_id=self.user_id,
+                            symbol=symbol,
+                            bot_priority=priority,
+                            strategy_type=strategy_type.value
+                        )
+
+                        for order in bot_orders:
+                            if order.get('order_purpose') == 'OPENING':
+                                bot_with_position = priority
+                                log_info(self.user_id,
+                                        f"🎯 Определен бот с позицией: Бот {priority} (найден OPENING ордер)",
+                                        module_name=__name__)
+                                break
+
+                        if bot_with_position:
+                            break
+
+                    # Если не нашли по ордерам, восстанавливаем Бота 1 (дефолт)
+                    if not bot_with_position:
+                        bot_with_position = 1
+                        log_warning(self.user_id,
+                                   f"⚠️ Не удалось определить бота с позицией по ордерам, использую Бот 1",
+                                   module_name=__name__)
+                else:
+                    # Нет позиции - восстанавливаем Бота 1
+                    bot_with_position = 1
+                    log_info(self.user_id, f"ℹ️ Позиции нет на бирже, восстанавливаю Бот 1", module_name=__name__)
+
+                # Восстанавливаем состояние ПРАВИЛЬНОГО бота
+                log_info(self.user_id, f"🔄 Восстанавливаю состояние Бота {bot_with_position} для {symbol}", module_name=__name__)
+                success = await bot_strategies[bot_with_position - 1].recover_after_restart(saved_state)
 
                 if not success:
-                    log_error(self.user_id, f"Не удалось восстановить состояние Бота 1 для {symbol}", module_name=__name__)
+                    log_error(self.user_id, f"Не удалось восстановить состояние Бота {bot_with_position} для {symbol}", module_name=__name__)
                     return False
 
                 # Создаём координатор с 3 стратегиями
@@ -1160,8 +1212,9 @@ class UserSession:
                     bot_strategies=bot_strategies
                 )
 
-                # Запускаем координатор (он сам запустит Бот 1, который уже восстановлен)
-                await coordinator.start()
+                # Запускаем координатор с указанием правильного бота
+                log_info(self.user_id, f"🎯 Передаю в координатор bot_with_position={bot_with_position}", module_name=__name__)
+                await coordinator.start(initial_bot_priority=bot_with_position)
 
                 # Сохраняем координатор
                 self.coordinators[symbol] = coordinator

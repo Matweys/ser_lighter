@@ -24,13 +24,13 @@ class SpikeDetector:
     Каждый экземпляр работает НЕЗАВИСИМО для своего символа.
     """
 
-    def __init__(self, user_id: int, symbol: str, lookback: int = 50, threshold: float = 0.0005):
+    def __init__(self, user_id: int, symbol: str, lookback: int = 50, threshold: float = 0.0008):
         """
         Args:
             user_id: ID пользователя (для логирования)
             symbol: Символ для отслеживания (например, "BTCUSDT")
             lookback: Количество свечей для хранения в истории
-            threshold: Порог для детекции всплеска (0.001 = 0.1%)
+            threshold: Порог для детекции всплеска (0.0005 = 0.05%)
         """
         self.user_id = user_id
         self.symbol = symbol
