@@ -72,13 +72,47 @@ class ConcurrencyManager:
             log_debug(0, f"[ConcurrencyManager] Создана блокировка для user {user_id}", "ConcurrencyManager")
             return lock
 
-    async def get_coordinator_lock(self, user_id: int, symbol: str) -> asyncio.Lock:
+    async def get_strategy_lock(self, user_id: int, symbol: str, bot_priority: int = 1) -> asyncio.Lock:
         """
-        Получает или создаёт блокировку для координатора.
+        Получает или создаёт блокировку для СТРАТЕГИИ.
+
+        Ключ: user_id:symbol:bot_priority (для изоляции каждого бота)
+        Пример: 123:BTCUSDT:1, 123:BTCUSDT:2, 123:ETHUSDT:1
 
         Thread-safe: Использует мастер-блокировку для создания новых блокировок.
         """
-        lock_key = f"{user_id}:{symbol}"
+        lock_key = f"strategy:{user_id}:{symbol}:{bot_priority}"
+
+        # Быстрый путь
+        if lock_key in self._coordinator_locks:
+            self._coordinator_lock_last_used[lock_key] = time.time()
+            return self._coordinator_locks[lock_key]
+
+        # Медленный путь
+        async with self._master_lock:
+            # Double-check
+            if lock_key in self._coordinator_locks:
+                self._coordinator_lock_last_used[lock_key] = time.time()
+                return self._coordinator_locks[lock_key]
+
+            # Создаём новую блокировку
+            lock = asyncio.Lock()
+            self._coordinator_locks[lock_key] = lock
+            self._coordinator_lock_last_used[lock_key] = time.time()
+
+            log_debug(0, f"[ConcurrencyManager] Создана блокировка для strategy {lock_key}", "ConcurrencyManager")
+            return lock
+
+    async def get_coordinator_lock(self, user_id: int, symbol: str) -> asyncio.Lock:
+        """
+        Получает или создаёт блокировку для КООРДИНАТОРА.
+
+        Ключ: user_id:symbol (один координатор на символ)
+        Пример: 123:BTCUSDT, 123:ETHUSDT
+
+        Thread-safe: Использует мастер-блокировку для создания новых блокировок.
+        """
+        lock_key = f"coordinator:{user_id}:{symbol}"
 
         # Быстрый путь
         if lock_key in self._coordinator_locks:
@@ -240,12 +274,26 @@ def strategy_locked(func: Callable) -> Callable:
         async def _handle_new_candle(self, event):
             ...
 
-    ВАЖНО: Использует user_id + symbol для уникальной блокировки каждой стратегии.
+    ВАЖНО: Использует user_id + symbol + bot_priority для уникальной блокировки каждого бота.
+    Блокировки стратегий НЕЗАВИСИМЫ от блокировок координаторов!
     """
     @wraps(func)
     async def wrapper(self, *args, **kwargs):
-        # Получаем блокировку для стратегии (используем user_id + symbol как ключ)
-        lock = await concurrency_manager.get_coordinator_lock(self.user_id, self.symbol)
+        # Получаем bot_priority из strategy_id (формат: {user_id}_{symbol}_bot{N}_{timestamp})
+        # Пример: 123_BTCUSDT_bot2_20250120_143000
+        bot_priority = 1  # Дефолт
+        if hasattr(self, 'strategy_id'):
+            parts = self.strategy_id.split('_')
+            for part in parts:
+                if part.startswith('bot'):
+                    try:
+                        bot_priority = int(part[3:])  # "bot2" -> 2
+                        break
+                    except (ValueError, IndexError):
+                        pass
+
+        # Получаем блокировку для СТРАТЕГИИ (НЕ координатора!)
+        lock = await concurrency_manager.get_strategy_lock(self.user_id, self.symbol, bot_priority)
 
         # Выполняем метод под блокировкой
         async with lock:

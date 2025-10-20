@@ -287,34 +287,19 @@ async def callback_stats_period(callback: CallbackQuery, state: FSMContext):
 async def callback_settings(callback: CallbackQuery, state: FSMContext):
     """Главное меню настроек"""
     user_id = callback.from_user.id
-    
+
     try:
-        # Получаем текущие настройки
-        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
-
-        if not user_config:
-            log_info(user_id, "Конфигурация не найдена, создаю по умолчанию.", module_name='callback')
-            default_config_data = DefaultConfigs.get_global_config()
-            await redis_manager.save_config(user_id, ConfigType.GLOBAL, default_config_data)
-            user_config = default_config_data
-
-        risk_config = user_config.get('risk_management', {})
-        
         text = (
             f"⚙️ <b>Настройки</b>\n\n"
-            f"🎯 Риск на сделку: {format_percentage(risk_config.get('risk_per_trade', 2))}\n"
-            f"📉 Макс. дневная просадка: {format_percentage(risk_config.get('max_daily_drawdown', 10))}\n"
-            f"📊 Одновременных сделок: {risk_config.get('max_concurrent_trades', 3)}\n"
-            f"💰 Мин. баланс: {format_currency(risk_config.get('min_balance', 100))}\n\n"
             f"Выберите категорию настроек:"
         )
-        
+
         await callback.message.edit_text(
             text,
             reply_markup=get_settings_keyboard(),
             parse_mode="HTML"
         )
-        
+
     except Exception as e:
         log_error(user_id, f"Ошибка в настройках: {e}", module_name='callback')
         await callback.answer("❌ Ошибка загрузки настроек", show_alert=True)
@@ -558,6 +543,54 @@ async def callback_toggle_strategy(callback: CallbackQuery, state: FSMContext):
 
     except Exception as e:
         log_error(user_id, f"Ошибка переключения стратегии {strategy_type}: {e}", module_name='callback')
+
+
+@router.callback_query(F.data.startswith("toggle_param_"))
+async def callback_toggle_param(callback: CallbackQuery, state: FSMContext):
+    """Переключает boolean параметр стратегии (вкл/выкл)."""
+    user_id = callback.from_user.id
+
+    try:
+        # Парсим callback_data: toggle_param_{strategy_type}_{param_name}
+        parts = callback.data.replace("toggle_param_", "").split("_", 1)
+        if len(parts) != 2:
+            await callback.answer("❌ Неверный формат данных", show_alert=True)
+            return
+
+        strategy_type, param_name = parts
+
+        # Получаем конфигурацию
+        config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
+        config = await redis_manager.get_config(user_id, config_enum)
+        if not config:
+            config = DefaultConfigs.get_all_default_configs()["strategy_configs"][strategy_type]
+
+        # Переключаем boolean значение
+        current_value = config.get(param_name, True)
+        new_value = not current_value
+        config[param_name] = new_value
+
+        # Сохраняем
+        await redis_manager.save_config(user_id, config_enum, config)
+
+        # Определяем человекочитаемое название
+        param_names_ru = {
+            "enable_stop_loss": "Stop Loss",
+            "enable_stagnation_detector": "Усреднение #1 (Детектор застревания)",
+            "enable_averaging": "Усреднение #2 (Основное)"
+        }
+        param_name_ru = param_names_ru.get(param_name, param_name)
+        status_text = "включено" if new_value else "отключено"
+
+        await callback.answer(f"{param_name_ru}: {status_text}", show_alert=False)
+        log_info(user_id, f"Параметр {param_name}={new_value} для {strategy_type}", "callback")
+
+        # Обновляем меню
+        await callback_configure_strategy(callback, state, strategy_type_override=strategy_type)
+
+    except Exception as e:
+        log_error(user_id, f"Ошибка переключения параметра: {e}", module_name='callback')
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
 
 
 @router.callback_query(F.data == "save_and_exit_strategy_config")
@@ -1146,107 +1179,6 @@ async def callback_api_settings(callback: CallbackQuery, state: FSMContext):
     except Exception as e:
         log_error(user_id, f"Ошибка отображения API ключей: {e}", module_name='callback')
         await callback.message.edit_text("❌ Ошибка загрузки информации о ключах.", reply_markup=get_back_keyboard("settings"))
-
-
-# --- 1. НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ОТРИСОВКИ МЕНЮ РИСКА ---
-async def _show_risk_settings_menu(bot, chat_id: int, message_id: int, user_id: int):
-    """Надежно отображает и обновляет меню настроек риска. (ИСПРАВЛЕННАЯ ВЕРСИЯ)"""
-    # !!! ИСПРАВЛЕНИЕ: Инициализируем переменные до блока try
-    text = "❌ Ошибка: не удалось сформировать меню настроек риска."
-    reply_markup = get_back_keyboard("settings") # Клавиатура "Назад" по умолчанию
-
-    try:
-        default_config = DefaultConfigs.get_global_config()
-        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL) or {}
-        final_config = default_config.copy()
-        final_config.update(user_config)
-
-        # Переопределяем переменные с корректными данными
-        text = (
-            f"🛡️ <b>Настройки риск-менеджмента</b>\n\n"
-            f"Здесь устанавливаются глобальные правила безопасности для вашего аккаунта.\n\n"
-            f"<b>Текущие параметры:</b>\n"
-            f"∙ Макс. убыток в день: <b>{final_config.get('max_daily_loss_usdt')} USDT</b>"
-        )
-        reply_markup = get_risk_settings_keyboard()
-
-        # --- ОТКАЗОУСТОЙЧИВОЕ ОБНОВЛЕНИЕ ---
-        await bot.edit_message_text(
-            text=text,
-            chat_id=chat_id,
-            message_id=message_id,
-            reply_markup=reply_markup,
-            parse_mode="HTML"
-        )
-    except TelegramBadRequest as e:
-        if "message is not modified" in e.message:
-            pass
-        else:
-            log_error(user_id, f"Ошибка Telegram API при обновлении меню риска: {e}", "callback")
-            await bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode="HTML")
-    except Exception as e:
-        log_error(user_id, f"Критическая ошибка в _show_risk_settings_menu: {e}", "callback")
-
-
-# --- 2. ОБРАБОТЧИК ВХОДА В МЕНЮ РИСКА ---
-@router.callback_query(F.data == "risk_settings")
-async def callback_risk_settings(callback: CallbackQuery, state: FSMContext):
-    """Отображает меню настроек риска."""
-    await state.set_state(UserStates.RISK_SETTINGS)
-    await _show_risk_settings_menu(
-        bot=callback.bot,
-        chat_id=callback.message.chat.id,
-        message_id=callback.message.message_id,
-        user_id=callback.from_user.id
-    )
-    await callback.answer()
-
-
-# --- 3. ОБРАБОТЧИКИ НАЖАТИЯ НА КНОПКИ ПАРАМЕТРОВ ---
-@router.callback_query(F.data == "set_max_daily_loss_usdt")
-async def callback_set_max_daily_loss(callback: CallbackQuery, state: FSMContext):
-    """Запрашивает ввод нового значения для максимального суточного убытка."""
-    await state.set_state(UserStates.SETTING_MAX_DAILY_LOSS_USDT)
-    await state.update_data(menu_message_id=callback.message.message_id)
-    await callback.message.edit_text(
-        "✏️ Введите новую максимальную сумму суточного убытка в USDT (например, 15):",
-        reply_markup=get_back_keyboard("risk_settings"),
-        parse_mode="HTML"
-    )
-    await callback.answer()
-
-
-# --- 4. ОБРАБОТЧИКИ ВВОДА ЗНАЧЕНИЙ ОТ ПОЛЬЗОВАТЕЛЯ ---
-@router.message(UserStates.SETTING_MAX_DAILY_LOSS_USDT)
-async def process_max_daily_loss_usdt(message: Message, state: FSMContext):
-    """Обрабатывает и сохраняет новое значение макс. Суточного убытка."""
-    user_id = message.from_user.id
-    try:
-        value = float(message.text.strip().replace(',', '.'))
-        if value <= 0:
-            await message.answer("❌ Значение должно быть больше нуля.")
-            return
-
-        default_config = DefaultConfigs.get_global_config()
-        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL) or {}
-        final_config = default_config.copy()
-        final_config.update(user_config)
-        final_config["max_daily_loss_usdt"] = round(value, 2)
-        await redis_manager.save_config(user_id, ConfigType.GLOBAL, final_config)
-
-        log_info(user_id, f"Обновлен параметр риска: max_daily_loss_usdt = {value}", "callback")
-
-        state_data = await state.get_data()
-        menu_message_id = state_data.get("menu_message_id")
-        await message.delete()  # Удаляем сообщение пользователя с числом
-        await state.clear()  # Сбрасываем состояние
-
-        # Вызываем нашу новую функцию для корректного обновления меню
-        await _show_risk_settings_menu(message.bot, message.chat.id, menu_message_id, user_id)
-
-    except (ValueError, TypeError):
-        await message.answer("❌ Некорректный формат. Введите число (например, `50.5`).")
-
 
 
 # --- ОБРАБОТЧИКИ НАСТРОЕК СТРАТЕГИЙ ---

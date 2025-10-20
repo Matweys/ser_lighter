@@ -9,7 +9,6 @@ class DefaultConfigs:
         """Глобальная конфигурация пользователя."""
         return {
             "max_concurrent_trades": 5,
-            "max_daily_loss_usdt": 10.0,
             "watchlist_symbols": ["BTCUSDT"],
             "enable_notifications": True,
             "notify_on_trade_open": True,
@@ -46,25 +45,26 @@ class DefaultConfigs:
             "leverage": 2,
             "analysis_timeframe": "5m",
 
-            # ============================================================
-            # ДЕТЕКТОР ЗАСТРЯВШЕЙ ЦЕНЫ (STAGNATION DETECTOR)
-            # Легко отключить: установите enable_stagnation_detector = False
-            # ============================================================
-            "enable_stagnation_detector": True,                      # Включить детектор застрявшей цены
-            "stagnation_check_interval_seconds": 30,                 # Время наблюдения
-            "stagnation_ranges_percent": [                           # Диапазоны убытков (в % от маржи = order_amount × leverage)
-                {"min": 15.0, "max": 20.0}
-            ],
-            "stagnation_averaging_multiplier": 1.0,                  # Множитель усреднения (x1 = равная сумма основному ордеру)
-            "stagnation_averaging_leverage": 1,                      # Плечо для усреднения (x1 = без дополнительного плеча)
-            # ============================================================
+            # --- КООРДИНАТОР (Multi-Account) ---
+            "stuck_threshold_percent": 4.0,              # Порог застревания: если PnL < -4% от маржи → активация Бота 2
 
-            # --- ОСНОВНОЕ УСРЕДНЕНИЕ ---
-            "enable_averaging": True,                    # Включить основное усреднение позиции
+            # --- STOP LOSS ---
+            "enable_stop_loss": True,                    # Включить/выключить стоп-лосс
+            "averaging_stop_loss_percent": 55.0,         # Программный SL: % от маржи (работает только если enable_stop_loss=True)
+
+            # --- УСРЕДНЕНИЕ #1 (Детектор застрявшей цены) ---
+            "enable_stagnation_detector": True,          # Включить детектор застрявшей цены (первое усреднение)
+            "stagnation_trigger_min_percent": 15.0,      # Триггер детектора: убыток от 15% маржи
+            "stagnation_trigger_max_percent": 20.0,      # Триггер детектора: убыток до 20% маржи
+            "stagnation_check_interval_seconds": 30,     # Время наблюдения за застрявшей ценой (секунды)
+            "stagnation_averaging_multiplier": 1.0,      # Множитель усреднения (x1 = равная сумма основному ордеру)
+            "stagnation_averaging_leverage": 1,          # Плечо для усреднения (x1 = без дополнительного плеча)
+
+            # --- УСРЕДНЕНИЕ #2 (Основное усреднение) ---
+            "enable_averaging": True,                    # Включить основное усреднение позиции (второе усреднение)
             "averaging_trigger_loss_percent": 15.0,      # Триггер основного усреднения: убыток % от маржи
-            "averaging_multiplier": 1.0,                 # УДвоение суммы при усреднении (БЕЗ ПЛЕЧА!)
+            "averaging_multiplier": 1.0,                 # Множитель суммы при усреднении (БЕЗ ПЛЕЧА!)
             "max_averaging_count": 1,                    # Только ОДНО основное усреднение
-            "averaging_stop_loss_percent": 45.0,         # Программный SL после усреднения: % от маржи
 
 
 

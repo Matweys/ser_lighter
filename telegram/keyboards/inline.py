@@ -28,7 +28,7 @@ def get_main_menu_keyboard() -> InlineKeyboardMarkup:
 def get_settings_keyboard() -> InlineKeyboardMarkup:
     """Главное меню настроек."""
     buttons = [
-        [{"text": "🛡️ Риск-менеджмент", "callback_data": "risk_settings"}, {"text": "📊 Стратегии", "callback_data": "strategy_settings"}],
+        [{"text": "📊 Стратегии", "callback_data": "strategy_settings"}],
         [{"text": "📈 Торговые пары", "callback_data": "select_trading_pairs"}],
         [{"text": "🔄 Сбросить настройки", "callback_data": "reset_settings"}],
         [{"text": "🏠 Главное меню", "callback_data": "main_menu"}]
@@ -36,14 +36,6 @@ def get_settings_keyboard() -> InlineKeyboardMarkup:
     return KeyboardBuilder.build_keyboard(buttons)
 
 # --- МЕНЮ НАСТРОЕК ---
-
-def get_risk_settings_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура настроек риск-менеджмента."""
-    buttons = [
-        [{"text": "💰 Макс. дневной убыток (USDT)", "callback_data": "set_max_daily_loss_usdt"}],
-        [{"text": "⚙️ Назад в Настройки", "callback_data": "settings"}]
-    ]
-    return KeyboardBuilder.build_keyboard(buttons)
 
 def get_strategy_settings_keyboard(configs: Dict[str, Dict[str, Any]]) -> InlineKeyboardMarkup:
     """Клавиатура выбора стратегии для настройки."""
@@ -66,21 +58,51 @@ def get_strategy_config_keyboard(strategy_type: str, config: Dict[str, Any]) -> 
     editable_params = {}
 
     if strategy_type == StrategyType.SIGNAL_SCALPER.value:
+        # Toggle параметры (вкл/выкл) - отображаем статус
+        enable_sl = config.get('enable_stop_loss', True)
+        sl_status = "✅ Вкл" if enable_sl else "❌ Выкл"
+        enable_stag = config.get('enable_stagnation_detector', True)
+        stag_status = "✅ Вкл" if enable_stag else "❌ Выкл"
+        enable_avg = config.get('enable_averaging', True)
+        avg_status = "✅ Вкл" if enable_avg else "❌ Выкл"
+
         editable_params = {
-            "leverage": f"Кредитное плечо: x{config.get('leverage', 2)}",
-            "order_amount": f"Сумма ордера: {config.get('order_amount', 50)} USDT",
-            "max_loss_usd": f"Стоп-лосс: {config.get('max_loss_usd', 15.0)} USDT",
+            # Основные
+            "leverage": f"⚖️ Плечо: x{config.get('leverage', 2)}",
+            "order_amount": f"💰 Сумма ордера: {config.get('order_amount', 200)} USDT",
+
+            # Координатор Multi-Account
+            "stuck_threshold_percent": f"🔀 Порог застревания Бота 1: {config.get('stuck_threshold_percent', 4.0)}%",
+
+            # Stop Loss
+            "enable_stop_loss": f"🛡️ Stop Loss: {sl_status}",
+            "averaging_stop_loss_percent": f"🛑 SL после усреднения: {config.get('averaging_stop_loss_percent', 45.0)}%",
+
+            # Усреднение #1 (Детектор застрявшей цены)
+            "enable_stagnation_detector": f"📍 Усреднение #1 (Детектор застревания): {stag_status}",
+            "stagnation_trigger_min_percent": f"  ├─ Триггер От: {config.get('stagnation_trigger_min_percent', 15.0)}%",
+            "stagnation_trigger_max_percent": f"  ├─ Триггер До: {config.get('stagnation_trigger_max_percent', 20.0)}%",
+            "stagnation_check_interval_seconds": f"  └─ Время наблюдения: {config.get('stagnation_check_interval_seconds', 30)} сек",
+
+            # Усреднение #2 (Основное)
+            "enable_averaging": f"📊 Усреднение #2 (Основное): {avg_status}",
+            "averaging_trigger_loss_percent": f"  └─ Триггер убытка: {config.get('averaging_trigger_loss_percent', 15.0)}%",
         }
     elif strategy_type == StrategyType.FLASH_DROP_CATCHER.value:
         editable_params = {
             "leverage": f"🎚️ Плечо: x{config.get('leverage', 10)}",
             "order_amount": f"💰 Сумма ордера: {config.get('order_amount', 50)} USDT",
-            "drop_percent": f"📉 Процент падения: {config.get('drop_percent', 2.0)}%",
-            "hard_stop_loss_usdt": f"🛑 Hard Stop Loss: {config.get('hard_stop_loss_usdt', -15.0)} USDT",
         }
 
+    # Определяем какие параметры toggle (boolean), а какие set (numeric)
+    toggle_params = ['enable_stop_loss', 'enable_stagnation_detector', 'enable_averaging']
+
     for key, text in editable_params.items():
-        buttons.append([{"text": text, "callback_data": f"set_param_{strategy_type}_{key}"}])
+        # Для boolean параметров используем toggle вместо set
+        if key in toggle_params:
+            buttons.append([{"text": text, "callback_data": f"toggle_param_{strategy_type}_{key}"}])
+        else:
+            buttons.append([{"text": text, "callback_data": f"set_param_{strategy_type}_{key}"}])
 
     is_enabled = config.get("is_enabled", False)
     toggle_button_text = "❌ Отключить для автоторговли" if is_enabled else "✅ Включить для автоторговли"

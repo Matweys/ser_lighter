@@ -10,7 +10,6 @@ from dataclasses import dataclass
 
 from core.logger import log_info, log_warning, log_error, log_debug
 from strategies.signal_scalper_strategy import SignalScalperStrategy
-from core.concurrency_manager import coordinator_locked, concurrency_manager
 
 
 @dataclass
@@ -32,8 +31,6 @@ class MultiAccountCoordinator:
     4. Приоритет: Бот 1 > Бот 2 > Бот 3
     """
 
-    # Константы (можно будет вынести в конфиг позже)
-    STUCK_THRESHOLD_PERCENT = Decimal('-4')  # Застрял если PnL < -10% от маржи
     MONITOR_INTERVAL = 5  # Проверка каждые 5 секунд
 
     def __init__(self, user_id: int, symbol: str, bot_strategies: List[SignalScalperStrategy]):
@@ -143,12 +140,15 @@ class MultiAccountCoordinator:
             else:
                 pnl_percent = self._calculate_pnl_percent(strategy)
 
-                # ДИАГНОСТИКА: Логируем расчет PnL% только раз в 5 секунд (цикл мониторинга)
-                log_info(self.user_id,
-                         f"📊 [Бот {priority}] PnL: {pnl_percent:.2f}% | Маржа: ${strategy.initial_margin_usd:.2f} | Порог: {self.STUCK_THRESHOLD_PERCENT}%",
-                         "Coordinator")
+                # Получаем порог застревания из конфига стратегии
+                stuck_threshold = -Decimal(str(strategy.get_config_value("stuck_threshold_percent", 4.0)))
 
-                if pnl_percent < self.STUCK_THRESHOLD_PERCENT:
+                # ДИАГНОСТИКА: Логируем расчет PnL% только раз в 5 секунд (цикл мониторинга)
+                # log_info(self.user_id,
+                #          f"📊 [Бот {priority}] PnL: {pnl_percent:.2f}% | Маржа: ${strategy.initial_margin_usd:.2f} | Порог: {stuck_threshold}%",
+                #          "Coordinator")
+
+                if pnl_percent < stuck_threshold:
                     bot_data.status = 'stuck'
 
                     # Логируем только изменение статуса
@@ -159,7 +159,6 @@ class MultiAccountCoordinator:
                 else:
                     bot_data.status = 'active'
 
-    @coordinator_locked
     async def _check_activation_needed(self):
         """
         Логика активации следующего бота.
@@ -168,7 +167,8 @@ class MultiAccountCoordinator:
         - Бот N застрял (status='stuck')
         - Бот N+1 существует и НЕ активен
 
-        THREAD-SAFE: Защищено декоратором @coordinator_locked для предотвращения race conditions.
+        ВАЖНО: НЕ требует блокировки, т.к. координатор работает в своём event loop
+        и каждый координатор изолирован по символу.
         """
         for priority in [1, 2]:  # Проверяем Бот 1 и Бот 2
             bot_data = self.bots[priority]
@@ -180,7 +180,6 @@ class MultiAccountCoordinator:
                            "Coordinator")
                 await self._activate_bot(next_priority)
 
-    @coordinator_locked
     async def _check_deactivation_needed(self):
         """
         Логика деактивации и ротации ботов.
@@ -195,7 +194,8 @@ class MultiAccountCoordinator:
         - Если он не активен, активируем его
         - Деактивируем всех менее приоритетных СВОБОДНЫХ ботов
 
-        THREAD-SAFE: Защищено декоратором @coordinator_locked для предотвращения race conditions.
+        ВАЖНО: НЕ требует блокировки, т.к. координатор работает в своём event loop
+        и каждый координатор изолирован по символу.
         """
         # 🔍 ДИАГНОСТИКА только при проблемах (закомментировано для уменьшения спама)
         # log_debug(self.user_id, f"Активные боты: {list(self.active_bots)}", "Coordinator")

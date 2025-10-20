@@ -63,14 +63,14 @@ class SignalScalperStrategy(BaseStrategy):
         self.after_reversal_mode = False  # Флаг: находимся ли мы в режиме после реверса
 
 
-        # ОСНОВНАЯ СИСТЕМА УСРЕДНЕНИЯ (ОДИНОЧНОЕ УТРОЕНИЕ)
+        # ОСНОВНАЯ СИСТЕМА УСРЕДНЕНИЯ
         self.averaging_enabled = False  # Включена ли система усреднения
         self.averaging_executed = False  # Флаг: было ли выполнено усреднение
         self.averaging_count = 0  # Счетчик выполненных усреднений
         self.max_averaging_count = 1  # Максимальное количество усреднений (из конфигурации)
-        self.averaging_trigger_loss_percent = Decimal('25.0')  # Триггер: убыток от маржи
-        self.averaging_multiplier = Decimal('2.0')  # Удвоение суммы
-        self.averaging_stop_loss_percent = Decimal('30.0')  # Программный SL: от маржи
+        self.averaging_trigger_loss_percent = Decimal('15.0')  # Триггер: убыток в % от цены
+        self.averaging_multiplier = Decimal('1.0')  # Удвоение суммы
+        self.averaging_stop_loss_percent = Decimal('55.0')  # Программный SL: от маржи
         self.total_position_size = Decimal('0')  # Общий размер позиции после усреднения
         self.average_entry_price = Decimal('0')  # Средняя цена входа после усреднения
         self.initial_margin_usd = Decimal('0')  # Начальная маржа для расчета % убытка
@@ -90,7 +90,7 @@ class SignalScalperStrategy(BaseStrategy):
         self.stagnation_detector_enabled = False  # Включен ли детектор
         self.stagnation_check_interval = 30  # Время наблюдения в секундах (1 минута)
         self.stagnation_ranges = []  # Список диапазонов {"min": -15.0, "max": -20.0}
-        self.stagnation_averaging_multiplier = Decimal('2.0')  # Множитель усреднения (x2)
+        self.stagnation_averaging_multiplier = Decimal('1.0')  # Множитель усреднения
         self.stagnation_averaging_leverage = 1  # Плечо для усреднения (x1)
 
 
@@ -143,19 +143,21 @@ class SignalScalperStrategy(BaseStrategy):
             # ============================================================
             self.stagnation_detector_enabled = self.config.get("enable_stagnation_detector", True)
             self.stagnation_check_interval = int(self.config.get("stagnation_check_interval_seconds", 30))
-            # НОВАЯ СИСТЕМА: диапазоны в процентах от маржи
-            self.stagnation_ranges = self.config.get("stagnation_ranges_percent", [])
+            # НОВАЯ СИСТЕМА: диапазоны задаются через min/max проценты
+            stag_min = self._convert_to_decimal(self.config.get("stagnation_trigger_min_percent", "15.0"))
+            stag_max = self._convert_to_decimal(self.config.get("stagnation_trigger_max_percent", "20.0"))
+            self.stagnation_ranges = [{"min": stag_min, "max": stag_max}]
             self.stagnation_averaging_multiplier = self._convert_to_decimal(self.config.get("stagnation_averaging_multiplier", "1.0"))
             self.stagnation_averaging_leverage = int(self.config.get("stagnation_averaging_leverage", 1))
 
             # ============================================================
 
-            # Загружаем параметры ОСНОВНОГО усреднения (одиночное утроение)
+            # Загружаем параметры ОСНОВНОГО усреднения
             self.averaging_enabled = self.config.get("enable_averaging", True)
             self.max_averaging_count = int(self.config.get("max_averaging_count", 1))
-            self.averaging_trigger_loss_percent = self._convert_to_decimal(self.config.get("averaging_trigger_loss_percent", "25.0"))
-            self.averaging_multiplier = self._convert_to_decimal(self.config.get("averaging_multiplier", "2.0"))
-            self.averaging_stop_loss_percent = self._convert_to_decimal(self.config.get("averaging_stop_loss_percent", "30.0"))
+            self.averaging_trigger_loss_percent = self._convert_to_decimal(self.config.get("averaging_trigger_loss_percent", "15.0"))
+            self.averaging_multiplier = self._convert_to_decimal(self.config.get("averaging_multiplier", "1.0"))
+            self.averaging_stop_loss_percent = self._convert_to_decimal(self.config.get("averaging_stop_loss_percent", "50.0"))
 
     async def start(self) -> bool:
         """Запуск стратегии и подписка на события свечей."""
@@ -500,8 +502,8 @@ class SignalScalperStrategy(BaseStrategy):
         # КРИТИЧНО: Обновляем параметры усреднения из свежезагруженного конфига
         self.max_averaging_count = int(self.config.get("max_averaging_count", 1))
         self.averaging_trigger_loss_percent = self._convert_to_decimal(self.config.get("averaging_trigger_loss_percent", "15.0"))
-        self.averaging_multiplier = self._convert_to_decimal(self.config.get("averaging_multiplier", "2.0"))
-        self.averaging_stop_loss_percent = self._convert_to_decimal(self.config.get("averaging_stop_loss_percent", "30.0"))
+        self.averaging_multiplier = self._convert_to_decimal(self.config.get("averaging_multiplier", "1.0"))
+        self.averaging_stop_loss_percent = self._convert_to_decimal(self.config.get("averaging_stop_loss_percent", "55.0"))
 
         log_info(self.user_id,
                 f"🔧 Параметры усреднения обновлены: триггер={self.averaging_trigger_loss_percent}%, "
@@ -573,12 +575,15 @@ class SignalScalperStrategy(BaseStrategy):
                    f"Следующему сигналу {new_direction} потребуется {self.reversal_required_confirmations} подтверждения.",
                    "SignalScalper")
 
-    @strategy_locked
     async def _handle_order_filled(self, event: OrderFilledEvent):
         """
         Обработка исполненных ордеров.
 
-        THREAD-SAFE: Защищено декоратором @strategy_locked для предотвращения race conditions.
+        ВАЖНО: НЕ использует @strategy_locked, т.к. ВСЕГДА вызывается из контекста,
+        где блокировка УЖЕ захвачена (_await_order_fill вызывается из _enter_position,
+        которая вызывается из _handle_new_candle с @strategy_locked).
+
+        Добавление @strategy_locked вызывает DEADLOCK (asyncio.Lock не реентрабельная)!
         """
         # УЛУЧШЕННАЯ ЗАЩИТА ОТ ДВОЙНОЙ ОБРАБОТКИ
         if event.order_id in self.processed_orders:
@@ -759,9 +764,9 @@ class SignalScalperStrategy(BaseStrategy):
 
             # КРИТИЧНО: Загружаем параметры усреднения из ЗАМОРОЖЕННОЙ конфигурации
             if self.active_trade_config:
-                self.averaging_trigger_loss_percent = self._convert_to_decimal(self.active_trade_config.get("averaging_trigger_loss_percent", "25.0"))
-                self.averaging_stop_loss_percent = self._convert_to_decimal(self.active_trade_config.get("averaging_stop_loss_percent", "30.0"))
-                self.averaging_multiplier = self._convert_to_decimal(self.active_trade_config.get("averaging_multiplier", "2.0"))
+                self.averaging_trigger_loss_percent = self._convert_to_decimal(self.active_trade_config.get("averaging_trigger_loss_percent", "15.0"))
+                self.averaging_stop_loss_percent = self._convert_to_decimal(self.active_trade_config.get("averaging_stop_loss_percent", "55.0"))
+                self.averaging_multiplier = self._convert_to_decimal(self.active_trade_config.get("averaging_multiplier", "1.0"))
                 log_info(self.user_id,
                         f"🔧 Параметры усреднения: триггер={self.averaging_trigger_loss_percent}%, "
                         f"SL={self.averaging_stop_loss_percent}%, множитель={self.averaging_multiplier}x",
@@ -1056,6 +1061,12 @@ class SignalScalperStrategy(BaseStrategy):
     async def _place_stop_loss_order(self, direction: str, entry_price: Decimal, position_size: Decimal):
         """Выставляет стоп-лосс ордер после открытия позиции."""
         try:
+            # ПРОВЕРЯЕМ: включен ли Stop Loss в конфигурации
+            enable_sl = self.get_config_value("enable_stop_loss", True)
+            if not enable_sl:
+                log_info(self.user_id, "⏭️ Stop Loss отключен в настройках - пропускаю установку SL", "SignalScalper")
+                return
+
             # Рассчитываем цену стоп-лосса
             stop_loss_price = self._calculate_stop_loss_price(entry_price, direction, position_size)
 
@@ -1445,7 +1456,7 @@ class SignalScalperStrategy(BaseStrategy):
 
             # Используем настройки детектора стагнации
             leverage = Decimal(str(self.stagnation_averaging_leverage))  # x1
-            multiplier = self.stagnation_averaging_multiplier  # x2
+            multiplier = self.stagnation_averaging_multiplier
 
             # Расчет суммы усреднения
             stagnation_amount = order_amount * multiplier
