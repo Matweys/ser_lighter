@@ -169,8 +169,9 @@ class SignalScalperStrategy(BaseStrategy):
 
     async def stop(self, reason: str = "Manual stop"):
         """Остановка стратегии и отписка от событий."""
-        await self.event_bus.unsubscribe(self._handle_new_candle)
+        # КРИТИЧНО: Сначала останавливаем стратегию (is_running=False), затем отписываемся
         await super().stop(reason)
+        await self.event_bus.unsubscribe(self._handle_new_candle)
 
     @strategy_locked
     async def _handle_new_candle(self, event: NewCandleEvent):
@@ -179,6 +180,10 @@ class SignalScalperStrategy(BaseStrategy):
 
         THREAD-SAFE: Защищено декоратором @strategy_locked для предотвращения race conditions.
         """
+        # КРИТИЧНО: Проверяем флаг работы в самом начале
+        if not self.is_running:
+            return
+
         if event.symbol != self.symbol:
             return
 

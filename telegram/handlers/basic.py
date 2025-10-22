@@ -233,7 +233,7 @@ async def cmd_trade_details(message: Message, state: FSMContext):
         user_session = basic_handler.bot_application.active_sessions[user_id]
 
         # Получаем все активные стратегии
-        active_strategies = list(user_session.strategies.values())
+        active_strategies = list(user_session.active_strategies.values())
 
         if not active_strategies:
             await message.answer(

@@ -528,32 +528,65 @@ class BotApplication:
             await redis_manager.create_user_session(user_id, session_data)
             log_info(user_id, "Статус авто-торговли установлен в 'active' в Redis.", module_name=__name__)
 
-            # КРИТИЧЕСКИ ВАЖНО: Запускаем стратегии для всех символов из watchlist
-            global_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
-            if global_config:
-                watchlist_symbols = global_config.get("watchlist_symbols", [])
-                if watchlist_symbols:
-                    log_info(user_id, f"🚀 Запуск стратегий для {len(watchlist_symbols)} символов из watchlist: {watchlist_symbols}", module_name=__name__)
+            # КРИТИЧЕСКИ ВАЖНО: Запускаем ТОЛЬКО включенные стратегии
+            from core.enums import StrategyType
 
-                    # Запускаем стратегии для каждого символа
-                    from core.enums import StrategyType
-                    for symbol in watchlist_symbols:
-                        try:
-                            success = await session.start_strategy(
-                                strategy_type=StrategyType.SIGNAL_SCALPER.value,
-                                symbol=symbol,
-                                analysis_data={'trigger': 'autotrade_start'}
-                            )
-                            if success:
-                                log_info(user_id, f"✅ Стратегия для {symbol} успешно запущена", module_name=__name__)
-                            else:
-                                log_warning(user_id, f"⚠️ Не удалось запустить стратегию для {symbol}", module_name=__name__)
-                        except Exception as e:
-                            log_error(user_id, f"❌ Ошибка запуска стратегии для {symbol}: {e}", module_name=__name__)
-                else:
-                    log_warning(user_id, "⚠️ Список watchlist_symbols пуст, стратегии не запущены", module_name=__name__)
+            # Проверяем какие стратегии включены
+            signal_scalper_config = await redis_manager.get_config(user_id, ConfigType.STRATEGY_SIGNAL_SCALPER)
+            flash_drop_config = await redis_manager.get_config(user_id, ConfigType.STRATEGY_FLASH_DROP_CATCHER)
+
+            signal_scalper_enabled = signal_scalper_config and signal_scalper_config.get("is_enabled", False)
+            flash_drop_enabled = flash_drop_config and flash_drop_config.get("is_enabled", False)
+
+            log_info(user_id, f"📊 Проверка включенных стратегий: Signal Scalper={'✅' if signal_scalper_enabled else '❌'}, Flash Drop Catcher={'✅' if flash_drop_enabled else '❌'}", module_name=__name__)
+
+            # 1. Запускаем Signal Scalper для watchlist символов (если включен)
+            if signal_scalper_enabled:
+                global_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+                if global_config:
+                    watchlist_symbols = global_config.get("watchlist_symbols", [])
+                    if watchlist_symbols:
+                        log_info(user_id, f"🚀 Запуск Signal Scalper для {len(watchlist_symbols)} символов: {watchlist_symbols}", module_name=__name__)
+
+                        for symbol in watchlist_symbols:
+                            try:
+                                success = await session.start_strategy(
+                                    strategy_type=StrategyType.SIGNAL_SCALPER.value,
+                                    symbol=symbol,
+                                    analysis_data={'trigger': 'autotrade_start'}
+                                )
+                                if success:
+                                    log_info(user_id, f"✅ Signal Scalper для {symbol} успешно запущен", module_name=__name__)
+                                else:
+                                    log_warning(user_id, f"⚠️ Не удалось запустить Signal Scalper для {symbol}", module_name=__name__)
+                            except Exception as e:
+                                log_error(user_id, f"❌ Ошибка запуска Signal Scalper для {symbol}: {e}", module_name=__name__)
+                    else:
+                        log_warning(user_id, "⚠️ Список watchlist_symbols пуст, Signal Scalper не запущен", module_name=__name__)
             else:
-                log_error(user_id, "❌ Не удалось получить global_config для запуска стратегий", module_name=__name__)
+                log_info(user_id, "ℹ️ Signal Scalper отключен в настройках, не запускается", module_name=__name__)
+
+            # 2. Запускаем Flash Drop Catcher (если включен) - он сканирует ВСЕ символы автоматически
+            if flash_drop_enabled:
+                log_info(user_id, "🚀 Запуск Flash Drop Catcher (сканирование всех символов)...", module_name=__name__)
+                try:
+                    success = await session.start_strategy(
+                        strategy_type=StrategyType.FLASH_DROP_CATCHER.value,
+                        symbol="ALL",  # Flash Drop Catcher сканирует ВСЕ символы
+                        analysis_data={'trigger': 'autotrade_start'}
+                    )
+                    if success:
+                        log_info(user_id, "✅ Flash Drop Catcher успешно запущен", module_name=__name__)
+                    else:
+                        log_warning(user_id, "⚠️ Не удалось запустить Flash Drop Catcher", module_name=__name__)
+                except Exception as e:
+                    log_error(user_id, f"❌ Ошибка запуска Flash Drop Catcher: {e}", module_name=__name__)
+            else:
+                log_info(user_id, "ℹ️ Flash Drop Catcher отключен в настройках, не запускается", module_name=__name__)
+
+            # Если ни одна стратегия не включена - предупреждение
+            if not signal_scalper_enabled and not flash_drop_enabled:
+                log_warning(user_id, "⚠️ НИ ОДНА СТРАТЕГИЯ НЕ ВКЛЮЧЕНА! Включите хотя бы одну стратегию в настройках.", module_name=__name__)
         else:
             log_error(user_id, "Не удалось получить сессию после попытки создания.", module_name=__name__)
 
