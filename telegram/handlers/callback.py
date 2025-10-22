@@ -556,7 +556,7 @@ async def callback_toggle_strategy(callback: CallbackQuery, state: FSMContext):
         # ВАЖНО: Если стратегия включена И автоторговля активна - запускаем стратегию
         if is_enabled and _bot_application:
             user_session = _bot_application.active_sessions.get(user_id)
-            if user_session and user_session.is_running:
+            if user_session and user_session.running:
                 log_info(user_id, f"Автоторговля активна, запускаем стратегию {strategy_type}", "callback")
 
                 # Получаем список символов для торговли
