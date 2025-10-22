@@ -421,11 +421,13 @@ class FlashDropCatcherStrategy(BaseStrategy):
         Получает список всех доступных фьючерсных символов
         """
         try:
+            # get_instruments_info() возвращает словарь {symbol: info}
             response = await self.api.get_instruments_info()
 
-            if response and "result" in response and "list" in response["result"]:
-                symbols = [item["symbol"] for item in response["result"]["list"]
-                          if item.get("status") == "Trading" and item["symbol"].endswith("USDT")]
+            if response and isinstance(response, dict):
+                # Фильтруем по статусу Trading и USDT
+                symbols = [symbol for symbol, info in response.items()
+                          if info.get("status") == "Trading" and symbol.endswith("USDT")]
 
                 log_info(self.user_id,
                         f"📊 Получено {len(symbols)} торгуемых USDT фьючерсов",
