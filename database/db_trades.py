@@ -35,7 +35,12 @@ class QueryError(DatabaseError):
 
 @dataclass
 class UserProfile:
-    """Профиль пользователя"""
+    """
+    Профиль пользователя (ТОЛЬКО профильные данные).
+
+    Статистика (total_trades, win_rate, total_profit) вычисляется из таблицы trades
+    и НЕ хранится в users для предотвращения дублирования данных.
+    """
     user_id: int
     username: Optional[str] = None
     first_name: Optional[str] = None
@@ -44,11 +49,12 @@ class UserProfile:
     is_premium: bool = False
     registration_date: Optional[datetime] = None
     last_activity: Optional[datetime] = None
-    winning_trades: int = 0
-    total_trades: int = 0
-    total_profit: Decimal = Decimal('0')
-    max_drawdown: Decimal = Decimal('0')
-    win_rate: Decimal = Decimal('0')
+    # Статистика добавляется динамически через get_user()
+    winning_trades: int = 0  # Вычисляется из trades
+    total_trades: int = 0     # Вычисляется из trades
+    total_profit: Decimal = Decimal('0')  # Вычисляется из trades
+    max_drawdown: Decimal = Decimal('0')  # Вычисляется из trades
+    win_rate: Decimal = Decimal('0')      # Вычисляется из trades
 
 @dataclass
 class UserApiKeys:
@@ -587,30 +593,57 @@ class _DatabaseManager:
             return False
     
     async def get_user(self, user_id: int) -> Optional[UserProfile]:
-        """Получение пользователя"""
+        """
+        Получение пользователя с автоматическим вычислением статистики из trades.
+
+        ЕДИНСТВЕННЫЙ источник истины для статистики - таблица trades.
+        """
         try:
+            # Получаем профильные данные
             query = "SELECT * FROM users WHERE user_id = $1"
             result = await self._execute_query(query, (user_id,), fetch_one=True)
-            
-            if result:
-                return UserProfile(
-                    user_id=result['user_id'],
-                    username=result['username'],
-                    first_name=result['first_name'],
-                    last_name=result['last_name'],
-                    is_active=result['is_active'],
-                    is_premium=result['is_premium'],
-                    registration_date=result['registration_date'],
-                    last_activity=result['last_activity'],
-                    winning_trades=result['winning_trades'],
-                    total_trades=result['total_trades'],
-                    total_profit=to_decimal(result['total_profit']),
-                    max_drawdown=to_decimal(result['max_drawdown']),
-                    win_rate=to_decimal(result['win_rate'])
-                )
-            
-            return None
-            
+
+            if not result:
+                return None
+
+            # Вычисляем статистику из таблицы trades (единственный источник истины)
+            stats_query = """
+                SELECT
+                    COUNT(*) as total_trades,
+                    COUNT(CASE WHEN profit > 0 THEN 1 END) as winning_trades,
+                    COALESCE(SUM(profit), 0) as total_profit,
+                    COALESCE(MIN(profit), 0) as max_drawdown
+                FROM trades
+                WHERE user_id = $1
+                    AND exit_time IS NOT NULL
+                    AND profit IS NOT NULL
+            """
+            stats = await self._execute_query(stats_query, (user_id,), fetch_one=True)
+
+            # Вычисляем win_rate
+            total_trades = stats['total_trades'] if stats else 0
+            winning_trades = stats['winning_trades'] if stats else 0
+            total_profit = to_decimal(stats['total_profit']) if stats else Decimal('0')
+            max_drawdown = to_decimal(stats['max_drawdown']) if stats else Decimal('0')
+            win_rate = (Decimal(winning_trades) / Decimal(total_trades) * 100) if total_trades > 0 else Decimal('0')
+
+            return UserProfile(
+                user_id=result['user_id'],
+                username=result['username'],
+                first_name=result['first_name'],
+                last_name=result['last_name'],
+                is_active=result['is_active'],
+                is_premium=result['is_premium'],
+                registration_date=result['registration_date'],
+                last_activity=result['last_activity'],
+                # Статистика вычислена из trades
+                winning_trades=winning_trades,
+                total_trades=total_trades,
+                total_profit=total_profit,
+                max_drawdown=max_drawdown,
+                win_rate=win_rate
+            )
+
         except Exception as e:
             log_error(user_id, f"Ошибка получения пользователя: {e}", module_name='database')
             return None
@@ -806,10 +839,19 @@ class _DatabaseManager:
                     status = 'CLOSED',
                     updated_at = $6
                 WHERE id = $5
+                RETURNING user_id
             """
-            await self._execute_query(query, (exit_price, pnl, commission, exit_time_msk, trade_id, current_moscow_time))
-            log_info(0, f"Сделка с ID {trade_id} закрыта в БД. Выход: {exit_time_msk.strftime('%Y-%m-%d %H:%M:%S')} МСК, PnL: {pnl:.2f}$", module_name='database')
-            return True
+            result = await self._execute_query(query, (exit_price, pnl, commission, exit_time_msk, trade_id, current_moscow_time), fetch_one=True)
+
+            if result:
+                user_id = result['user_id']
+                log_info(0, f"Сделка с ID {trade_id} закрыта в БД. Выход: {exit_time_msk.strftime('%Y-%m-%d %H:%M:%S')} МСК, PnL: {pnl:.2f}$", module_name='database')
+
+                # Статистика вычисляется динамически в get_user() из таблицы trades
+                return True
+
+            return False
+
         except Exception as e:
             log_error(0, f"Ошибка обновления сделки {trade_id} в БД: {e}", module_name='database')
             return False
@@ -941,43 +983,6 @@ class _DatabaseManager:
         except Exception as e:
             log_error(user_id, f"Ошибка получения статистики по стратегиям: {e}", module_name='database')
             return []
-
-    async def update_user_totals(self, user_id: int, pnl: Decimal):
-        """
-        Обновляет общую статистику пользователя (total_profit, total_trades, win_rate).
-        """
-        async with self.get_connection() as conn:
-            # Используем транзакцию для атомарности
-            async with conn.transaction():
-                try:
-                    moscow_tz = timezone(timedelta(hours=3))
-                    current_time = datetime.now(moscow_tz)
-
-                    # Получаем текущие значения с блокировкой строки
-                    user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1 FOR UPDATE", user_id)
-
-                    if user:
-                        current_total_profit = user['total_profit'] or Decimal('0')
-                        new_total_profit = current_total_profit + pnl
-
-                        current_winning_trades = user['winning_trades'] or 0
-                        new_winning_trades = current_winning_trades + 1 if pnl > 0 else current_winning_trades
-
-                        new_total_trades = (user['total_trades'] or 0) + 1
-
-                        new_win_rate = (Decimal(new_winning_trades) / Decimal(
-                            new_total_trades)) * 100 if new_total_trades > 0 else Decimal('0')
-
-                        await conn.execute("""
-                            UPDATE users
-                            SET total_profit = $1, total_trades = $2, winning_trades = $3, win_rate = $4, updated_at = $6
-                            WHERE user_id = $5
-                        """, new_total_profit, new_total_trades, new_winning_trades, new_win_rate, user_id, current_time)
-
-                except Exception as e:
-                    log_error(user_id, f"Ошибка обновления общей статистики пользователя: {e}", "db_manager")
-                    # Транзакция будет автоматически отменена
-                    raise
 
     async def analyze_database_usage(self) -> Dict[str, Any]:
         """

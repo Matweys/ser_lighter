@@ -207,8 +207,11 @@ class SpikeDetector:
         # УЛУЧШЕНО: Требуем минимум 6 всплесков для надёжного анализа
         recent_spikes_10min = self.get_recent_spikes(seconds=600)  # 10 минут
         if len(recent_spikes_10min) < 6:
+            # УЛУЧШЕНО: Показываем размеры всплесков для диагностики
+            spikes_info = ", ".join([f"{s['pct_change']*100:.2f}%" for s in recent_spikes_10min]) if recent_spikes_10min else "нет данных"
             log_info(self.user_id,
-                    f"⏸️ SpikeDetector ({self.symbol}): Недостаточно данных ({len(recent_spikes_10min)}/6 всплесков), накапливаю историю...",
+                    f"⏸️ SpikeDetector ({self.symbol}): Недостаточно данных ({len(recent_spikes_10min)}/6 всплесков). "
+                    f"Текущие всплески: [{spikes_info}]. Накапливаю историю...",
                     "SpikeDetector")
             return False, main_signal, f"⏸️ Недостаточно данных для анализа ({len(recent_spikes_10min)}/6 всплесков)"
 

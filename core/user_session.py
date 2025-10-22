@@ -416,6 +416,9 @@ class UserSession:
                 strategy_id = f"{strategy_type}_{symbol}"
                 self.active_strategies[strategy_id] = bot_strategies[0]
 
+                # ВАЖНО: Отправляем уведомление о запуске (используем Bot 1 как представителя)
+                await self._send_strategy_start_notification(bot_strategies[0])
+
                 # Обновление статистики
                 self.session_stats["strategies_launched"] += 1
 
@@ -1292,25 +1295,20 @@ class UserSession:
             return False
 
     async def _send_strategy_start_notification(self, strategy: BaseStrategy):
-        """Отправка уведомления о запуске стратегии пользователю"""
+        """Отправка уведомления о запуске стратегии пользователю (ОДНО уведомление на стратегию)"""
         try:
             strategy_display_names = {
-                "signal_scalper": "Signal Scalper"
+                "signal_scalper": "Signal Scalper",
+                "flash_drop_catcher": "Flash Drop Catcher"
             }
 
             strategy_name = strategy_display_names.get(strategy.strategy_type.value, strategy.strategy_type.value)
-
             message = f"🚀 <b>Стратегия {strategy_name} запущена!</b>\n" \
                      f"📊 Символ: <code>{strategy.symbol}</code>\n" \
                      f"🎯 ID стратегии: <code>{strategy.strategy_id}</code>"
 
             if bot_manager and bot_manager.bot:
-                await bot_manager.bot.send_message(
-                    chat_id=self.user_id,
-                    text=message,
-                    parse_mode="HTML"
-                )
-                log_info(self.user_id, f"Уведомление о запуске стратегии {strategy.strategy_id} отправлено", module_name=__name__)
+                await bot_manager.bot.send_message(chat_id=self.user_id, text=message, parse_mode="HTML")
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления о запуске стратегии: {e}", module_name=__name__)
 

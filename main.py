@@ -37,8 +37,8 @@ async def set_commands():
         BotCommand(command="/stats", description="📊 Статистика"),
         BotCommand(command="/balance", description="💰 Баланс"),
         BotCommand(command="/autotrade_status", description="📊 Статус торговли"),
+        BotCommand(command="/trade_details", description="📋 Детали позиций"),
         BotCommand(command="/help", description="ℹ️ Помощь")
-
     ]
     await bot_manager.bot.set_my_commands(commands)
 

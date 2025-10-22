@@ -20,7 +20,7 @@ class KeyboardBuilder:
 def get_main_menu_keyboard() -> InlineKeyboardMarkup:
     """Главное меню бота."""
     buttons = [
-        [{"text": "📊 Статус торговли", "callback_data": "show_trading_status"}, {"text": "💰 Баланс", "callback_data": "show_balance"}],
+        [{"text": "💰 Баланс", "callback_data": "show_balance"}],
         [{"text": "🔑 API ключи", "callback_data": "api_keys"}, {"text": "⚙️ Настройки", "callback_data": "settings"}],
     ]
     return KeyboardBuilder.build_keyboard(buttons)

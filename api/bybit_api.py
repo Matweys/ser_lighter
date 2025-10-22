@@ -338,77 +338,232 @@ class BybitAPI:
             return None
 
 
-    async def get_positions(self, symbol: str = None) -> Optional[List[Dict[str, Any]]]:
-        """Получение позиций"""
-        try:
-            params = {
-                "category": "linear",
-                "settleCoin": "USDT"  # Обязательный параметр для Bybit API v5
-            }
+    async def get_positions(self, symbol: str = None, max_retries: int = 3, retry_delay: float = 1.0) -> Optional[List[Dict[str, Any]]]:
+        """
+        Получение позиций.
 
-            if symbol:
-                params["symbol"] = symbol
+        ВАЖНО: Использует retry механизм с несколькими попытками для надежности!
+        """
+        params = {
+            "category": "linear",
+            "settleCoin": "USDT"
+        }
 
-            result = await self._make_request("GET", "/v5/position/list", params)
+        if symbol:
+            params["symbol"] = symbol
 
-            if result and "list" in result:
-                positions = []
-                for position in result["list"]:
-                    # Фильтрация только активных позиций
-                    size = to_decimal(position.get("size", "0"))
-                    if size > 0:
-                        positions.append({
-                            "symbol": position.get("symbol"),
-                            "side": position.get("side"),
-                            "size": size,
-                            "avgPrice": to_decimal(position.get("avgPrice", "0")),
-                            "markPrice": to_decimal(position.get("markPrice", "0")),
-                            "unrealisedPnl": to_decimal(position.get("unrealisedPnl", "0")),
-                            "breakEvenPrice": to_decimal(position.get("breakEvenPrice", "0")),  # Цена безубыточности от биржи
-                        })
+        for attempt in range(max_retries):
+            try:
+                log_info(self.user_id,
+                        f"[GET_POSITIONS] Попытка {attempt + 1}/{max_retries} получения позиций...",
+                        module_name=__name__)
 
-                return positions
+                result = await self._make_request("GET", "/v5/position/list", params)
 
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка получения позиций: {e}", module_name=__name__)
+                if result and "list" in result:
+                    positions = []
+                    for position in result["list"]:
+                        size = to_decimal(position.get("size", "0"))
+                        if size > 0:
+                            positions.append({
+                                "symbol": position.get("symbol"),
+                                "side": position.get("side"),
+                                "size": size,
+                                "avgPrice": to_decimal(position.get("avgPrice", "0")),
+                                "markPrice": to_decimal(position.get("markPrice", "0")),
+                                "unrealisedPnl": to_decimal(position.get("unrealisedPnl", "0")),
+                                "breakEvenPrice": to_decimal(position.get("breakEvenPrice", "0")),
+                            })
+
+                    log_info(self.user_id,
+                            f"✅ [GET_POSITIONS] Успешно получены позиции на попытке {attempt + 1}: {len(positions)} активных",
+                            module_name=__name__)
+                    return positions
+                else:
+                    if attempt < max_retries - 1:
+                        log_warning(self.user_id,
+                                   f"⚠️ [GET_POSITIONS] Попытка {attempt + 1}: Некорректный ответ, повторяю через {retry_delay}s...",
+                                   module_name=__name__)
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        log_warning(self.user_id,
+                                   f"⚠️ [GET_POSITIONS] Не удалось получить позиции после {max_retries} попыток",
+                                   module_name=__name__)
+                        return None
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    log_warning(self.user_id,
+                               f"⚠️ [GET_POSITIONS] Попытка {attempt + 1}: Ошибка {e}, повторяю через {retry_delay}s...",
+                               module_name=__name__)
+                    await asyncio.sleep(retry_delay)
+                    continue
+                else:
+                    log_error(self.user_id,
+                             f"❌ [GET_POSITIONS] Ошибка получения позиций после {max_retries} попыток: {e}",
+                             module_name=__name__)
+                    return None
 
         return None
 
-    async def get_position_info(self, symbol: str) -> Optional[Dict[str, Any]]:
+    async def get_position_info(self, symbol: str, max_retries: int = 3, retry_delay: float = 1.0) -> Optional[Dict[str, Any]]:
         """
         Получение информации о конкретной позиции по символу.
 
+        ВАЖНО: Использует retry механизм с несколькими попытками для надежности!
+
         Args:
             symbol: Торговый символ (например, SOLUSDT)
+            max_retries: Максимальное количество попыток запроса (по умолчанию 3)
+            retry_delay: Задержка между попытками в секундах (по умолчанию 1.0)
 
         Returns:
             Dict с информацией о позиции или None если позиция не найдена
         """
-        try:
-            params = {
-                "category": "linear",
-                "symbol": symbol
-            }
-
-            result = await self._make_request("GET", "/v5/position/list", params)
-
-            if result and "list" in result and len(result["list"]) > 0:
-                position = result["list"][0]
-                return {
-                    "symbol": position.get("symbol"),
-                    "side": position.get("side"),
-                    "size": to_decimal(position.get("size", "0")),
-                    "avgPrice": to_decimal(position.get("avgPrice", "0")),
-                    "markPrice": to_decimal(position.get("markPrice", "0")),
-                    "unrealisedPnl": to_decimal(position.get("unrealisedPnl", "0")),
-                    "breakEvenPrice": to_decimal(position.get("breakEvenPrice", "0")),
-                    "stopLoss": position.get("stopLoss", "0"),  # Цена стоп-лосса
-                    "takeProfit": position.get("takeProfit", "0"),  # Цена тейк-профита
-                    "leverage": position.get("leverage", "1")
+        for attempt in range(max_retries):
+            try:
+                params = {
+                    "category": "linear",
+                    "symbol": symbol
                 }
 
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка получения информации о позиции {symbol}: {e}", module_name=__name__)
+                log_info(self.user_id,
+                        f"[POSITION_INFO] Попытка {attempt + 1}/{max_retries} получения позиции {symbol}...",
+                        module_name=__name__)
+
+                result = await self._make_request("GET", "/v5/position/list", params)
+
+                if result and "list" in result and len(result["list"]) > 0:
+                    position = result["list"][0]
+                    position_data = {
+                        "symbol": position.get("symbol"),
+                        "side": position.get("side"),
+                        "size": to_decimal(position.get("size", "0")),
+                        "avgPrice": to_decimal(position.get("avgPrice", "0")),
+                        "markPrice": to_decimal(position.get("markPrice", "0")),
+                        "unrealisedPnl": to_decimal(position.get("unrealisedPnl", "0")),
+                        "breakEvenPrice": to_decimal(position.get("breakEvenPrice", "0")),
+                        "stopLoss": position.get("stopLoss", "0"),
+                        "takeProfit": position.get("takeProfit", "0"),
+                        "leverage": position.get("leverage", "1")
+                    }
+
+                    log_info(self.user_id,
+                            f"✅ [POSITION_INFO] Успешно получена позиция на попытке {attempt + 1}",
+                            module_name=__name__)
+                    return position_data
+                else:
+                    if attempt < max_retries - 1:
+                        log_warning(self.user_id,
+                                   f"⚠️ [POSITION_INFO] Попытка {attempt + 1}: Позиция не найдена, повторяю через {retry_delay}s...",
+                                   module_name=__name__)
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        log_warning(self.user_id,
+                                   f"⚠️ [POSITION_INFO] Позиция {symbol} не найдена после {max_retries} попыток",
+                                   module_name=__name__)
+                        return None
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    log_warning(self.user_id,
+                               f"⚠️ [POSITION_INFO] Попытка {attempt + 1}: Ошибка {e}, повторяю через {retry_delay}s...",
+                               module_name=__name__)
+                    await asyncio.sleep(retry_delay)
+                    continue
+                else:
+                    log_error(self.user_id,
+                             f"❌ [POSITION_INFO] Ошибка получения позиции {symbol} после {max_retries} попыток: {e}",
+                             module_name=__name__)
+                    return None
+
+        return None
+
+    async def get_closed_pnl(self, symbol: str, limit: int = 1, max_retries: int = 3, retry_delay: float = 1.0) -> Optional[Dict[str, Any]]:
+        """
+        Получение реализованного PnL (closedPnL) для последней закрытой позиции.
+        Использует эндпоинт /v5/position/closed-pnl для получения ТОЧНЫХ данных от биржи.
+
+        ВАЖНО: Использует retry механизм с несколькими попытками для надежности!
+
+        Args:
+            symbol: Торговый символ (например, SOLUSDT)
+            limit: Количество записей (по умолчанию 1 - последняя закрытая позиция)
+            max_retries: Максимальное количество попыток запроса (по умолчанию 3)
+            retry_delay: Задержка между попытками в секундах (по умолчанию 1.0)
+
+        Returns:
+            Dict с данными о закрытой позиции:
+            - symbol: Символ
+            - closedPnl: Реализованный PnL (уже с учетом всех комиссий!)
+            - avgEntryPrice: Средняя цена входа
+            - avgExitPrice: Средняя цена выхода
+            - closedSize: Закрытый размер позиции
+            - createdTime: Время создания позиции
+            - updatedTime: Время обновления (закрытия)
+        """
+        for attempt in range(max_retries):
+            try:
+                params = {
+                    "category": "linear",
+                    "symbol": symbol,
+                    "limit": limit
+                }
+
+                log_info(self.user_id,
+                        f"[CLOSED_PNL] Попытка {attempt + 1}/{max_retries} получения closedPnL для {symbol}...",
+                        module_name=__name__)
+
+                result = await self._make_request("GET", "/v5/position/closed-pnl", params)
+
+                if result and "list" in result and len(result["list"]) > 0:
+                    closed_position = result["list"][0]
+
+                    pnl_data = {
+                        "symbol": closed_position.get("symbol"),
+                        "closedPnl": to_decimal(closed_position.get("closedPnl", "0")),
+                        "avgEntryPrice": to_decimal(closed_position.get("avgEntryPrice", "0")),
+                        "avgExitPrice": to_decimal(closed_position.get("avgExitPrice", "0")),
+                        "closedSize": to_decimal(closed_position.get("closedSize", "0")),
+                        "side": closed_position.get("side"),
+                        "leverage": closed_position.get("leverage", "1"),
+                        "createdTime": closed_position.get("createdTime"),
+                        "updatedTime": closed_position.get("updatedTime")
+                    }
+
+                    log_info(self.user_id,
+                            f"✅ [CLOSED_PNL] Успешно получен closedPnL на попытке {attempt + 1}: {pnl_data['closedPnl']} USDT",
+                            module_name=__name__)
+                    return pnl_data
+
+                else:
+                    # Данные не найдены - это может быть нормально (позиция еще не попала в историю)
+                    if attempt < max_retries - 1:
+                        log_warning(self.user_id,
+                                   f"⚠️ [CLOSED_PNL] Попытка {attempt + 1}: Данные не найдены, повторяю через {retry_delay}s...",
+                                   module_name=__name__)
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        log_warning(self.user_id,
+                                   f"⚠️ [CLOSED_PNL] Закрытый PnL для {symbol} не найден после {max_retries} попыток",
+                                   module_name=__name__)
+                        return None
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    log_warning(self.user_id,
+                               f"⚠️ [CLOSED_PNL] Попытка {attempt + 1}: Ошибка {e}, повторяю через {retry_delay}s...",
+                               module_name=__name__)
+                    await asyncio.sleep(retry_delay)
+                    continue
+                else:
+                    log_error(self.user_id,
+                             f"❌ [CLOSED_PNL] Ошибка получения closedPnL для {symbol} после {max_retries} попыток: {e}",
+                             module_name=__name__)
+                    return None
 
         return None
 
@@ -589,55 +744,84 @@ class BybitAPI:
         reduce_only: bool = False,
         close_on_trigger: bool = False,
         stop_loss: Optional[Decimal] = None,
-        take_profit: Optional[Decimal] = None
+        take_profit: Optional[Decimal] = None,
+        max_retries: int = 3,
+        retry_delay: float = 1.0
     ) -> Optional[str]:
         """
         Размещение ордера. Доверяет полученному qty и просто форматирует его в строку.
+
+        ВАЖНО: Использует retry механизм с несколькими попытками для надежности!
         """
-        try:
-            # Используем to_eng_string() для гарантии, что число не будет в научной нотации (например, 1e-5)
-            formatted_qty = qty.to_eng_string()
+        # Используем to_eng_string() для гарантии, что число не будет в научной нотации (например, 1e-5)
+        formatted_qty = qty.to_eng_string()
 
-            params = {
-                "category": "linear",
-                "symbol": symbol,
-                "side": side,
-                "orderType": order_type,
-                "qty": formatted_qty, # Используем просто отформатированную строку
-                "timeInForce": time_in_force
-            }
+        params = {
+            "category": "linear",
+            "symbol": symbol,
+            "side": side,
+            "orderType": order_type,
+            "qty": formatted_qty,
+            "timeInForce": time_in_force
+        }
 
-            # Для стоп-ордеров используем triggerPrice вместо price
-            if order_type in ["Stop", "StopLimit"]:
-                if price is not None:
-                    params["triggerPrice"] = str(price)
-            else:
-                if price is not None:
-                    params["price"] = str(price)
-            if reduce_only:
-                params["reduceOnly"] = True
-            if close_on_trigger:
-                params["closeOnTrigger"] = True
-            if stop_loss is not None:
-                params["stopLoss"] = str(stop_loss)
-            if take_profit is not None:
-                params["takeProfit"] = str(take_profit)
+        # Для стоп-ордеров используем triggerPrice вместо price
+        if order_type in ["Stop", "StopLimit"]:
+            if price is not None:
+                params["triggerPrice"] = str(price)
+        else:
+            if price is not None:
+                params["price"] = str(price)
+        if reduce_only:
+            params["reduceOnly"] = True
+        if close_on_trigger:
+            params["closeOnTrigger"] = True
+        if stop_loss is not None:
+            params["stopLoss"] = str(stop_loss)
+        if take_profit is not None:
+            params["takeProfit"] = str(take_profit)
 
-            result = await self._make_request("POST", "/v5/order/create", params)
-
-            if result and "orderId" in result and result["orderId"]:
-                order_id = result["orderId"]
+        for attempt in range(max_retries):
+            try:
                 log_info(self.user_id,
-                         f"Ордер успешно размещен: {side} {formatted_qty} {symbol} по {price if price else 'рынку'} (ID: {order_id})",
-                         "bybit_api")
-                return order_id
-            else:
-                log_error(self.user_id, f"Не удалось разместить ордер. Ответ API: {result}", "bybit_api")
-                return None
+                        f"[PLACE_ORDER] Попытка {attempt + 1}/{max_retries} размещения ордера {side} {formatted_qty} {symbol}...",
+                        "bybit_api")
 
-        except Exception as e:
-            log_error(self.user_id, f"Исключение при размещении ордера: {e}", "bybit_api")
-            return None
+                result = await self._make_request("POST", "/v5/order/create", params)
+
+                if result and "orderId" in result and result["orderId"]:
+                    order_id = result["orderId"]
+                    log_info(self.user_id,
+                            f"✅ [PLACE_ORDER] Ордер успешно размещен на попытке {attempt + 1}: {side} {formatted_qty} {symbol} (ID: {order_id})",
+                            "bybit_api")
+                    return order_id
+                else:
+                    if attempt < max_retries - 1:
+                        log_warning(self.user_id,
+                                   f"⚠️ [PLACE_ORDER] Попытка {attempt + 1}: Не удалось разместить ордер, повторяю через {retry_delay}s...",
+                                   "bybit_api")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        log_error(self.user_id,
+                                 f"❌ [PLACE_ORDER] Не удалось разместить ордер после {max_retries} попыток. Ответ API: {result}",
+                                 "bybit_api")
+                        return None
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    log_warning(self.user_id,
+                               f"⚠️ [PLACE_ORDER] Попытка {attempt + 1}: Ошибка {e}, повторяю через {retry_delay}s...",
+                               "bybit_api")
+                    await asyncio.sleep(retry_delay)
+                    continue
+                else:
+                    log_error(self.user_id,
+                             f"❌ [PLACE_ORDER] Исключение при размещении ордера после {max_retries} попыток: {e}",
+                             "bybit_api")
+                    return None
+
+        return None
 
     
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
@@ -703,36 +887,66 @@ class BybitAPI:
     
 
     
-    async def set_leverage(self, symbol: str, leverage: int) -> bool:
-        """Установка плеча"""
-        try:
-            params = {
-                "category": "linear",
-                "symbol": symbol,
-                "buyLeverage": str(leverage),
-                "sellLeverage": str(leverage)
-            }
+    async def set_leverage(self, symbol: str, leverage: int, max_retries: int = 3, retry_delay: float = 1.0) -> bool:
+        """
+        Установка плеча.
 
-            response = await self._make_request("POST", "/v5/position/set-leverage", params, return_full_response=True)
+        ВАЖНО: Использует retry механизм с несколькими попытками для надежности!
+        """
+        params = {
+            "category": "linear",
+            "symbol": symbol,
+            "buyLeverage": str(leverage),
+            "sellLeverage": str(leverage)
+        }
 
-            ret_code = response.get("retCode", -1) if response else -1
+        for attempt in range(max_retries):
+            try:
+                log_info(self.user_id,
+                        f"[SET_LEVERAGE] Попытка {attempt + 1}/{max_retries} установки плеча {leverage}x для {symbol}...",
+                        module_name="bybit_api")
 
-            if ret_code == 0 or ret_code == 110043:
-                if ret_code == 0:
-                    log_info(self.user_id, f"Плечо успешно установлено {leverage}x для {symbol}",
-                             module_name="bybit_api")
+                response = await self._make_request("POST", "/v5/position/set-leverage", params, return_full_response=True)
+
+                ret_code = response.get("retCode", -1) if response else -1
+
+                if ret_code == 0 or ret_code == 110043:
+                    if ret_code == 0:
+                        log_info(self.user_id,
+                                f"✅ [SET_LEVERAGE] Плечо успешно установлено {leverage}x для {symbol} на попытке {attempt + 1}",
+                                module_name="bybit_api")
+                    else:
+                        log_info(self.user_id,
+                                f"✅ [SET_LEVERAGE] Плечо для {symbol} уже было {leverage}x (попытка {attempt + 1})",
+                                module_name="bybit_api")
+                    return True
                 else:
-                    log_info(self.user_id, f"Плечо для {symbol} уже было {leverage}x. Изменения не требуются.",
-                             module_name="bybit_api")
-                return True
-            else:
-                error_msg = response.get("retMsg", "Неизвестная ошибка") if response else "Пустой ответ"
-                log_error(self.user_id,
-                          f"Не удалось установить плечо для {symbol}. Ошибка: {error_msg} (код: {ret_code})",
-                          module_name="bybit_api")
+                    if attempt < max_retries - 1:
+                        error_msg = response.get("retMsg", "Неизвестная ошибка") if response else "Пустой ответ"
+                        log_warning(self.user_id,
+                                   f"⚠️ [SET_LEVERAGE] Попытка {attempt + 1}: Ошибка {error_msg} (код: {ret_code}), повторяю через {retry_delay}s...",
+                                   module_name="bybit_api")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        error_msg = response.get("retMsg", "Неизвестная ошибка") if response else "Пустой ответ"
+                        log_error(self.user_id,
+                                 f"❌ [SET_LEVERAGE] Не удалось установить плечо для {symbol} после {max_retries} попыток. Ошибка: {error_msg} (код: {ret_code})",
+                                 module_name="bybit_api")
+                        return False
 
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка установки плеча для {symbol}: {e}", module_name="bybit_api")
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    log_warning(self.user_id,
+                               f"⚠️ [SET_LEVERAGE] Попытка {attempt + 1}: Ошибка {e}, повторяю через {retry_delay}s...",
+                               module_name="bybit_api")
+                    await asyncio.sleep(retry_delay)
+                    continue
+                else:
+                    log_error(self.user_id,
+                             f"❌ [SET_LEVERAGE] Ошибка установки плеча для {symbol} после {max_retries} попыток: {e}",
+                             module_name="bybit_api")
+                    return False
 
         return False
     

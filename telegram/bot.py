@@ -164,9 +164,11 @@ class TelegramBotManager:
     def set_bot_application(self, bot_app):
         """Устанавливает BotApplication для обработчиков команд"""
         try:
-            from .handlers.basic import set_bot_application
-            set_bot_application(bot_app)
-            log_info(0, "BotApplication установлен для обработчиков", module_name='bot')
+            from .handlers.basic import set_bot_application as set_bot_app_basic
+            from .handlers.callback import set_bot_application as set_bot_app_callback
+            set_bot_app_basic(bot_app)
+            set_bot_app_callback(bot_app)
+            log_info(0, "BotApplication установлен для обработчиков (basic + callback)", module_name='bot')
         except Exception as e:
             log_error(0, f"Ошибка установки BotApplication: {e}", module_name='bot')
     

@@ -10,6 +10,8 @@ from dataclasses import dataclass
 
 from core.logger import log_info, log_warning, log_error, log_debug
 from strategies.signal_scalper_strategy import SignalScalperStrategy
+from cache.redis_manager import redis_manager
+from core.enums import ConfigType
 
 
 @dataclass
@@ -196,15 +198,49 @@ class MultiAccountCoordinator:
         АКТИВИРУЕМ Бот N+1 если:
         - Бот N застрял (status='stuck')
         - Бот N+1 существует и НЕ активен
+        - НЕТ более приоритетных СВОБОДНЫХ ботов
+        - Символ ВСЁ ЕЩЁ в watchlist (не удален пользователем)
 
         ВАЖНО: НЕ требует блокировки, т.к. координатор работает в своём event loop
         и каждый координатор изолирован по символу.
         """
+        # КРИТИЧНО: Проверяем, что символ всё ещё в watchlist
+        # Если пользователь удалил символ - НЕ активируем новых ботов
+        try:
+            global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
+            watchlist = set(global_config.get("watchlist_symbols", []))
+
+            if self.symbol not in watchlist:
+                # Символ удален из watchlist - не активируем новых ботов
+                # Боты в позициях продолжат работу до закрытия сделки
+                log_info(self.user_id,
+                        f"⏸️ Символ {self.symbol} удален из watchlist → НЕ активирую новых ботов (текущие позиции продолжают работу)",
+                        "Coordinator")
+                return
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка проверки watchlist: {e}", "Coordinator")
+            # В случае ошибки не блокируем активацию (fail-safe)
+
         for priority in [1, 2]:  # Проверяем Бот 1 и Бот 2
             bot_data = self.bots[priority]
             next_priority = priority + 1
 
             if bot_data.status == 'stuck' and next_priority not in self.active_bots:
+                # КРИТИЧНО: Проверяем, есть ли более приоритетные СВОБОДНЫЕ боты
+                # Если Бот 1 свободен, не нужно активировать Бот 3 (даже если Бот 2 застрял)
+                has_higher_priority_free = any(
+                    self.bots[p].status == 'free'
+                    for p in range(1, priority)
+                )
+
+                if has_higher_priority_free:
+                    # Есть более приоритетный свободный бот - не активируем следующего
+                    log_info(self.user_id,
+                            f"⏸️ Бот {priority} ({self.symbol}) застрял, но есть свободный более приоритетный бот → НЕ активирую Бот {next_priority}",
+                            "Coordinator")
+                    continue
+
+                # Нет свободных более приоритетных - активируем следующего
                 log_warning(self.user_id,
                            f"🟡 Бот {priority} ({self.symbol}) застрял → Активирую Бот {next_priority}",
                            "Coordinator")

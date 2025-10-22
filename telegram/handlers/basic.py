@@ -29,6 +29,21 @@ from ..keyboards.inline import (
 )
 from core.logger import log_info, log_error, log_warning
 from core.settings_config import system_config, DEFAULT_SYMBOLS
+from .multi_account_helpers import (
+    PRIORITY_NAMES,
+    PRIORITY_EMOJIS,
+    validate_api_keys,
+    is_multi_account_mode,
+    is_active_position,
+    is_active_order,
+    get_multi_account_balance,
+    get_multi_account_positions,
+    get_multi_account_orders,
+    get_multi_account_positions_and_orders,
+    format_multi_account_balance,
+    format_multi_account_positions,
+    format_multi_account_orders
+)
 
 
 
@@ -161,32 +176,21 @@ async def cmd_help(message: Message, state: FSMContext):
 
         help_text = (
             f"📚 <b>Справка по командам</b>\n\n"
-            f"<b>🔧 Основные команды:</b>\n"
-            f"/start - Запуск бота и главное меню\n"
-            f"/help - Показать эту справку\n"
-            f"/status - Текущий статус торговли\n"
+            f"<b>🏠 Основные:</b>\n"
+            f"/start - Главное меню\n"
             f"/settings - Настройки бота\n"
-            f"/stats - Статистика торговли\n\n"
-            f"<b>🚀 Управление торговлей:</b>\n"
-            f"/trade_start - Запустить торговлю\n"
-            f"/trade_stop - Остановить торговлю\n"
-            f"/emergency_stop - Экстренная остановка\n\n"
-            f"<b>📊 Информация:</b>\n"
+            f"/help - Показать эту справку\n\n"
+            f"<b>▶️ Управление торговлей:</b>\n"
+            f"/autotrade_start - Начать торговлю\n"
+            f"/autotrade_stop - Остановить торговлю\n"
+            f"/autotrade_status - Статус торговли\n"
+            f"/stop_all - Экстренная остановка\n\n"
+            f"<b>📊 Информация и статистика:</b>\n"
             f"/balance - Баланс аккаунта\n"
-            f"/positions - Активные позиции\n"
-            f"/orders - Активные ордера\n"
-            f"/history - История сделок\n\n"
-            f"<b>⚙️ Настройки:</b>\n"
-            f"/risk - Настройки риск-менеджмента\n"
-            f"/strategies - Настройки стратегий\n"
-            f"/watchlist - Управление списком символов\n"
-            f"/api - Настройка API ключей\n\n"
-            f"<b>💡 Советы:</b>\n"
-            f"• Всегда настройте API ключи перед торговлей\n"
-            f"• Начните с консервативных настроек риска\n"
-            f"• Регулярно проверяйте статистику\n"
-            f"• Используйте стоп-лоссы для защиты капитала\n\n"
-            f"Для получения подробной информации используйте кнопки меню."
+            f"/trade_details - Детали позиций (усреднения, безубыток)\n"
+            f"/stats - Статистика торговли\n\n"
+            f"<b>💡 Совет:</b>\n"
+            f"Используйте inline-кнопки в главном меню для быстрого доступа ко всем функциям бота."
         )
 
         await message.answer(
@@ -199,180 +203,166 @@ async def cmd_help(message: Message, state: FSMContext):
         log_error(user_id, f"Ошибка в команде /help: {e}", module_name='basic_handlers')
         await message.answer("❌ Ошибка получения справки")
 
-@router.message(Command("status"))
-async def cmd_status(message: Message, state: FSMContext):
-    """Обработчик команды /status"""
+
+@router.message(Command("trade_details"))
+async def cmd_trade_details(message: Message, state: FSMContext):
+    """
+    Обработчик команды /trade_details - детальная информация о текущих позициях стратегий.
+    Показывает полную информацию о каждой активной позиции: цену входа, текущую цену,
+    процент просадки, количество усреднений, цену безубытка и т.д.
+    """
     user_id = message.from_user.id
+    await basic_handler.log_command_usage(user_id, "trade_details")
 
     try:
-        await basic_handler.log_command_usage(user_id, "status")
-
-        # Получаем статус сессии
-        session_status = await redis_manager.get_user_session(user_id)
-        user_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
-
-        if not session_status:
-            status_text = (
-                f"🔴 <b>Статус: Неактивен</b>\n\n"
-                f"Торговая сессия не запущена.\n"
-                f"Используйте /autotrade_start для запуска торговли."
-            )
-        else:
-            # ИСПРАВЛЕНО: Ключ 'is_active' заменен на 'running' в соответствии с user_session.py
-            is_active = session_status.get('running', False)
-            active_strategies = session_status.get('active_strategies', [])
-            last_activity = session_status.get('last_activity')
-
-            status_emoji = "🟢" if is_active else "🔴"
-            status_name = "Активен" if is_active else "Неактивен"
-
-            status_text = (
-                f"{status_emoji} <b>Статус: {status_name}</b>\n\n"
-                f"📊 <b>Активных стратегий:</b> {len(active_strategies)}\n"
-            )
-
-            if active_strategies:
-                # обработка списка стратегий
-                status_text += f"🔄 <b>Стратегии:</b> {', '.join(active_strategies)}\n"
-
-            if last_activity:
-                status_text += f"⏰ <b>Последняя активность:</b> {last_activity}\n"
-
-            # Добавляем информацию о настройках риска
-            if user_config:
-                status_text += (
-                    f"\n🛡️ <b>Настройки риска:</b>\n"
-                    f"🎯 Риск на сделку: {user_config.get('risk_per_trade_percent', 2)}%\n"
-                    f"📉 Макс. просадка: {user_config.get('global_daily_drawdown_percent', 10)}%\n"
-                    f"📊 Макс. сделок: {user_config.get('max_concurrent_trades', 3)}\n"
-                )
-
-        await message.answer(
-            status_text,
-            reply_markup=get_quick_actions_keyboard(session_status.get('running', False) if session_status else False),
-            parse_mode="HTML"
-        )
-
-    except Exception as e:
-        log_error(user_id, f"Ошибка в команде /status: {e}", module_name='basic_handlers')
-        await message.answer("❌ Ошибка получения статуса")
-
-
-
-@router.message(Command("orders"))
-async def cmd_orders(message: Message, state: FSMContext):
-    """Обработчик команды /orders с поддержкой multi-account режима"""
-    user_id = message.from_user.id
-    await basic_handler.log_command_usage(user_id, "orders")
-
-    try:
-        exchange_config = system_config.get_exchange_config("bybit")
-        use_demo = exchange_config.demo if exchange_config else False
-
-        # === ПРОВЕРКА MULTI-ACCOUNT РЕЖИМА ===
-        all_api_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
-
-        if not all_api_keys or len(all_api_keys) == 0:
-            await message.answer("⚠️ API ключи не настроены. Не могу получить список ордеров.")
+        # Проверяем, запущена ли торговая сессия
+        if not basic_handler.bot_application:
+            await message.answer("⚠️ Система не инициализирована. Попробуйте позже.")
             return
 
-        # === MULTI-ACCOUNT РЕЖИМ (3 аккаунта) ===
-        if len(all_api_keys) == 3:
-            log_info(user_id, "Получение ордеров в multi-account режиме (3 аккаунта)", "orders")
+        # Проверяем наличие активной сессии пользователя
+        if user_id not in basic_handler.bot_application.active_sessions:
+            await message.answer(
+                "❌ <b>Торговая сессия не активна</b>\n\n"
+                "Запустите автоторговлю командой /autotrade_start",
+                parse_mode="HTML"
+            )
+            return
 
-            all_orders = []  # Все ордера со всех аккаунтов
+        # Получаем активную сессию пользователя
+        user_session = basic_handler.bot_application.active_sessions[user_id]
 
-            # Получаем ордера для каждого аккаунта
-            for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
-                priority = key_data['priority']
-                try:
-                    async with BybitAPI(
-                        user_id=user_id,
-                        api_key=key_data['api_key'],
-                        api_secret=key_data['secret_key'],
-                        demo=use_demo
-                    ) as api:
-                        orders = await api.get_open_orders()
+        # Получаем все активные стратегии
+        active_strategies = list(user_session.strategies.values())
 
-                    if orders:
-                        # Добавляем маркер приоритета к каждому ордеру
-                        for order in orders:
-                            order['_bot_priority'] = priority  # Добавляем метку бота
-                            all_orders.append(order)
-                except Exception as account_error:
-                    log_error(user_id, f"Ошибка получения ордеров для аккаунта {priority}: {account_error}", "orders")
+        if not active_strategies:
+            await message.answer(
+                "ℹ️ <b>Нет активных стратегий</b>\n\n"
+                "Настройте стратегии в /settings",
+                parse_mode="HTML"
+            )
+            return
 
-            if not all_orders:
-                await message.answer("✅ У вас нет открытых ордеров на всех аккаунтах.")
-                return
+        # Собираем детальную информацию по всем стратегиям
+        positions_found = False
+        status_text = "📊 <b>ДЕТАЛЬНАЯ ИНФОРМАЦИЯ О ПОЗИЦИЯХ</b>\n"
+        status_text += "═" * 40 + "\n\n"
 
-            # Формируем сообщение для multi-account режима
-            orders_text = "📋 <b>ОТКРЫТЫЕ ОРДЕРА (Multi-Account Режим)</b>\n"
-            orders_text += "═" * 35 + "\n\n"
+        for strategy in active_strategies:
+            # Проверяем, есть ли метод get_detailed_status
+            if not hasattr(strategy, 'get_detailed_status'):
+                continue
 
-            # Группируем ордера по ботам
-            priority_names = {1: "PRIMARY", 2: "SECONDARY", 3: "TERTIARY"}
+            # Получаем детальный статус от стратегии
+            detailed_status = await strategy.get_detailed_status()
+
+            # Пропускаем если нет позиции
+            if not detailed_status.get("has_position", False):
+                continue
+
+            positions_found = True
+            symbol = detailed_status["symbol"]
+            symbol_short = symbol.replace('USDT', '')
+            account_priority = detailed_status.get("account_priority", 1)
+
+            # Определяем приоритет бота для multi-account режима
             priority_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
+            priority_emoji = priority_emojis.get(account_priority, f"#{account_priority}")
 
-            for priority in [1, 2, 3]:
-                bot_orders = [o for o in all_orders if o['_bot_priority'] == priority]
+            # Основная информация о позиции
+            position = detailed_status["position"]
+            direction = position["direction"]
+            direction_emoji = "📈" if direction == "LONG" else "📉"
+            entry_price = position["entry_price"]
+            current_price = position["current_price"]
+            position_size = position["position_size"]
+            total_position_size = position.get("total_position_size", position_size)
 
-                if bot_orders:
-                    name = priority_names.get(priority, f"Бот {priority}")
-                    emoji = priority_emojis.get(priority, "🔹")
+            # Информация об усреднениях
+            averaging = detailed_status["averaging"]
+            averaging_count = averaging["count"]
+            average_entry_price = averaging.get("average_entry_price")
+            effective_entry_price = averaging.get("effective_entry_price", entry_price)
+            breakeven_price = averaging.get("breakeven_price")
+            use_breakeven_exit = averaging.get("use_breakeven_exit", False)
 
-                    orders_text += f"{emoji} <b>{name} (Бот {priority})</b>\n"
-                    orders_text += "─" * 30 + "\n"
+            # Информация о марже
+            margin = detailed_status["margin"]
+            initial_margin = margin["initial_margin"]
+            current_total_margin = margin["current_total_margin"]
+            total_fees_paid = margin["total_fees_paid"]
 
-                    for order in bot_orders:
-                        side_emoji = "🟢" if order['side'] == 'Buy' else "🔴"
-                        orders_text += f"\n<b>{order['symbol']}</b> | {side_emoji} {order['side']}\n"
-                        orders_text += f"  • Тип: {order['orderType']}\n"
-                        orders_text += f"  • Кол-во: {order['qty']}\n"
-                        orders_text += f"  • Цена: {format_currency(order['price'])}\n"
-                        orders_text += f"  • Статус: {order['orderStatus']}\n"
+            # PnL информация
+            pnl = detailed_status["pnl"]
+            unrealized_pnl = pnl["unrealized_pnl"]
+            price_change_percent = pnl["price_change_percent"]
 
-                    orders_text += "\n"
+            # Форматируем заголовок
+            status_text += f"{priority_emoji} <b>{symbol_short}</b> | {direction_emoji} {direction}\n"
+            status_text += "─" * 35 + "\n"
 
-            # Агрегированная статистика
-            orders_text += "═" * 35 + "\n"
-            orders_text += f"🌟 <b>ИТОГО:</b> {len(all_orders)} ордеров\n"
+            # ЦЕНЫ
+            status_text += f"💵 <b>Цены:</b>\n"
+            if averaging_count > 0 and average_entry_price:
+                # Если было усреднение - показываем детали
+                status_text += f"  • Первый вход: ${entry_price:.4f}\n"
+                status_text += f"  • Средняя цена: ${average_entry_price:.4f}\n"
+                status_text += f"  • Текущая цена: ${current_price:.4f}\n"
 
-            await message.answer(orders_text, parse_mode="HTML")
+                # Цена безубытка
+                if breakeven_price:
+                    distance_to_be = abs(current_price - breakeven_price)
+                    distance_pct = (distance_to_be / breakeven_price) * 100
+                    be_emoji = "✅" if (direction == "LONG" and current_price >= breakeven_price) or (direction == "SHORT" and current_price <= breakeven_price) else "⏳"
+                    status_text += f"  • Безубыток: ${breakeven_price:.4f} {be_emoji}\n"
+                    if be_emoji == "⏳":
+                        status_text += f"     (до БЕ: {distance_pct:.2f}%)\n"
+            else:
+                # Обычная позиция без усреднения
+                status_text += f"  • Цена входа: ${entry_price:.4f}\n"
+                status_text += f"  • Текущая цена: ${current_price:.4f}\n"
 
-        # === ОБЫЧНЫЙ РЕЖИМ (1 аккаунт) ===
-        else:
-            log_info(user_id, "Получение ордеров в обычном режиме (1 аккаунт)", "orders")
+            # ПРОСАДКА/ПРИБЫЛЬ
+            pnl_emoji = "🟢" if unrealized_pnl >= 0 else "🔴"
+            change_emoji = "📈" if price_change_percent >= 0 else "📉"
+            status_text += f"\n{pnl_emoji} <b>{'Прибыль' if unrealized_pnl >= 0 else 'Просадка'}:</b> ${unrealized_pnl:.2f}\n"
+            status_text += f"{change_emoji} <b>Изменение цены:</b> {price_change_percent:+.2f}%\n"
 
-            # Получаем PRIMARY ключ
-            keys = await db_manager.get_api_keys(user_id, "bybit", account_priority=1)
-            if not keys:
-                await message.answer("⚠️ API ключи не настроены. Не могу получить список ордеров.")
-                return
+            # УСРЕДНЕНИЯ
+            if averaging_count > 0:
+                status_text += f"\n🔄 <b>Усреднения:</b> {averaging_count}\n"
+                status_text += f"  • Начальная маржа: ${initial_margin:.2f}\n"
+                status_text += f"  • Общая маржа: ${current_total_margin:.2f}\n"
+                status_text += f"  • Комиссии: ${total_fees_paid:.2f}\n"
+                status_text += f"  • Объем позиции: {total_position_size}\n"
 
-            async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], demo=use_demo) as api:
-                orders = await api.get_open_orders()
+                if use_breakeven_exit:
+                    status_text += f"  • 🎯 Выход в БУ активирован\n"
 
-            if not orders:
-                await message.answer("✅ У вас нет открытых ордеров.")
-                return
+            # СТОП-ЛОСС
+            stop_loss = detailed_status.get("stop_loss", {})
+            if stop_loss.get("has_stop_loss"):
+                sl_price = stop_loss.get("stop_loss_price")
+                if sl_price:
+                    status_text += f"\n🛡️ <b>Stop Loss:</b> ${sl_price:.4f}\n"
 
-            orders_text = "📋 <b>Открытые ордера:</b>\n\n"
-            for order in orders:
-                side_emoji = "🟢" if order['side'] == 'Buy' else "🔴"
-                orders_text += (
-                    f"<b>{order['symbol']}</b> | {side_emoji} {order['side']}\n"
-                    f"  - <b>Тип:</b> {order['orderType']}\n"
-                    f"  - <b>Кол-во:</b> {order['qty']}\n"
-                    f"  - <b>Цена:</b> {format_currency(order['price'])}\n"
-                    f"  - <b>Статус:</b> {order['orderStatus']}\n\n"
-                )
+            status_text += "\n"
 
-            await message.answer(orders_text, parse_mode="HTML")
+        if not positions_found:
+            status_text += "ℹ️ Нет открытых позиций\n\n"
+            status_text += "Стратегии активны и ожидают сигналов для входа."
+
+        # Добавляем timestamp
+        from datetime import datetime, timezone, timedelta
+        moscow_tz = timezone(timedelta(hours=3))
+        current_time = datetime.now(moscow_tz).strftime('%H:%M:%S')
+        status_text += f"\n🕐 Обновлено: {current_time} МСК"
+
+        await message.answer(status_text, parse_mode="HTML")
 
     except Exception as e:
-        log_error(user_id, f"Ошибка получения ордеров: {e}", module_name='basic_handlers')
-        await message.answer("❌ Произошла ошибка при запросе открытых ордеров.")
+        log_error(user_id, f"Ошибка в команде /trade_details: {e}", module_name='basic_handlers')
+        await message.answer("❌ Произошла ошибка при получении детальной информации о позициях.")
 
 
 @router.message(Command("stats"))
@@ -510,39 +500,11 @@ async def cmd_autotrade_stop(message: Message, state: FSMContext):
         from api.bybit_api import BybitAPI
 
         # === MULTI-ACCOUNT РЕЖИМ (3 аккаунта) ===
-        if len(all_api_keys) == 3:
+        if is_multi_account_mode(all_api_keys):
             log_info(user_id, "Остановка торговли в multi-account режиме (3 аккаунта)", "autotrade_stop")
 
-            all_positions = []
-            all_orders = []
-
-            # Собираем позиции и ордера со всех 3 аккаунтов
-            for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
-                priority = key_data['priority']
-                try:
-                    async with BybitAPI(
-                        user_id=user_id,
-                        api_key=key_data['api_key'],
-                        api_secret=key_data['secret_key'],
-                        demo=use_demo
-                    ) as api:
-                        positions = await api.get_positions()
-                        orders = await api.get_open_orders()
-
-                        if positions:
-                            for pos in positions:
-                                if float(pos.get('size', 0)) != 0:
-                                    pos['_bot_priority'] = priority
-                                    all_positions.append(pos)
-
-                        if orders:
-                            for order in orders:
-                                if order.get('orderStatus') in ['New', 'PartiallyFilled']:
-                                    order['_bot_priority'] = priority
-                                    all_orders.append(order)
-
-                except Exception as account_error:
-                    log_error(user_id, f"Ошибка получения данных для аккаунта {priority}: {account_error}", "autotrade_stop")
+            # Используем helper функцию для получения позиций и ордеров
+            all_positions, all_orders = await get_multi_account_positions_and_orders(user_id, all_api_keys, use_demo)
 
             total_active = len(all_positions) + len(all_orders)
 
@@ -765,36 +727,8 @@ async def _monitor_pending_trades_multi(user_id: int, message: Message, all_api_
         try:
             current_time = time.time()
 
-            # Собираем позиции и ордера со всех 3 аккаунтов
-            all_positions = []
-            all_orders = []
-
-            for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
-                priority = key_data['priority']
-                try:
-                    async with BybitAPI(
-                        user_id=user_id,
-                        api_key=key_data['api_key'],
-                        api_secret=key_data['secret_key'],
-                        demo=use_demo
-                    ) as api:
-                        positions = await api.get_positions()
-                        orders = await api.get_open_orders()
-
-                        if positions:
-                            for pos in positions:
-                                if float(pos.get('size', 0)) != 0:
-                                    pos['_bot_priority'] = priority
-                                    all_positions.append(pos)
-
-                        if orders:
-                            for order in orders:
-                                if order.get('orderStatus') in ['New', 'PartiallyFilled']:
-                                    order['_bot_priority'] = priority
-                                    all_orders.append(order)
-
-                except Exception as account_error:
-                    log_error(user_id, f"Ошибка мониторинга аккаунта {priority}: {account_error}", "monitor_multi")
+            # Используем helper функцию для получения позиций и ордеров
+            all_positions, all_orders = await get_multi_account_positions_and_orders(user_id, all_api_keys, use_demo)
 
             total_active = len(all_positions) + len(all_orders)
 
@@ -894,32 +828,32 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
         # Получаем сессию пользователя из Redis
         session_status = await redis_manager.get_user_session(user_id)
 
+        # Логируем для отладки
+        log_info(user_id, f"Проверка статуса: session_status={session_status}", "autotrade_status")
+
         # КРИТИЧНО: Валидируем Redis данные против реального состояния в BotApplication
         if basic_handler.bot_application:
+            log_info(user_id, f"bot_application найден, active_sessions: {list(basic_handler.bot_application.active_sessions.keys())}", "autotrade_status")
+
             # Проверяем, действительно ли сессия активна в BotApplication
             is_actually_running = user_id in basic_handler.bot_application.active_sessions
 
-            if not is_actually_running:
-                # Сессия не активна в BotApplication, но Redis может содержать stale data
-                if session_status:
-                    # Обнаружены устаревшие данные в Redis - очищаем их
-                    log_warning(user_id,
-                               f"Обнаружены stale данные в Redis: running={session_status.get('running')}, "
-                               f"active_strategies={session_status.get('active_strategies')}. Очищаю...",
-                               "autotrade_status")
-                    await redis_manager.delete_user_session(user_id)
-                    session_status = None
-            else:
-                # Сессия активна - проверяем, совпадает ли running статус
+            if is_actually_running:
+                # Сессия активна в BotApplication - синхронизируем с Redis если нужно
                 actual_session = basic_handler.bot_application.active_sessions[user_id]
-                if session_status and session_status.get('running') != actual_session.running:
-                    log_warning(user_id,
-                               f"Несоответствие состояния: Redis={session_status.get('running')}, "
-                               f"Actual={actual_session.running}. Обновляю Redis...",
+
+                # Если в Redis нет данных или они не совпадают - обновляем из реального состояния
+                if not session_status or session_status.get('running') != actual_session.running:
+                    log_info(user_id,
+                               f"Обновляю данные из active_session: running={actual_session.running}",
                                "autotrade_status")
                     # Принудительно обновляем Redis из реального состояния
                     await actual_session._save_session_state()
                     session_status = await redis_manager.get_user_session(user_id)
+            # ВАЖНО: Если сессия НЕ в active_sessions, доверяем Redis (может быть задержка синхронизации)
+            # НЕ удаляем данные из Redis в этом случае!
+        else:
+            log_warning(user_id, "bot_application не инициализирован, используем только данные из Redis", "autotrade_status")
 
         # ИСПРАВЛЕНО: Если сессии нет или running=False - показываем неактивна
         if not session_status or not session_status.get('running', False):
@@ -986,7 +920,7 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
                 exchange_config = system_config.get_exchange_config("bybit")
                 use_demo = exchange_config.demo if exchange_config else False
 
-                # === MULTI-ACCOUNT РЕЖИМ (3 аккаунта) - агрегируем позиции ===
+                # === MULTI-ACCOUNT РЕЖИМ (3 аккаунта) - показываем позиции по каждому боту отдельно ===
                 if len(all_api_keys) == 3:
                     log_info(user_id, "Получение позиций в autotrade_status (multi-account режим)", "autotrade_status")
 
@@ -1007,20 +941,16 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
                                         symbol = pos.get('symbol', '')
                                         size = float(pos.get('size', 0))
                                         if size != 0:  # Только активные позиции
-                                            # Агрегируем позиции по символу (суммируем PnL)
-                                            if symbol not in positions_data:
-                                                positions_data[symbol] = {
-                                                    'side': pos.get('side', ''),
-                                                    'size': 0,
-                                                    'unrealizedPnl': 0,
-                                                    'avgPrice': float(pos.get('avgPrice', 0)),
-                                                    'markPrice': float(pos.get('markPrice', 0)),
-                                                    'accounts': []
-                                                }
-                                            # Суммируем размер и PnL
-                                            positions_data[symbol]['size'] += size
-                                            positions_data[symbol]['unrealizedPnl'] += float(pos.get('unrealisedPnl', 0))
-                                            positions_data[symbol]['accounts'].append(priority)
+                                            # НОВАЯ СТРУКТУРА: Храним позиции по (symbol, bot_priority)
+                                            key = (symbol, priority)
+                                            positions_data[key] = {
+                                                'side': pos.get('side', ''),
+                                                'size': size,
+                                                'unrealizedPnl': float(pos.get('unrealisedPnl', 0)),
+                                                'avgPrice': float(pos.get('avgPrice', 0)),
+                                                'markPrice': float(pos.get('markPrice', 0)),
+                                                'bot_priority': priority
+                                            }
 
                         except Exception as account_error:
                             log_warning(user_id, f"Ошибка получения позиций для аккаунта {priority}: {account_error}", "autotrade_status")
@@ -1084,29 +1014,55 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
 
             for symbol in symbols:
                 symbol_short = symbol.replace('USDT', '')  # SOLUSDT -> SOL
-                status_text += f"  ▫️ <b>{symbol_short}:</b> "
 
-                # Проверяем состояние позиции
-                if symbol in positions_data:
-                    pos = positions_data[symbol]
-                    pnl = pos['unrealizedPnl']
+                # MULTI-ACCOUNT: Проверяем позиции по всем ботам для этого символа
+                symbol_positions = []
+                for key, pos_data in positions_data.items():
+                    # Ключ может быть symbol (для обычного режима) или (symbol, priority) (для multi-account)
+                    if isinstance(key, tuple):
+                        # Multi-account режим: (symbol, priority)
+                        pos_symbol, priority = key
+                        if pos_symbol == symbol:
+                            symbol_positions.append({**pos_data, 'priority': priority})
+                    elif key == symbol:
+                        # Обычный режим: просто symbol
+                        symbol_positions.append(pos_data)
 
-                    if pnl > 0:
-                        status_text += f"🟢 В прибыли +${pnl:.2f}"
-                    elif pnl < 0:
-                        status_text += f"🔴 В убытке ${pnl:.2f}"
-                    else:
-                        status_text += f"⚪ Без изменений (${pnl:.2f})"
+                # Если есть позиции по этому символу - показываем каждую
+                if symbol_positions:
+                    # Эмодзи для приоритетов
+                    priority_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
 
-                    # Добавляем информацию о позиции
-                    side_icon = "📈" if pos['side'] == 'Buy' else "📉"
-                    status_text += f"\n     {side_icon} {pos['side']} {pos['size']}, "
-                    status_text += f"вход: ${pos['avgPrice']:.4f}"
+                    for idx, pos in enumerate(symbol_positions):
+                        pnl = pos['unrealizedPnl']
+                        bot_label = ""
 
+                        # Добавляем метку бота для multi-account режима
+                        if 'priority' in pos:
+                            bot_emoji = priority_emojis.get(pos['priority'], f"#{pos['priority']}")
+                            bot_label = f" {bot_emoji} Бот {pos['priority']}"
+
+                        # Формируем строку статуса
+                        if pnl > 0:
+                            status_line = f"🟢 В прибыли +${pnl:.2f}{bot_label}"
+                        elif pnl < 0:
+                            status_line = f"🔴 В убытке ${pnl:.2f}{bot_label}"
+                        else:
+                            status_line = f"⚪ Без изменений (${pnl:.2f}){bot_label}"
+
+                        # Добавляем информацию о позиции
+                        side_icon = "📈" if pos['side'] == 'Buy' else "📉"
+
+                        status_text += f"  ▫️ <b>{symbol_short}:</b> {status_line}\n"
+                        status_text += f"     {side_icon} {pos['side']} {pos['size']}, "
+                        status_text += f"вход: ${pos['avgPrice']:.4f}\n"
+
+                        # Разделитель между позициями одного символа (кроме последней)
+                        if idx < len(symbol_positions) - 1:
+                            status_text += "     ─────────────\n"
                 else:
-                    status_text += "⏳ В ожидании сигнала"
-
-                status_text += "\n"
+                    # Нет позиций по этому символу
+                    status_text += f"  ▫️ <b>{symbol_short}:</b> ⏳ В ожидании сигнала\n"
 
             status_text += "\n"
 
@@ -1276,142 +1232,6 @@ async def cmd_balance(message: Message, state: FSMContext):
     except Exception as e:
         log_error(user_id, f"Ошибка получения баланса: {e}", module_name='basic_handlers')
         await message.answer("❌ Произошла ошибка при запросе баланса.")
-
-
-@router.message(Command("positions"))
-async def cmd_positions(message: Message, state: FSMContext):
-    """Обработчик команды /positions с поддержкой multi-account режима"""
-    user_id = message.from_user.id
-    await basic_handler.log_command_usage(user_id, "positions")
-
-    try:
-        exchange_config = system_config.get_exchange_config("bybit")
-        use_demo = exchange_config.demo if exchange_config else False
-
-        # === ПРОВЕРКА MULTI-ACCOUNT РЕЖИМА ===
-        all_api_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
-
-        if not all_api_keys or len(all_api_keys) == 0:
-            await message.answer("⚠️ API ключи не настроены. Не могу получить позиции.")
-            return
-
-        # === MULTI-ACCOUNT РЕЖИМ (3 аккаунта) ===
-        if len(all_api_keys) == 3:
-            log_info(user_id, "Получение позиций в multi-account режиме (3 аккаунта)", "positions")
-
-            all_positions = []  # Все позиции со всех аккаунтов
-
-            # Получаем позиции для каждого аккаунта
-            for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
-                priority = key_data['priority']
-                try:
-                    async with BybitAPI(
-                        user_id=user_id,
-                        api_key=key_data['api_key'],
-                        api_secret=key_data['secret_key'],
-                        demo=use_demo
-                    ) as api:
-                        positions = await api.get_positions()
-
-                    if positions:
-                        # Фильтруем только активные позиции и добавляем маркер приоритета
-                        for pos in positions:
-                            if float(pos.get('size', 0)) != 0:  # Только открытые позиции
-                                pos['_bot_priority'] = priority  # Добавляем метку бота
-                                all_positions.append(pos)
-                except Exception as account_error:
-                    log_error(user_id, f"Ошибка получения позиций для аккаунта {priority}: {account_error}", "positions")
-
-            if not all_positions:
-                await message.answer("✅ У вас нет открытых позиций на всех аккаунтах.")
-                return
-
-            # Формируем сообщение для multi-account режима
-            positions_text = "📈 <b>ОТКРЫТЫЕ ПОЗИЦИИ (Multi-Account Режим)</b>\n"
-            positions_text += "═" * 35 + "\n\n"
-
-            # Группируем позиции по ботам
-            priority_names = {1: "PRIMARY", 2: "SECONDARY", 3: "TERTIARY"}
-            priority_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
-
-            for priority in [1, 2, 3]:
-                bot_positions = [p for p in all_positions if p['_bot_priority'] == priority]
-
-                if bot_positions:
-                    name = priority_names.get(priority, f"Бот {priority}")
-                    emoji = priority_emojis.get(priority, "🔹")
-
-                    positions_text += f"{emoji} <b>{name} (Бот {priority})</b>\n"
-                    positions_text += "─" * 30 + "\n"
-
-                    for pos in bot_positions:
-                        symbol = pos['symbol']
-                        side_emoji = "🟢 LONG" if pos['side'] == 'Buy' else "🔴 SHORT"
-                        pnl_emoji = "📈" if pos['unrealisedPnl'] >= 0 else "📉"
-                        pnl_value = float(pos['unrealisedPnl'])
-
-                        # Определяем статус (для multi-account координатора)
-                        status_emoji = ""
-                        pnl_percent = (pnl_value / float(pos.get('avgPrice', 1)) / float(pos.get('size', 1))) * 100
-                        if pnl_percent < -10:
-                            status_emoji = " 🔴 STUCK"  # Застрял
-                        elif pnl_value > 0:
-                            status_emoji = " 🟢 ACTIVE"  # Активный в прибыли
-                        else:
-                            status_emoji = " 🟡 ACTIVE"  # Активный в убытке
-
-                        positions_text += f"\n<b>{symbol}</b> | {side_emoji}{status_emoji}\n"
-                        positions_text += f"  • Размер: {pos['size']} {pos.get('baseCoin', '')}\n"
-                        positions_text += f"  • Вход: {format_currency(pos['avgPrice'])}\n"
-                        positions_text += f"  • PnL: {pnl_emoji} {format_currency(pos['unrealisedPnl'])}\n"
-
-                    positions_text += "\n"
-
-            # Агрегированная статистика
-            total_pnl = sum(float(p['unrealisedPnl']) for p in all_positions)
-            total_pnl_emoji = "📈" if total_pnl >= 0 else "📉"
-
-            positions_text += "═" * 35 + "\n"
-            positions_text += f"🌟 <b>ИТОГО:</b>\n"
-            positions_text += f"  • Всего позиций: {len(all_positions)}\n"
-            positions_text += f"  • Общий PnL: {total_pnl_emoji} {format_currency(total_pnl)}\n"
-
-            await message.answer(positions_text, parse_mode="HTML")
-
-        # === ОБЫЧНЫЙ РЕЖИМ (1 аккаунт) ===
-        else:
-            log_info(user_id, "Получение позиций в обычном режиме (1 аккаунт)", "positions")
-
-            # Получаем PRIMARY ключ
-            keys = await db_manager.get_api_keys(user_id, "bybit", account_priority=1)
-            if not keys:
-                await message.answer("⚠️ API ключи не настроены. Не могу получить позиции.")
-                return
-
-            async with BybitAPI(user_id=user_id, api_key=keys[0], api_secret=keys[1], demo=use_demo) as api:
-                positions = await api.get_positions()
-
-            if not positions:
-                await message.answer("✅ У вас нет открытых позиций.")
-                return
-
-            positions_text = "📈 <b>Открытые позиции:</b>\n\n"
-            for pos in positions:
-                side_emoji = "🟢 LONG" if pos['side'] == 'Buy' else "🔴 SHORT"
-                pnl_emoji = "📈" if pos['unrealisedPnl'] >= 0 else "📉"
-
-                positions_text += (
-                    f"<b>{pos['symbol']}</b> | {side_emoji}\n"
-                    f"  - <b>Размер:</b> {pos['size']} {pos.get('baseCoin', '')}\n"
-                    f"  - <b>Цена входа:</b> {format_currency(pos['avgPrice'])}\n"
-                    f"  - <b>PnL:</b> {pnl_emoji} {format_currency(pos['unrealisedPnl'])} ({format_percentage(pos.get('percentage', 0) * 100)})\n\n"
-                )
-
-            await message.answer(positions_text, parse_mode="HTML")
-
-    except Exception as e:
-        log_error(user_id, f"Ошибка получения позиций: {e}", module_name='basic_handlers')
-        await message.answer("❌ Произошла ошибка при запросе позиций.")
 
 
 @router.message(Command("stop_all"))
@@ -1643,9 +1463,3 @@ async def handle_unknown_message(message: Message, state: FSMContext):
         )
     except Exception as e:
         log_error(user_id, f"Ошибка обработки неизвестного сообщения: {e}", module_name='basic_handlers')
-
-# Функция для получения статистики команд
-async def get_command_stats() -> Dict[str, int]:
-    """Получение статистики использования команд"""
-    return basic_handler.command_stats.copy()
-

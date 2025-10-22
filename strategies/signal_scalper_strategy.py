@@ -51,7 +51,7 @@ class SignalScalperStrategy(BaseStrategy):
         # Система подтверждения сигналов и кулдауна
         self.last_signal: Optional[str] = None  # Последний полученный сигнал
         self.signal_confirmation_count = 0  # Счетчик одинаковых сигналов подряд
-        self.required_confirmations = 1  # Требуемое количество подтверждений
+        self.required_confirmations = 2  # Требуемое количество подтверждений
         self.last_trade_close_time: Optional[float] = None  # Время закрытия последней сделки
         self.cooldown_seconds = 60  # Кулдаун в секундах (1 минута)
         self.last_trade_was_loss = False  # Была ли последняя сделка убыточной
@@ -767,10 +767,34 @@ class SignalScalperStrategy(BaseStrategy):
                 self.averaging_trigger_loss_percent = self._convert_to_decimal(self.active_trade_config.get("averaging_trigger_loss_percent", "15.0"))
                 self.averaging_stop_loss_percent = self._convert_to_decimal(self.active_trade_config.get("averaging_stop_loss_percent", "55.0"))
                 self.averaging_multiplier = self._convert_to_decimal(self.active_trade_config.get("averaging_multiplier", "1.0"))
+
+                # УЛУЧШЕНО: Показываем параметры ОБОИХ усреднений для полной ясности
+                enable_stag = self.active_trade_config.get("enable_stagnation_detector", True)
+                enable_avg = self.active_trade_config.get("enable_averaging", True)
+
                 log_info(self.user_id,
-                        f"🔧 Параметры усреднения: триггер={self.averaging_trigger_loss_percent}%, "
-                        f"SL={self.averaging_stop_loss_percent}%, множитель={self.averaging_multiplier}x",
+                        f"🔧 Параметры усреднений:\n"
+                        f"   📍 Усреднение #1 (Детектор застревания): {'✅ ВКЛ' if enable_stag else '❌ ВЫКЛ'}\n"
+                        f"      ├─ Триггер: {self.stagnation_ranges[0]['min']}-{self.stagnation_ranges[0]['max']}% от маржи\n"
+                        f"      ├─ Время наблюдения: {self.stagnation_check_interval} сек\n"
+                        f"      └─ Множитель: {self.stagnation_averaging_multiplier}x\n"
+                        f"   📊 Усреднение #2 (Основное): {'✅ ВКЛ' if enable_avg else '❌ ВЫКЛ'}\n"
+                        f"      ├─ Триггер: {self.averaging_trigger_loss_percent}% от маржи\n"
+                        f"      ├─ Множитель: {self.averaging_multiplier}x\n"
+                        f"      └─ SL после усреднений: {self.averaging_stop_loss_percent}%",
                         "SignalScalper")
+
+            # КРИТИЧЕСКИ ВАЖНО: Обновляем ордер OPEN в БД
+            try:
+                await db_manager.update_order_on_fill(
+                    order_id=event.order_id,
+                    filled_quantity=event.qty,
+                    average_price=event.price,
+                    commission=event.fee
+                )
+                log_debug(self.user_id, f"✅ Ордер OPEN {event.order_id} обновлён в БД как FILLED", "SignalScalper")
+            except Exception as db_error:
+                log_error(self.user_id, f"❌ Ошибка обновления OPEN ордера {event.order_id} в БД: {db_error}", "SignalScalper")
 
             # ВСЕГДА устанавливаем стоп-лосс для защиты (даже при усреднении)
             await self._place_stop_loss_order(self.active_direction, self.entry_price, self.position_size)
@@ -843,6 +867,18 @@ class SignalScalperStrategy(BaseStrategy):
                 )
                 log_info(self.user_id, f"[БД] Сделка {self.active_trade_db_id} обновлена в БД после усреднения", "SignalScalper")
 
+            # КРИТИЧЕСКИ ВАЖНО: Обновляем ордер AVERAGING в БД
+            try:
+                await db_manager.update_order_on_fill(
+                    order_id=event.order_id,
+                    filled_quantity=event.qty,
+                    average_price=event.price,
+                    commission=event.fee
+                )
+                log_debug(self.user_id, f"✅ Ордер AVERAGING {event.order_id} обновлён в БД как FILLED", "SignalScalper")
+            except Exception as db_error:
+                log_error(self.user_id, f"❌ Ошибка обновления AVERAGING ордера {event.order_id} в БД: {db_error}", "SignalScalper")
+
             # ДИНАМИЧЕСКАЯ КОРРЕКТИРОВКА СТОП-ЛОССА после усреднения - ОТКЛЮЧЕНО для новой системы
             await self._update_stop_loss_after_averaging()
 
@@ -865,43 +901,77 @@ class SignalScalperStrategy(BaseStrategy):
             # Ордер на закрытие позиции
             log_info(self.user_id, f"[ЗАКРЫТИЕ] Обрабатываем ордер закрытия: {event.order_id}", "SignalScalper")
 
-            # ПРАВИЛЬНЫЙ РАСЧЕТ PnL: Берём данные из БД если они есть, иначе из локальных переменных
-            from database.db_trades import db_manager
+            # ТОЧНЫЙ РАСЧЕТ PnL: Берём РЕАЛЬНЫЕ данные от биржи (closedPnL)
+            # Биржа сама считает с учетом всех усреднений, комиссий, проскальзываний
+            pnl_net = None
+            entry_price_for_pnl = None
+            exit_price_for_pnl = None
+            position_size_for_pnl = None
 
-            # Пытаемся получить актуальные данные из БД
-            trade_from_db = None
-            if hasattr(self, 'active_trade_db_id') and self.active_trade_db_id:
-                try:
-                    trade_from_db = await db_manager.get_active_trade(self.user_id, self.symbol)
-                    if trade_from_db:
-                        log_info(self.user_id, f"[БД] Получены данные из БД: entry_price={trade_from_db['entry_price']}, quantity={trade_from_db['quantity']}", "SignalScalper")
-                except Exception as db_error:
-                    log_warning(self.user_id, f"[БД] Не удалось получить данные из БД: {db_error}, используем локальные", "SignalScalper")
+            try:
+                log_info(self.user_id, f"[BYBIT API] Запрашиваю реальный closedPnL от биржи для {self.symbol}...", "SignalScalper")
+                closed_pnl_data = await self.api.get_closed_pnl(self.symbol, limit=1)
 
-            # Используем данные из БД если они есть, иначе локальные
-            if trade_from_db:
-                entry_price_for_pnl = Decimal(str(trade_from_db['entry_price']))
-                position_size_for_pnl = Decimal(str(trade_from_db['quantity']))
-                log_info(self.user_id, f"[БД] Используем данные из БД для расчёта PnL", "SignalScalper")
-            else:
-                entry_price_for_pnl = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
-                position_size_for_pnl = self.total_position_size if self.total_position_size > 0 else self.position_size
-                log_info(self.user_id, f"[ЛОКАЛЬНО] Используем локальные данные для расчёта PnL", "SignalScalper")
+                if closed_pnl_data:
+                    # Используем ТОЧНЫЕ данные от биржи
+                    pnl_net = closed_pnl_data['closedPnl']  # Уже с учетом ВСЕХ комиссий!
+                    entry_price_for_pnl = closed_pnl_data['avgEntryPrice']
+                    exit_price_for_pnl = closed_pnl_data['avgExitPrice']
+                    position_size_for_pnl = closed_pnl_data['closedSize']
 
-            pnl_gross = (event.price - entry_price_for_pnl) * position_size_for_pnl if self.active_direction == "LONG" else (
-                entry_price_for_pnl - event.price) * position_size_for_pnl
+                    log_info(self.user_id,
+                            f"✅ [BYBIT PNL] Получен ТОЧНЫЙ PnL от биржи: "
+                            f"closedPnl={pnl_net:.4f} USDT, "
+                            f"avgEntryPrice={entry_price_for_pnl:.4f}, "
+                            f"avgExitPrice={exit_price_for_pnl:.4f}, "
+                            f"closedSize={position_size_for_pnl}",
+                            "SignalScalper")
+                else:
+                    log_warning(self.user_id, f"⚠️ [BYBIT PNL] Не удалось получить closedPnL от биржи, используем расчет вручную", "SignalScalper")
 
-            # НАКОПЛЕНИЕ КОМИССИИ ЗАКРЫТИЯ
-            self.total_fees_paid += event.fee
+            except Exception as api_error:
+                log_error(self.user_id, f"❌ [BYBIT PNL] Ошибка запроса closedPnL: {api_error}, используем расчет вручную", "SignalScalper")
 
-            # ПРАВИЛЬНЫЙ РАСЧЁТ: Вычитаем ВСЕ накопленные комиссии (открытие + усреднение + закрытие)
-            pnl_net = pnl_gross - self.total_fees_paid
+            # ФОЛБЭК: Если не удалось получить от биржи, считаем сами (старая логика)
+            if pnl_net is None:
+                from database.db_trades import db_manager
 
-            log_info(self.user_id,
-                    f"[PNL_CALC] entry_price={entry_price_for_pnl:.4f}, position_size={position_size_for_pnl}, "
-                    f"exit_price={event.price:.4f}, close_fee={event.fee:.4f}, total_fees={self.total_fees_paid:.4f}, "
-                    f"direction={self.active_direction}, pnl_gross={pnl_gross:.4f}, pnl_net={pnl_net:.4f}",
-                    "SignalScalper")
+                # Пытаемся получить актуальные данные из БД
+                trade_from_db = None
+                if hasattr(self, 'active_trade_db_id') and self.active_trade_db_id:
+                    try:
+                        trade_from_db = await db_manager.get_active_trade(self.user_id, self.symbol)
+                        if trade_from_db:
+                            log_info(self.user_id, f"[БД] Получены данные из БД: entry_price={trade_from_db['entry_price']}, quantity={trade_from_db['quantity']}", "SignalScalper")
+                    except Exception as db_error:
+                        log_warning(self.user_id, f"[БД] Не удалось получить данные из БД: {db_error}, используем локальные", "SignalScalper")
+
+                # Используем данные из БД если они есть, иначе локальные
+                if trade_from_db:
+                    entry_price_for_pnl = Decimal(str(trade_from_db['entry_price']))
+                    position_size_for_pnl = Decimal(str(trade_from_db['quantity']))
+                    log_info(self.user_id, f"[БД] Используем данные из БД для расчёта PnL", "SignalScalper")
+                else:
+                    entry_price_for_pnl = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
+                    position_size_for_pnl = self.total_position_size if self.total_position_size > 0 else self.position_size
+                    log_info(self.user_id, f"[ЛОКАЛЬНО] Используем локальные данные для расчёта PnL", "SignalScalper")
+
+                exit_price_for_pnl = event.price
+
+                pnl_gross = (exit_price_for_pnl - entry_price_for_pnl) * position_size_for_pnl if self.active_direction == "LONG" else (
+                    entry_price_for_pnl - exit_price_for_pnl) * position_size_for_pnl
+
+                # НАКОПЛЕНИЕ КОМИССИИ ЗАКРЫТИЯ
+                self.total_fees_paid += event.fee
+
+                # ПРАВИЛЬНЫЙ РАСЧЁТ: Вычитаем ВСЕ накопленные комиссии (открытие + усреднение + закрытие)
+                pnl_net = pnl_gross - self.total_fees_paid
+
+                log_info(self.user_id,
+                        f"[PNL_CALC FALLBACK] entry_price={entry_price_for_pnl:.4f}, position_size={position_size_for_pnl}, "
+                        f"exit_price={exit_price_for_pnl:.4f}, close_fee={event.fee:.4f}, total_fees={self.total_fees_paid:.4f}, "
+                        f"direction={self.active_direction}, pnl_gross={pnl_gross:.4f}, pnl_net={pnl_net:.4f}",
+                        "SignalScalper")
 
             # КРИТИЧЕСКИ ВАЖНО: Обновляем ордер CLOSE в БД с profit
             try:
@@ -985,6 +1055,11 @@ class SignalScalperStrategy(BaseStrategy):
             await self.check_deferred_stop()
         else:
             log_warning(self.user_id, f"[НЕОЖИДАННО] Неожиданное состояние при обработке ордера {event.order_id}. position_active={self.position_active}, is_closing={is_closing_order}", "SignalScalper")
+
+        # КРИТИЧНО: Удаляем исполненный ордер из активных ордеров
+        if event.order_id in self.active_orders:
+            del self.active_orders[event.order_id]
+            log_debug(self.user_id, f"Исполненный ордер {event.order_id} удалён из active_orders", "SignalScalper")
 
         self.is_waiting_for_trade = False
 
@@ -1169,6 +1244,7 @@ class SignalScalperStrategy(BaseStrategy):
         """
         Проверяет, подтвержден ли сигнал достаточным количеством повторений.
         После убыточной сделки или реверса требует больше подтверждений.
+        ВАЖНО: Пропускает первый сигнал, если он совпадает с направлением только что закрытой позиции.
         """
         if signal == self.last_signal:
             self.signal_confirmation_count += 1
@@ -1177,12 +1253,21 @@ class SignalScalperStrategy(BaseStrategy):
             self.last_signal = signal
             self.signal_confirmation_count = 1
 
+            # ЛОГИКА ПРОПУСКА ПЕРВОГО ПОВТОРНОГО СИГНАЛА
+            # Если новый сигнал совпадает с направлением только что закрытой позиции,
+            # начинаем счётчик с 0 вместо 1 (требуем дополнительное подтверждение)
+            if signal == self.last_closed_direction:
+                log_info(self.user_id,
+                        f"⏭️ Первый сигнал {signal} после закрытия {self.last_closed_direction} позиции - требуется дополнительное подтверждение",
+                        "SignalScalper")
+                self.signal_confirmation_count = 0
+
         # Определяем требуемое количество подтверждений
         required = self.required_confirmations
 
         # После убыточной сделки требуем больше подтверждений
         if self.last_trade_was_loss:
-            required = max(required, 1)  # После убытка требуем минимум 2 подтверждения /временно сменил на 1
+            required = max(required, 2)  # После убытка требуем минимум 2 подтверждения /временно сменил на 1
 
         # НОВАЯ ЛОГИКА: После реверса требуем специальное количество подтверждений
         if self.after_reversal_mode:
@@ -1644,6 +1729,111 @@ class SignalScalperStrategy(BaseStrategy):
             pnl = (entry_price_to_use - current_price) * position_size_to_use
 
         return pnl
+
+    async def get_detailed_status(self) -> Dict[str, Any]:
+        """
+        Получение детального статуса стратегии для отображения пользователю.
+
+        Returns:
+            Dict с детальной информацией о текущей позиции, усреднениях, PnL и т.д.
+        """
+        try:
+            if not self.position_active:
+                return {
+                    "has_position": False,
+                    "symbol": self.symbol,
+                    "strategy_type": self.strategy_type.value
+                }
+
+            # Получаем текущую цену
+            current_price = self._last_known_price if self._last_known_price else self.entry_price
+
+            # Рассчитываем текущий PnL
+            current_pnl = self._calculate_unrealized_pnl()
+
+            # Определяем цену входа (средняя если было усреднение)
+            effective_entry_price = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
+
+            # Рассчитываем процент изменения от цены входа
+            if effective_entry_price and current_price:
+                if self.active_direction == "LONG":
+                    price_change_percent = ((current_price - effective_entry_price) / effective_entry_price) * Decimal('100')
+                else:  # SHORT
+                    price_change_percent = ((effective_entry_price - current_price) / effective_entry_price) * Decimal('100')
+            else:
+                price_change_percent = Decimal('0')
+
+            # ПОЛУЧАЕМ ЦЕНУ БЕЗУБЫТКА С БИРЖИ (после усреднения)
+            breakeven_price = None
+            if self.averaging_count > 0 and self.average_entry_price > 0:
+                try:
+                    # Получаем ТОЧНУЮ цену безубыточности от биржи Bybit (breakEvenPrice)
+                    # Она уже включает: среднюю цену входа + все комиссии + funding rate
+                    positions = await self.api.get_positions(symbol=self.symbol)
+                    if positions and len(positions) > 0:
+                        breakeven_price_from_exchange = positions[0].get("breakEvenPrice", None)
+                        if breakeven_price_from_exchange:
+                            breakeven_price = self._convert_to_decimal(breakeven_price_from_exchange)
+                except Exception as e:
+                    log_warning(self.user_id, f"Не удалось получить breakEvenPrice с биржи: {e}", "SignalScalper")
+
+            # Формируем детальный статус
+            detailed_status = {
+                "has_position": True,
+                "symbol": self.symbol,
+                "strategy_type": self.strategy_type.value,
+                "account_priority": self.account_priority,
+
+                # Основная информация о позиции
+                "position": {
+                    "direction": self.active_direction,
+                    "entry_price": float(self.entry_price) if self.entry_price else None,
+                    "current_price": float(current_price) if current_price else None,
+                    "position_size": float(self.position_size) if self.position_size else 0,
+                    "total_position_size": float(self.total_position_size) if self.total_position_size > 0 else float(self.position_size) if self.position_size else 0,
+                },
+
+                # Информация об усреднениях
+                "averaging": {
+                    "count": self.averaging_count,
+                    "executed": self.averaging_executed or self.stagnation_averaging_executed,
+                    "average_entry_price": float(self.average_entry_price) if self.average_entry_price > 0 else None,
+                    "effective_entry_price": float(effective_entry_price) if effective_entry_price else None,
+                    "breakeven_price": float(breakeven_price) if breakeven_price else None,
+                    "use_breakeven_exit": self.use_breakeven_exit,
+                },
+
+                # Информация о марже
+                "margin": {
+                    "initial_margin": float(self.initial_margin_usd) if self.initial_margin_usd > 0 else 0,
+                    "current_total_margin": float(self.current_total_margin) if self.current_total_margin > 0 else float(self.initial_margin_usd) if self.initial_margin_usd > 0 else 0,
+                    "total_fees_paid": float(self.total_fees_paid) if self.total_fees_paid > 0 else 0,
+                },
+
+                # PnL информация
+                "pnl": {
+                    "unrealized_pnl": float(current_pnl) if current_pnl else 0,
+                    "price_change_percent": float(price_change_percent),
+                    "peak_profit": float(self.peak_profit_usd) if self.peak_profit_usd > 0 else 0,
+                },
+
+                # Информация о стоп-лоссе
+                "stop_loss": {
+                    "has_stop_loss": self.stop_loss_order_id is not None,
+                    "stop_loss_price": float(self.stop_loss_price) if self.stop_loss_price else None,
+                },
+            }
+
+            return detailed_status
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка получения детального статуса: {e}", "SignalScalper")
+            return {
+                "has_position": False,
+                "symbol": self.symbol,
+                "strategy_type": self.strategy_type.value,
+                "error": str(e)
+            }
 
     async def _execute_strategy_logic(self):
         """Пустышка, так как логика теперь управляется событиями свечей."""

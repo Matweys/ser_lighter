@@ -7,7 +7,6 @@ from aiogram.fsm.context import FSMContext
 from typing import Dict, Any, Optional
 from decimal import Decimal
 import json
-from .basic import cmd_positions, cmd_orders, cmd_status
 from ..bot import bot_manager
 from database.db_trades import db_manager
 from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent, UserSettingsChangedEvent, SignalEvent
@@ -28,10 +27,26 @@ from core.default_configs import DefaultConfigs
 from core.logger import log_info, log_error, log_warning
 from core.settings_config import DEFAULT_SYMBOLS, system_config
 from api.bybit_api import BybitAPI
+
+# Глобальная переменная для доступа к BotApplication
+_bot_application = None
+
+def set_bot_application(bot_app):
+    """Установка BotApplication для callback handler"""
+    global _bot_application
+    _bot_application = bot_app
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.utils.markdown import hbold
 from core.functions import to_decimal
 from datetime import datetime, timedelta, timezone
+from .multi_account_helpers import (
+    PRIORITY_NAMES,
+    PRIORITY_EMOJIS,
+    validate_api_keys,
+    is_multi_account_mode,
+    get_multi_account_balance,
+    format_multi_account_balance
+)
 
 
 
@@ -538,6 +553,27 @@ async def callback_toggle_strategy(callback: CallbackQuery, state: FSMContext):
         status_text = "включена" if is_enabled else "отключена"
         await callback.answer(f"Стратегия {status_text} для автоторговли.", show_alert=True)
 
+        # ВАЖНО: Если стратегия включена И автоторговля активна - запускаем стратегию
+        if is_enabled and _bot_application:
+            user_session = _bot_application.active_sessions.get(user_id)
+            if user_session and user_session.is_running:
+                log_info(user_id, f"Автоторговля активна, запускаем стратегию {strategy_type}", "callback")
+
+                # Получаем список символов для торговли
+                global_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
+                watchlist_symbols = global_config.get("watchlist_symbols", []) if global_config else []
+
+                if not watchlist_symbols:
+                    log_warning(user_id, f"Нет символов в watchlist для запуска {strategy_type}", "callback")
+                else:
+                    # Запускаем стратегию для каждого символа (как при /autotrade_start)
+                    for symbol in watchlist_symbols:
+                        try:
+                            await user_session.start_strategy(strategy_type, symbol)
+                            log_info(user_id, f"Стратегия {strategy_type} запущена для {symbol}", "callback")
+                        except Exception as e:
+                            log_error(user_id, f"Ошибка запуска {strategy_type} для {symbol}: {e}", "callback")
+
         await callback_configure_strategy(callback, state, strategy_type_override=strategy_type)
 
     except Exception as e:
@@ -551,12 +587,18 @@ async def callback_toggle_param(callback: CallbackQuery, state: FSMContext):
 
     try:
         # Парсим callback_data: toggle_param_{strategy_type}_{param_name}
-        parts = callback.data.replace("toggle_param_", "").split("_", 1)
-        if len(parts) != 2:
-            await callback.answer("❌ Неверный формат данных", show_alert=True)
-            return
+        # ИСПРАВЛЕНО: Используем правильный парсинг для multi-word strategy names
+        parts = callback.data.split("_")
 
-        strategy_type, param_name = parts
+        # Определяем, где заканчивается имя стратегии
+        # Известные стратегии: signal_scalper, flash_drop_catcher
+        if len(parts) >= 5 and f"{parts[2]}_{parts[3]}_{parts[4]}" in ["flash_drop_catcher"]:
+            strategy_type = f"{parts[2]}_{parts[3]}_{parts[4]}"
+            param_name = "_".join(parts[5:])
+        else:
+            # signal_scalper и другие 2-словные стратегии
+            strategy_type = f"{parts[2]}_{parts[3]}"
+            param_name = "_".join(parts[4:])
 
         # Получаем конфигурацию
         config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
@@ -724,35 +766,6 @@ async def callback_statistics(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Ошибка загрузки статистики", show_alert=True)
 
 
-@router.callback_query(F.data == "show_trading_status")
-async def callback_show_trading_status(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки 'Статус торговли' - вызывает /autotrade_status"""
-    from .basic import cmd_autotrade_status
-    await callback.answer("Загружаю статус торговли...")
-    await cmd_autotrade_status(callback.message, state)
-
-
-@router.callback_query(F.data == "show_positions")
-async def callback_show_positions(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки 'Позиции', вызывает логику команды /positions"""
-    try:
-        await callback.answer(text="Запрашиваю открытые позиции...")
-        await cmd_positions(callback.message, state)
-    except Exception as e:
-        log_error(callback.from_user.id, f"Ошибка при вызове /positions из callback: {e}", module_name='callback')
-        await callback.answer("Не удалось загрузить позиции.", show_alert=True)
-
-
-@router.callback_query(F.data == "show_orders")
-async def callback_show_orders(callback: CallbackQuery, state: FSMContext):
-    """Обработчик кнопки 'Ордера', вызывает логику команды /orders"""
-    try:
-        await callback.answer(text="Запрашиваю открытые ордера...")
-        await cmd_orders(callback.message, state)
-    except Exception as e:
-        log_error(callback.from_user.id, f"Ошибка при вызове /orders из callback: {e}", module_name='callback')
-        await callback.answer("Не удалось загрузить ордера.", show_alert=True)
-
 
 
 @router.callback_query(F.data == "cancel")
@@ -843,69 +856,27 @@ async def callback_show_balance(callback: CallbackQuery, state: FSMContext):
         use_demo = exchange_config.demo if exchange_config else False
 
         # === MULTI-ACCOUNT РЕЖИМ (3 аккаунта) ===
-        if len(all_api_keys) == 3:
+        if is_multi_account_mode(all_api_keys):
             log_info(user_id, "Получение баланса (callback) в multi-account режиме", "callback")
 
-            total_equity_sum = 0
-            total_available_sum = 0
-            total_unrealised_pnl_sum = 0
-            accounts_data = []
+            # Получаем баланс со всех 3 аккаунтов через helper функцию
+            balance_info = await get_multi_account_balance(user_id, all_api_keys, use_demo)
 
-            # Получаем баланс для каждого аккаунта
-            for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
-                priority = key_data['priority']
-                try:
-                    async with BybitAPI(
-                        user_id=user_id,
-                        api_key=key_data['api_key'],
-                        api_secret=key_data['secret_key'],
-                        demo=use_demo
-                    ) as api:
-                        balance_data = await api.get_wallet_balance()
-
-                    if balance_data and 'totalEquity' in balance_data:
-                        equity = float(balance_data['totalEquity'])
-                        available = float(balance_data['totalAvailableBalance'])
-                        unrealised_pnl = float(balance_data['totalUnrealisedPnl'])
-
-                        total_equity_sum += equity
-                        total_available_sum += available
-                        total_unrealised_pnl_sum += unrealised_pnl
-
-                        accounts_data.append({
-                            'priority': priority,
-                            'equity': equity,
-                            'available': available,
-                            'unrealised_pnl': unrealised_pnl
-                        })
-                except Exception as account_error:
-                    log_error(user_id, f"Ошибка получения баланса для аккаунта {priority} (callback): {account_error}", "callback")
-
-            if not accounts_data:
+            if not balance_info['accounts_data']:
                 await callback.message.edit_text(
                     "❌ Не удалось получить баланс ни с одного аккаунта.",
                     reply_markup=get_back_keyboard("main_menu")
                 )
                 return
 
-            # Формируем сообщение для multi-account режима
-            pnl_emoji = "📈" if total_unrealised_pnl_sum >= 0 else "📉"
-            balance_text = "💰 <b>БАЛАНС (Multi-Account)</b>\n"
-            balance_text += "═" * 25 + "\n\n"
-            balance_text += f"🌟 <b>ОБЩИЙ:</b>\n"
-            balance_text += f"  • {format_currency(total_equity_sum)}\n"
-            balance_text += f"  • PnL: {pnl_emoji} {format_currency(total_unrealised_pnl_sum)}\n\n"
-
-            balance_text += "─" * 25 + "\n\n"
-
-            # Детали по ботам
-            priority_names = {1: "🥇 PRIMARY", 2: "🥈 SECONDARY", 3: "🥉 TERTIARY"}
-            for acc in accounts_data:
-                priority = acc['priority']
-                pnl_emoji_acc = "📈" if acc['unrealised_pnl'] >= 0 else "📉"
-                balance_text += f"{priority_names[priority]}:\n"
-                balance_text += f"  • {format_currency(acc['equity'])}\n"
-                balance_text += f"  • PnL: {pnl_emoji_acc} {format_currency(acc['unrealised_pnl'])}\n\n"
+            # Формируем сообщение для multi-account режима через helper функцию
+            balance_text = format_multi_account_balance(
+                total_equity=balance_info['total_equity'],
+                total_available=balance_info['total_available'],
+                total_unrealised_pnl=balance_info['total_unrealised_pnl'],
+                accounts_data=balance_info['accounts_data']
+                # verbose=True по умолчанию - полная версия как в оригинале
+            )
 
             await callback.message.edit_text(
                 balance_text,
@@ -1570,63 +1541,6 @@ async def process_api_secret_input(message: Message, state: FSMContext):
         await message.answer("❌ Произошла ошибка при сохранении ключей.")
         await message.delete()
         await state.clear()
-
-
-@router.callback_query(F.data == "delete_api_keys")
-async def callback_delete_api_keys(callback: CallbackQuery, state: FSMContext):
-    """Подтверждение удаления API ключей"""
-    user_id = callback.from_user.id
-
-    text = (
-        f"⚠️ <b>Подтверждение удаления API ключей</b>\n\n"
-        f"Вы уверены, что хотите удалить сохраненные API ключи?\n\n"
-        f"После удаления вы не сможете использовать автоматическую торговлю "
-        f"до тех пор, пока не добавите новые ключи."
-    )
-
-    await callback.message.edit_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=get_confirmation_keyboard("delete_api_keys")
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "confirm_delete_api_keys")
-async def callback_confirm_delete_api_keys(callback: CallbackQuery, state: FSMContext):
-    """Выполнение удаления API ключей"""
-    user_id = callback.from_user.id
-
-    try:
-        # Удаляем ключи через деактивацию записи в БД
-        query = """
-            UPDATE user_api_keys
-            SET is_active = FALSE, updated_at = NOW()
-            WHERE user_id = $1 AND exchange = $2
-        """
-
-        async with db_manager.get_connection() as conn:
-            await conn.execute(query, user_id, "bybit")
-
-        text = (
-            f"✅ <b>API ключи успешно удалены</b>\n\n"
-            f"Ваши API ключи были деактивированы.\n"
-            f"Вы можете добавить новые ключи в любое время."
-        )
-
-        log_info(user_id, f"API ключи удалены для пользователя {user_id}", module_name='callback')
-
-        from ..keyboards.inline import get_api_keys_keyboard
-        await callback.message.edit_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=get_api_keys_keyboard(api_keys_count=0)  # ИСПРАВЛЕНО - используем api_keys_count
-        )
-        await callback.answer("Ключи удалены", show_alert=False)
-
-    except Exception as e:
-        log_error(user_id, f"Ошибка удаления API ключей: {e}", module_name='callback')
-        await callback.answer("❌ Ошибка при удалении ключей", show_alert=True)
 
 
 # ============================================================================

@@ -479,7 +479,6 @@ class BaseStrategy(ABC):
 
                 return True
             else:
-                # _execute_strategy_logic вызвал self.stop(), запуск не удался
                 log_warning(self.user_id,
                             f"Запуск стратегии {self.strategy_type.value} для {self.symbol} был отменен в процессе инициализации.",
                             module_name=__name__)
@@ -1426,8 +1425,7 @@ class BaseStrategy(ABC):
                 pnl=pnl
             )
 
-            # 3. ВАЖНО: Обновляем общую статистику пользователя в БД
-            await db_manager.update_user_totals(user_id=self.user_id, pnl=pnl)
+            # 3. Общая статистика пользователя вычисляется динамически из таблицы trades в get_user()
 
             # 4. Отправляем уведомление, если бот доступен
             if not self.bot:

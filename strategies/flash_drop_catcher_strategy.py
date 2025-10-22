@@ -1,7 +1,12 @@
 # strategies/flash_drop_catcher_strategy.py
 """
 🚀 Flash Drop Catcher Strategy - Стратегия ловли резких падений
-Обнаруживает резкие падения цены и открывает LONG позиции для отскока
+
+РЕФАКТОРЕННАЯ ВЕРСИЯ с параметрами из оригинального сканера:
+- Динамические пороги на основе волатильности
+- Фильтр ликвидности (минимальный дневной объем)
+- Фильтр всплеска объема (volume spike)
+- Настраиваемый интервал свечей (1m, 15m, и т.д.)
 """
 import asyncio
 import json
@@ -27,11 +32,14 @@ class FlashDropCatcherStrategy(BaseStrategy):
     """
     Стратегия для обнаружения резких падений и входа в LONG позиции.
 
-    Логика работы:
-    1. Сканирует все фьючерсные символы через WebSocket
-    2. Обнаруживает резкое падение (сравнивая с 5-свечным средним)
-    3. Входит в LONG на отскок
-    4. Выходит по trailing stop или при достижении -3$ убытка
+    Логика работы (ОРИГИНАЛЬНАЯ ИЗ СКАНЕРА):
+    1. Сканирует ВСЕ фьючерсные символы через WebSocket
+    2. Фильтрует по ликвидности (минимальный дневной объем)
+    3. Обнаруживает резкое падение (сравнивая с N-свечным средним)
+    4. Проверяет всплеск объема (volume spike >= 3x среднего)
+    5. Использует ДИНАМИЧЕСКИЙ порог падения на основе волатильности символа
+    6. Входит в LONG на отскок
+    7. Выходит по trailing stop или при достижении hard stop loss (-15$)
     """
 
     def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any],
@@ -39,21 +47,28 @@ class FlashDropCatcherStrategy(BaseStrategy):
         """Инициализация стратегии Flash Drop Catcher"""
         super().__init__(user_id, symbol, signal_data, api, event_bus, bot, config, account_priority)
 
-        # === ОРИГИНАЛЬНАЯ ЛОГИКА СКАНЕРА (НЕ ТРОГАТЬ!) ===
-        # Параметры для обнаружения падений
-        self.DROP_PCT = Decimal('0.02')  # 2% падение от среднего
-        self.CANDLE_HISTORY_SIZE = 5  # Сколько свечей учитывать для среднего
+        # === ПАРАМЕТРЫ ИЗ КОНФИГУРАЦИИ (загружаются из Redis) ===
+        # Эти значения будут установлены в _load_config()
+        self.TIMEFRAME_INTERVAL: str = "15"  # По умолчанию 15-минутные свечи
+        self.HISTORY_BARS: int = 7  # Количество свечей для истории
+        self.BASE_DROP_PCT: Decimal = Decimal('0.05')  # 5% базовый порог
+        self.MIN_DROP_PCT: Decimal = Decimal('0.03')  # 3% минимальный порог
+        self.MAX_DROP_PCT: Decimal = Decimal('0.15')  # 15% максимальный порог
+        self.VOLUME_SPIKE_MIN: Decimal = Decimal('3.0')  # 3x среднего объема
+        self.MIN_DAILY_VOLUME_USD: Decimal = Decimal('1000000')  # $1M минимальный дневной объем
+        self.WEBSOCKET_CHUNK_SIZE: int = 150  # Размер чанка для подписки
 
-        # Хранение исторических данных по свечам для каждого символа
-        self.candle_data: Dict[str, deque] = defaultdict(lambda: deque(maxlen=self.CANDLE_HISTORY_SIZE))
+        # === ХРАНИЛИЩЕ ДАННЫХ ПО СИМВОЛАМ ===
+        # Структура: {symbol: {'closes': deque, 'volumes': deque, 'highs': deque, 'lows': deque,
+        #                       'volatility': float, 'avg_volume': float, 'dynamic_threshold': float}}
+        self.symbol_data: Dict[str, Dict[str, Any]] = {}
 
         # WebSocket задача
         self._scanner_task: Optional[asyncio.Task] = None
         self._ws_url = "wss://stream.bybit.com/v5/public/linear"
 
         # === ПАРАМЕТРЫ ТОРГОВЛИ ===
-        # Ограничение одновременных позиций
-        self.MAX_CONCURRENT_POSITIONS = 2  # Максимум 2 позиции одновременно
+        self.MAX_CONCURRENT_POSITIONS = 2  # Максимум 2 позиции одновременно (из конфига)
 
         # Параметры позиции
         self.position_active = False
@@ -61,16 +76,19 @@ class FlashDropCatcherStrategy(BaseStrategy):
         self.position_size: Decimal = Decimal('0')
         self.active_direction = "LONG"
 
-        # Trailing stop параметры (копируются из signal_scalper)
+        # Trailing stop параметры (из signal_scalper)
         self.highest_pnl = Decimal('0')
         self.current_trailing_level = 0
         self.last_trailing_notification_level = -1
 
-        # Hard stop loss при -15$
+        # Hard stop loss при -15$ (из конфига)
         self.HARD_STOP_LOSS_USDT = Decimal('-15.0')
 
         # Мониторинг позиции
         self._position_monitor_task: Optional[asyncio.Task] = None
+
+        # Список отфильтрованных ликвидных символов
+        self._liquid_symbols: List[str] = []
 
         log_info(self.user_id,
                 f"🚀 FlashDropCatcher инициализирована для {self.symbol}",
@@ -79,6 +97,27 @@ class FlashDropCatcherStrategy(BaseStrategy):
     def _get_strategy_type(self) -> StrategyType:
         """Возвращает тип стратегии"""
         return StrategyType.FLASH_DROP_CATCHER
+
+    async def _load_config(self):
+        """Загрузка конфигурации из Redis и установка параметров"""
+        await super()._load_strategy_config()
+
+        # Загружаем параметры из конфигурации
+        self.TIMEFRAME_INTERVAL = str(self.get_config_value("timeframe_interval", "15"))
+        self.HISTORY_BARS = int(self.get_config_value("candle_history_size", 7))
+        self.BASE_DROP_PCT = self._convert_to_decimal(self.get_config_value("base_drop_percent", 5.0)) / Decimal('100')
+        self.MIN_DROP_PCT = self._convert_to_decimal(self.get_config_value("min_drop_percent", 3.0)) / Decimal('100')
+        self.MAX_DROP_PCT = self._convert_to_decimal(self.get_config_value("max_drop_percent", 15.0)) / Decimal('100')
+        self.VOLUME_SPIKE_MIN = self._convert_to_decimal(self.get_config_value("volume_spike_min", 3.0))
+        self.MIN_DAILY_VOLUME_USD = self._convert_to_decimal(self.get_config_value("min_daily_volume_usd", 1000000.0))
+        self.MAX_CONCURRENT_POSITIONS = int(self.get_config_value("max_concurrent_positions", 2))
+        self.HARD_STOP_LOSS_USDT = self._convert_to_decimal(self.get_config_value("hard_stop_loss_usdt", -15.0))
+        self.WEBSOCKET_CHUNK_SIZE = int(self.get_config_value("websocket_chunk_size", 150))
+
+        log_info(self.user_id,
+                f"📋 Параметры FlashDropCatcher: интервал={self.TIMEFRAME_INTERVAL}m, история={self.HISTORY_BARS}, "
+                f"базовый порог={float(self.BASE_DROP_PCT)*100:.1f}%, объем={self.VOLUME_SPIKE_MIN}x",
+                "FlashDropCatcher")
 
     async def start(self):
         """Запуск стратегии"""
@@ -131,36 +170,234 @@ class FlashDropCatcherStrategy(BaseStrategy):
         return True
 
     # ============================================================================
-    # === ОРИГИНАЛЬНАЯ ЛОГИКА WEBSOCKET СКАНЕРА (НЕ ТРОГАТЬ!) ===
+    # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (ИЗ ОРИГИНАЛЬНОГО СКАНЕРА) ===
+    # ============================================================================
+
+    @staticmethod
+    def _calculate_volatility(prices: List[Decimal]) -> Decimal:
+        """
+        Вычисляет волатильность (стандартное отклонение процентных изменений).
+        ОРИГИНАЛЬНАЯ ЛОГИКА ИЗ СКАНЕРА - НЕ ИЗМЕНЯТЬ ЧИСЛОВЫЕ ЗНАЧЕНИЯ!
+        """
+        if len(prices) < 2:
+            return Decimal('0')
+
+        # Рассчитываем процентные изменения
+        returns = []
+        for i in range(1, len(prices)):
+            if prices[i-1] != Decimal('0'):
+                ret = (prices[i] - prices[i-1]) / prices[i-1]
+                returns.append(ret)
+
+        if not returns:
+            return Decimal('0')
+
+        # Среднее значение доходности
+        mean_return = sum(returns) / len(returns)
+
+        # Дисперсия
+        variance = sum((r - mean_return) ** 2 for r in returns) / len(returns)
+
+        # Стандартное отклонение (волатильность)
+        volatility = variance ** Decimal('0.5')
+
+        return volatility
+
+    async def _get_liquidity_filter(self) -> List[str]:
+        """
+        Фильтрует символы по ликвидности (дневной объем).
+        ОРИГИНАЛЬНАЯ ЛОГИКА ИЗ СКАНЕРА.
+        """
+        log_info(self.user_id, "🔍 Применение фильтра ликвидности...", "FlashDropCatcher")
+
+        try:
+            # Получаем тикеры всех символов
+            tickers_response = await self.api.get_tickers()
+
+            if not tickers_response or "result" not in tickers_response:
+                log_error(self.user_id, "Не удалось получить тикеры для фильтра ликвидности", "FlashDropCatcher")
+                return []
+
+            tickers = tickers_response["result"].get("list", [])
+            liquid_symbols = []
+
+            for ticker in tickers:
+                symbol = ticker.get("symbol", "")
+
+                # Проверяем что это USDT futures
+                if not symbol.endswith("USDT"):
+                    continue
+
+                # Дневной объем в USD (turnover24h)
+                daily_volume = self._convert_to_decimal(ticker.get("turnover24h", 0))
+
+                if daily_volume >= self.MIN_DAILY_VOLUME_USD:
+                    liquid_symbols.append(symbol)
+
+            log_info(self.user_id,
+                    f"✅ Отфильтровано {len(liquid_symbols)} ликвидных символов (мин. объем: ${float(self.MIN_DAILY_VOLUME_USD):,.0f})",
+                    "FlashDropCatcher")
+
+            return sorted(liquid_symbols)
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка фильтрации ликвидности: {e}", "FlashDropCatcher")
+            return []
+
+    async def _prime_history(self, symbol: str):
+        """
+        Загружает начальную историю и вычисляет динамические параметры для символа.
+        ОРИГИНАЛЬНАЯ ЛОГИКА ИЗ СКАНЕРА - НЕ ИЗМЕНЯТЬ ЧИСЛОВЫЕ ЗНАЧЕНИЯ!
+        """
+        try:
+            # Загружаем OHLCV свечи
+            ohlcv_response = await self.api.get_kline(
+                symbol=symbol,
+                interval=self.TIMEFRAME_INTERVAL,
+                limit=self.HISTORY_BARS
+            )
+
+            if not ohlcv_response or "result" not in ohlcv_response:
+                # Инициализируем пустые данные
+                self.symbol_data[symbol] = {
+                    'closes': deque(maxlen=self.HISTORY_BARS),
+                    'volumes': deque(maxlen=self.HISTORY_BARS),
+                    'highs': deque(maxlen=self.HISTORY_BARS),
+                    'lows': deque(maxlen=self.HISTORY_BARS),
+                    'volatility': Decimal('0'),
+                    'avg_volume': Decimal('0'),
+                    'dynamic_threshold': self.BASE_DROP_PCT
+                }
+                return
+
+            klines = ohlcv_response["result"].get("list", [])
+
+            if len(klines) >= self.HISTORY_BARS:
+                # Bybit возвращает данные в обратном порядке (новые первыми), поэтому разворачиваем
+                klines = list(reversed(klines))
+
+                closes = [self._convert_to_decimal(k[4]) for k in klines]  # close price
+                volumes = [self._convert_to_decimal(k[5]) for k in klines]  # volume
+                highs = [self._convert_to_decimal(k[2]) for k in klines]  # high
+                lows = [self._convert_to_decimal(k[3]) for k in klines]  # low
+
+                # Вычисляем волатильность для динамического порога
+                volatility = self._calculate_volatility(closes)
+
+                # Динамический порог: чем выше волатильность, тем выше требуемое падение
+                # Для низковолатильных монет (BTC, ETH) - меньше порог
+                # Для высоковолатильных (мемкоины) - больше порог
+                # ОРИГИНАЛЬНАЯ ФОРМУЛА: BASE_DROP_PCT + (volatility * 10)
+                dynamic_threshold = self.BASE_DROP_PCT + (volatility * Decimal('10'))
+                # Ограничиваем 3%-15%
+                dynamic_threshold = max(self.MIN_DROP_PCT, min(dynamic_threshold, self.MAX_DROP_PCT))
+
+                avg_volume = sum(volumes) / len(volumes) if volumes else Decimal('0')
+
+                self.symbol_data[symbol] = {
+                    'closes': deque(closes, maxlen=self.HISTORY_BARS),
+                    'volumes': deque(volumes, maxlen=self.HISTORY_BARS),
+                    'highs': deque(highs, maxlen=self.HISTORY_BARS),
+                    'lows': deque(lows, maxlen=self.HISTORY_BARS),
+                    'volatility': volatility,
+                    'avg_volume': avg_volume,
+                    'dynamic_threshold': dynamic_threshold
+                }
+            else:
+                # Недостаточно данных
+                self.symbol_data[symbol] = {
+                    'closes': deque(maxlen=self.HISTORY_BARS),
+                    'volumes': deque(maxlen=self.HISTORY_BARS),
+                    'highs': deque(maxlen=self.HISTORY_BARS),
+                    'lows': deque(maxlen=self.HISTORY_BARS),
+                    'volatility': Decimal('0'),
+                    'avg_volume': Decimal('0'),
+                    'dynamic_threshold': self.BASE_DROP_PCT
+                }
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка загрузки истории для {symbol}: {e}", "FlashDropCatcher")
+            # Инициализируем пустые данные при ошибке
+            self.symbol_data[symbol] = {
+                'closes': deque(maxlen=self.HISTORY_BARS),
+                'volumes': deque(maxlen=self.HISTORY_BARS),
+                'highs': deque(maxlen=self.HISTORY_BARS),
+                'lows': deque(maxlen=self.HISTORY_BARS),
+                'volatility': Decimal('0'),
+                'avg_volume': Decimal('0'),
+                'dynamic_threshold': self.BASE_DROP_PCT
+            }
+
+    # ============================================================================
+    # === WEBSOCKET СКАНЕР (РЕФАКТОРЕННАЯ ВЕРСИЯ) ===
     # ============================================================================
 
     async def _run_websocket_scanner(self):
         """
-        ОРИГИНАЛЬНАЯ ЛОГИКА СКАНЕРА - НЕ ИЗМЕНЯТЬ!
-        Подключается к WebSocket и мониторит все символы на резкие падения
+        РЕФАКТОРЕННАЯ ЛОГИКА СКАНЕРА с фильтрами из оригинала.
+        Подключается к WebSocket и мониторит ликвидные символы на резкие падения
         """
         while self.is_running:
             try:
                 log_info(self.user_id, "🔌 Подключение к WebSocket сканеру...", "FlashDropCatcher")
 
+                # Получаем список всех фьючерсных символов
+                all_symbols = await self._get_all_futures_symbols()
+
+                if not all_symbols:
+                    log_error(self.user_id, "Не удалось получить список символов", "FlashDropCatcher")
+                    await asyncio.sleep(10)
+                    continue
+
+                # Применяем фильтр ликвидности (оставляем только топ-монеты)
+                self._liquid_symbols = await self._get_liquidity_filter()
+
+                if not self._liquid_symbols:
+                    log_warning(self.user_id,
+                               f"После фильтрации не осталось символов. Используем все {len(all_symbols)} символов.",
+                               "FlashDropCatcher")
+                    self._liquid_symbols = all_symbols
+
+                log_info(self.user_id,
+                        f"📊 Будет отслеживаться {len(self._liquid_symbols)} ликвидных символов из {len(all_symbols)} доступных",
+                        "FlashDropCatcher")
+
+                # Загружаем историю и вычисляем динамические параметры для каждого символа
+                log_info(self.user_id,
+                        f"📥 Загрузка начальной истории для {len(self._liquid_symbols)} символов...",
+                        "FlashDropCatcher")
+
+                # Загружаем историю параллельно (чанками для безопасности)
+                chunk_size = 50
+                for i in range(0, len(self._liquid_symbols), chunk_size):
+                    chunk = self._liquid_symbols[i:i + chunk_size]
+                    tasks = [self._prime_history(sym) for sym in chunk]
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
+                initialized_count = sum(1 for s in self._liquid_symbols
+                                       if s in self.symbol_data and len(self.symbol_data[s]['closes']) >= self.HISTORY_BARS)
+
+                log_info(self.user_id,
+                        f"✅ История загружена. Инициализировано: {initialized_count}/{len(self._liquid_symbols)} символов",
+                        "FlashDropCatcher")
+
+                # Подключаемся к WebSocket
                 async with websockets.connect(self._ws_url) as ws:
-                    # Получаем список всех фьючерсных символов
-                    symbols = await self._get_all_futures_symbols()
+                    # Подписываемся на kline свечи для отфильтрованных символов (чанками)
+                    for i in range(0, len(self._liquid_symbols), self.WEBSOCKET_CHUNK_SIZE):
+                        chunk = self._liquid_symbols[i:i + self.WEBSOCKET_CHUNK_SIZE]
+                        topics = [f"kline.{self.TIMEFRAME_INTERVAL}.{s}" for s in chunk]
 
-                    if not symbols:
-                        log_error(self.user_id, "Не удалось получить список символов", "FlashDropCatcher")
-                        await asyncio.sleep(10)
-                        continue
+                        subscribe_message = {
+                            "op": "subscribe",
+                            "args": topics
+                        }
 
-                    # Подписываемся на kline.1 (1-минутные свечи) для всех символов
-                    subscribe_message = {
-                        "op": "subscribe",
-                        "args": [f"kline.1.{symbol}" for symbol in symbols]
-                    }
+                        await ws.send(json.dumps(subscribe_message))
+                        await asyncio.sleep(0.2)  # Небольшая задержка между чанками
 
-                    await ws.send(json.dumps(subscribe_message))
                     log_info(self.user_id,
-                            f"✅ Подписка на {len(symbols)} символов для мониторинга падений",
+                            f"✅ Подписка на {len(self._liquid_symbols)} символов для мониторинга падений (интервал: {self.TIMEFRAME_INTERVAL}m)",
                             "FlashDropCatcher")
 
                     # Обрабатываем входящие сообщения
@@ -181,7 +418,6 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
     async def _get_all_futures_symbols(self) -> List[str]:
         """
-        ОРИГИНАЛЬНАЯ ЛОГИКА - НЕ ИЗМЕНЯТЬ!
         Получает список всех доступных фьючерсных символов
         """
         try:
@@ -189,9 +425,10 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
             if response and "result" in response and "list" in response["result"]:
                 symbols = [item["symbol"] for item in response["result"]["list"]
-                          if item.get("status") == "Trading"]
+                          if item.get("status") == "Trading" and item["symbol"].endswith("USDT")]
+
                 log_info(self.user_id,
-                        f"📊 Получено {len(symbols)} торгуемых символов",
+                        f"📊 Получено {len(symbols)} торгуемых USDT фьючерсов",
                         "FlashDropCatcher")
                 return symbols
 
@@ -203,59 +440,127 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
     async def _process_websocket_message(self, message: str):
         """
-        ОРИГИНАЛЬНАЯ ЛОГИКА - НЕ ИЗМЕНЯТЬ!
-        Обрабатывает сообщения WebSocket и обнаруживает падения
+        РЕФАКТОРЕННАЯ ЛОГИКА: Обрабатывает сообщения WebSocket с отслеживанием ОБЪЕМА
         """
         try:
             data = json.loads(message)
 
+            # Ping-pong для поддержания соединения
+            if data.get("op") == "ping":
+                # Не нужно отвечать, Bybit не требует pong
+
+                return
+
             # Проверяем, что это обновление свечи
-            if data.get("topic", "").startswith("kline.1."):
-                kline_data = data.get("data", [])
+            topic = data.get("topic", "")
+            if not topic.startswith(f"kline.{self.TIMEFRAME_INTERVAL}."):
+                return
 
-                if not kline_data:
-                    return
+            kline_data = data.get("data", [])
+            if not kline_data:
+                return
 
-                for candle in kline_data:
-                    symbol = data["topic"].split(".")[-1]
+            for candle in kline_data:
+                symbol = topic.split(".")[-1]
 
-                    # Проверяем, что свеча закрыта (confirm=True)
-                    if not candle.get("confirm", False):
-                        continue
+                # Проверяем, что свеча закрыта (confirm=True)
+                if not candle.get("confirm", False):
+                    continue
 
-                    close_price = Decimal(str(candle["close"]))
+                close_price = self._convert_to_decimal(candle["close"])
+                volume = self._convert_to_decimal(candle["volume"])
+                high = self._convert_to_decimal(candle["high"])
+                low = self._convert_to_decimal(candle["low"])
 
-                    # Добавляем свечу в историю
-                    self.candle_data[symbol].append(close_price)
+                # Добавляем данные в историю символа
+                if symbol in self.symbol_data:
+                    data_obj = self.symbol_data[symbol]
+                    data_obj['closes'].append(close_price)
+                    data_obj['volumes'].append(volume)
+                    data_obj['highs'].append(high)
+                    data_obj['lows'].append(low)
 
-                    # Проверяем падение только если накопили достаточно истории
-                    if len(self.candle_data[symbol]) >= self.CANDLE_HISTORY_SIZE:
-                        await self._check_for_drop(symbol, close_price)
+                    # Пересчитываем волатильность и динамический порог
+                    closes_list = list(data_obj['closes'])
+                    if len(closes_list) >= self.HISTORY_BARS:
+                        data_obj['volatility'] = self._calculate_volatility(closes_list)
+
+                        # ОРИГИНАЛЬНАЯ ФОРМУЛА: BASE_DROP_PCT + (volatility * 10)
+                        data_obj['dynamic_threshold'] = self.BASE_DROP_PCT + (data_obj['volatility'] * Decimal('10'))
+                        data_obj['dynamic_threshold'] = max(self.MIN_DROP_PCT, min(data_obj['dynamic_threshold'], self.MAX_DROP_PCT))
+
+                    # Проверяем падение с НОВЫМИ ФИЛЬТРАМИ
+                    await self._check_for_drop(symbol)
 
         except json.JSONDecodeError:
             pass  # Игнорируем некорректные JSON
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки WebSocket сообщения: {e}", "FlashDropCatcher")
 
-    async def _check_for_drop(self, symbol: str, current_close: Decimal):
+    async def _check_for_drop(self, symbol: str):
         """
-        ОРИГИНАЛЬНАЯ ЛОГИКА - НЕ ИЗМЕНЯТЬ!
-        Проверяет, произошло ли резкое падение для символа
+        РЕФАКТОРЕННАЯ ЛОГИКА: Проверяет падение с ДИНАМИЧЕСКИМИ ФИЛЬТРАМИ.
+        ОРИГИНАЛЬНАЯ ЛОГИКА ИЗ СКАНЕРА - НЕ ИЗМЕНЯТЬ ЧИСЛОВЫЕ ЗНАЧЕНИЯ!
+
+        Фильтры (все должны пройти):
+        1. Падение >= динамического порога (на основе волатильности)
+        2. Всплеск объема >= VOLUME_SPIKE_MIN (3x среднего)
         """
         try:
-            # Вычисляем среднюю цену закрытия за последние N свечей (без текущей)
-            history = list(self.candle_data[symbol])
-            if len(history) < 2:
+            data = self.symbol_data.get(symbol)
+            if not data or not isinstance(data, dict):
                 return
 
-            avg_close = sum(history[:-1]) / len(history[:-1])
+            closes = list(data['closes'])
+            volumes = list(data['volumes'])
 
-            # Рассчитываем процент падения
-            drop_pct = (avg_close - current_close) / avg_close
+            if len(closes) < self.HISTORY_BARS or len(volumes) < self.HISTORY_BARS:
+                return
 
-            # Если падение превышает порог - генерируем сигнал
-            if drop_pct >= self.DROP_PCT:
-                await self._handle_drop_signal(symbol, current_close, drop_pct)
+            # Вычисляем среднюю цену за предыдущие N-1 свечей (без текущей)
+            prev_closes = closes[:-1]
+            last_close = closes[-1]
+
+            prev_volumes = volumes[:-1]
+            current_volume = volumes[-1]
+
+            if len(prev_closes) < 2:
+                return
+
+            avg_prev_price = sum(prev_closes) / len(prev_closes)
+
+            if avg_prev_price == Decimal('0'):
+                return
+
+            # 1. Проверка падения относительно средней цены
+            rel_drop = (avg_prev_price - last_close) / avg_prev_price
+
+            # 2. Используем динамический порог для каждого символа
+            dynamic_threshold = data.get('dynamic_threshold', self.BASE_DROP_PCT)
+
+            if rel_drop < dynamic_threshold:
+                return  # Падение недостаточное
+
+            # 3. Проверка объема (должен быть >= VOLUME_SPIKE_MIN * среднего)
+            avg_prev_volume = sum(prev_volumes) / len(prev_volumes) if prev_volumes else Decimal('1')
+            volume_ratio = current_volume / avg_prev_volume if avg_prev_volume > Decimal('0') else Decimal('0')
+
+            if volume_ratio < self.VOLUME_SPIKE_MIN:
+                return  # Объем слишком низкий - игнорируем сигнал
+
+            # 4. Все фильтры пройдены - генерируем качественный сигнал!
+            drop_pct = rel_drop * Decimal('100')
+            volatility_pct = data.get('volatility', Decimal('0')) * Decimal('100')
+
+            log_warning(self.user_id,
+                       f"🎯 КАЧЕСТВЕННЫЙ СИГНАЛ: {symbol} | "
+                       f"Падение: {float(drop_pct):.2f}% (порог: {float(dynamic_threshold)*100:.2f}%) | "
+                       f"Объем: {float(volume_ratio):.2f}x среднего | "
+                       f"Волатильность: {float(volatility_pct):.3f}%",
+                       "FlashDropCatcher")
+
+            # Обрабатываем сигнал
+            await self._handle_drop_signal(symbol, last_close, rel_drop, volume_ratio, volatility_pct)
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка проверки падения для {symbol}: {e}", "FlashDropCatcher")
@@ -264,10 +569,10 @@ class FlashDropCatcherStrategy(BaseStrategy):
     # === ТОРГОВАЯ ЛОГИКА (ИНТЕГРАЦИЯ) ===
     # ============================================================================
 
-    async def _handle_drop_signal(self, symbol: str, price: Decimal, drop_pct: Decimal):
+    async def _handle_drop_signal(self, symbol: str, price: Decimal, drop_pct: Decimal,
+                                  volume_ratio: Decimal, volatility_pct: Decimal):
         """
-        Обрабатывает сигнал резкого падения.
-        Открывает LONG позицию если нет активной позиции.
+        Обрабатывает сигнал резкого падения с проверкой лимитов.
         """
         try:
             # Проверка 1: Подсчитываем количество открытых позиций на бирже
@@ -282,14 +587,14 @@ class FlashDropCatcherStrategy(BaseStrategy):
                         # Проверяем, есть ли уже позиция на этот символ
                         if pos["symbol"] == symbol:
                             log_warning(self.user_id,
-                                       f"⚠️ Пропускаем сигнал {symbol} - уже есть открытая позиция на этот символ! Размер: {pos.get('size')}",
+                                       f"⚠️ Пропускаем сигнал {symbol} - уже есть открытая позиция!",
                                        "FlashDropCatcher")
                             return
 
             # Проверка 2: Достигнут ли лимит одновременных позиций
             if open_positions_count >= self.MAX_CONCURRENT_POSITIONS:
                 log_warning(self.user_id,
-                           f"⚠️ Пропускаем сигнал {symbol} - достигнут лимит одновременных позиций ({open_positions_count}/{self.MAX_CONCURRENT_POSITIONS})",
+                           f"⚠️ Пропускаем сигнал {symbol} - достигнут лимит позиций ({open_positions_count}/{self.MAX_CONCURRENT_POSITIONS})",
                            "FlashDropCatcher")
                 return
 
@@ -297,20 +602,19 @@ class FlashDropCatcherStrategy(BaseStrategy):
             if self.symbol != "ALL" and symbol != self.symbol:
                 return
 
-            # Генерируем сообщение сигнала
-            drop_percent = drop_pct * 100
-            signal_message = f"🔔 РЕЗКОЕ ПАДЕНИЕ: {symbol} Последняя цена: {price:.8f} (падение {drop_percent:.2f}%)"
-
-            log_warning(self.user_id, signal_message, "FlashDropCatcher")
+            # Генерируем детальное сообщение сигнала
+            drop_percent = drop_pct * Decimal('100')
 
             # Отправляем уведомление пользователю
             if self.bot:
                 await self.bot.send_message(
                     self.user_id,
-                    f"{hbold('🔔 СИГНАЛ ПАДЕНИЯ')}\n\n"
+                    f"{hbold('🎯 КАЧЕСТВЕННЫЙ СИГНАЛ')}\n\n"
                     f"Символ: {hcode(symbol)}\n"
                     f"Цена: {hcode(f'{price:.8f}')}\n"
-                    f"Падение: {hcode(f'{drop_percent:.2f}%')}\n\n"
+                    f"📉 Падение: {hcode(f'{float(drop_percent):.2f}%')}\n"
+                    f"📊 Объем: {hcode(f'{float(volume_ratio):.2f}x среднего')}\n"
+                    f"📈 Волатильность: {hcode(f'{float(volatility_pct):.3f}%')}\n\n"
                     f"Открываем LONG позицию..."
                 )
 
@@ -328,7 +632,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
         try:
             # Получаем параметры из конфигурации
             order_amount = self._convert_to_decimal(self.get_config_value("order_amount", 200.0))
-            leverage = int(self.get_config_value("leverage", 3))
+            leverage = int(self.get_config_value("leverage", 2))
 
             # Устанавливаем плечо
             await self.api.set_leverage(symbol=self.symbol, leverage=leverage)
@@ -348,7 +652,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
             # Открываем LONG позицию
             log_info(self.user_id,
-                    f"📈 Открываем LONG позицию: {self.symbol}, размер: {position_size}, плечо: {leverage}x",
+                    f"📈 Открываем LONG: {self.symbol}, размер: {position_size}, плечо: {leverage}x",
                     "FlashDropCatcher")
 
             order_result = await self.api.place_order(
@@ -372,9 +676,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 # Запускаем мониторинг позиции
                 self._position_monitor_task = asyncio.create_task(self._monitor_position())
 
-                log_info(self.user_id,
-                        f"✅ LONG позиция открыта по цене {entry_price}",
-                        "FlashDropCatcher")
+                log_info(self.user_id, f"✅ LONG позиция открыта по цене {entry_price}", "FlashDropCatcher")
 
                 # Уведомление
                 if self.bot:
@@ -411,8 +713,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
     async def handle_price_update(self, event: PriceUpdateEvent):
         """
         Обработчик обновлений цены для активной позиции.
-
-        THREAD-SAFE: Защищено декоратором @strategy_locked для предотвращения race conditions.
+        THREAD-SAFE: Защищено декоратором @strategy_locked.
         """
         if not self.position_active or event.symbol != self.symbol:
             return
@@ -423,10 +724,10 @@ class FlashDropCatcherStrategy(BaseStrategy):
             # Рассчитываем текущий PnL
             current_pnl = await self._calculate_current_pnl(current_price)
 
-            # Проверка 1: Hard stop loss при -3$
+            # Проверка 1: Hard stop loss при -15$
             if current_pnl <= self.HARD_STOP_LOSS_USDT:
                 log_warning(self.user_id,
-                           f"🛑 HARD STOP LOSS! PnL={current_pnl:.2f}$ достиг -3$",
+                           f"🛑 HARD STOP LOSS! PnL={current_pnl:.2f}$ достиг {self.HARD_STOP_LOSS_USDT}$",
                            "FlashDropCatcher")
                 await self._close_position("hard_stop_loss")
                 return
@@ -455,12 +756,12 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
         # Проценты для уровней трейлинга
         level_percentages = {
-            1: Decimal('0.0035'),   # 0.20% - МГНОВЕННЫЙ
-            2: Decimal('0.0065'),   # 0.45% - РАННИЙ
-            3: Decimal('0.0095'),   # 0.85% - СРЕДНИЙ
-            4: Decimal('0.0145'),   # 1.30% - ХОРОШИЙ
-            5: Decimal('0.0195'),   # 1.85% - ОТЛИЧНЫЙ
-            6: Decimal('0.0350')    # 2.50% - МАКСИМАЛЬНЫЙ
+            1: Decimal('0.0035'),   # 0.35%
+            2: Decimal('0.0065'),   # 0.65%
+            3: Decimal('0.0095'),   # 0.95%
+            4: Decimal('0.0145'),   # 1.45%
+            5: Decimal('0.0195'),   # 1.95%
+            6: Decimal('0.0350')    # 3.50%
         }
 
         # Рассчитываем пороги в USDT
@@ -472,9 +773,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
         return levels
 
     def _get_trailing_level(self, current_pnl: Decimal) -> int:
-        """
-        Определяет текущий уровень трейлинга (копия из signal_scalper_strategy.py)
-        """
+        """Определяет текущий уровень трейлинга"""
         levels = self._calculate_dynamic_levels()
 
         if current_pnl < levels[1]:
@@ -505,14 +804,12 @@ class FlashDropCatcherStrategy(BaseStrategy):
             3: f"СРЕДНИЙ УРОВЕНЬ (${levels[3]:.2f}+, 0.95%)",
             4: f"ХОРОШИЙ УРОВЕНЬ (${levels[4]:.2f}+, 1.45%)",
             5: f"ОТЛИЧНЫЙ УРОВЕНЬ (${levels[5]:.2f}+, 1.95%)",
-            6: f"МАКСИМАЛЬНЫЙ УРОВЕНЬ (${levels[6]:.2f}+, 2.50%)"
+            6: f"МАКСИМАЛЬНЫЙ УРОВЕНЬ (${levels[6]:.2f}+, 3.50%)"
         }
         return level_names.get(level, "НЕИЗВЕСТНЫЙ УРОВЕНЬ")
 
     async def _check_trailing_stop(self, current_pnl: Decimal):
-        """
-        Проверяет условия trailing stop (адаптировано из signal_scalper_strategy.py)
-        """
+        """Проверяет условия trailing stop"""
         # Обновляем максимальный PnL
         if current_pnl > self.highest_pnl:
             self.highest_pnl = current_pnl
@@ -532,12 +829,11 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
         # Проверяем откат для закрытия (25% от максимума)
         if self.current_trailing_level > 0:
-            # Откат 25%
             pullback_threshold = self.highest_pnl * Decimal('0.75')
 
             if current_pnl <= pullback_threshold:
                 log_warning(self.user_id,
-                           f"💰 TRAILING STOP! Откат 25% от максимума. Max PnL=${self.highest_pnl:.2f}, Current=${current_pnl:.2f}",
+                           f"💰 TRAILING STOP! Откат 25% от максимума. Max={self.highest_pnl:.2f}$, Current={current_pnl:.2f}$",
                            "FlashDropCatcher")
                 await self._close_position("trailing_stop_profit")
 
@@ -557,9 +853,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
             return
 
         try:
-            log_info(self.user_id,
-                    f"🔄 Закрытие позиции: {self.symbol}, причина: {reason}",
-                    "FlashDropCatcher")
+            log_info(self.user_id, f"🔄 Закрытие позиции: {self.symbol}, причина: {reason}", "FlashDropCatcher")
 
             # Закрываем позицию на бирже
             close_result = await self.api.place_order(
@@ -571,21 +865,47 @@ class FlashDropCatcherStrategy(BaseStrategy):
             )
 
             if close_result and "result" in close_result:
-                # Получаем финальный PnL из позиции
-                positions = await self.api.get_positions(symbol=self.symbol)
+                # ТОЧНЫЙ РАСЧЕТ PnL: Берём РЕАЛЬНЫЕ данные от биржи (closedPnL)
                 final_pnl = Decimal('0')
 
-                if positions and "result" in positions and "list" in positions["result"]:
-                    for pos in positions["result"]["list"]:
-                        if pos["symbol"] == self.symbol:
-                            final_pnl = self._convert_to_decimal(pos.get("unrealisedPnl", 0))
-                            break
+                try:
+                    log_info(self.user_id, f"[BYBIT API] Запрашиваю реальный closedPnL от биржи для {self.symbol}...", "FlashDropCatcher")
+                    closed_pnl_data = await self.api.get_closed_pnl(self.symbol, limit=1)
+
+                    if closed_pnl_data:
+                        # Используем ТОЧНЫЕ данные от биржи
+                        final_pnl = closed_pnl_data['closedPnl']  # Уже с учетом ВСЕХ комиссий!
+
+                        log_info(self.user_id,
+                                f"✅ [BYBIT PNL] Получен ТОЧНЫЙ PnL от биржи: "
+                                f"closedPnl={final_pnl:.4f} USDT, "
+                                f"avgEntryPrice={closed_pnl_data['avgEntryPrice']:.4f}, "
+                                f"avgExitPrice={closed_pnl_data['avgExitPrice']:.4f}, "
+                                f"closedSize={closed_pnl_data['closedSize']}",
+                                "FlashDropCatcher")
+                    else:
+                        log_warning(self.user_id, f"⚠️ [BYBIT PNL] Не удалось получить closedPnL от биржи, используем unrealisedPnl", "FlashDropCatcher")
+                        # ФОЛБЭК: Используем unrealisedPnl из позиции
+                        positions = await self.api.get_positions(symbol=self.symbol)
+                        if positions and "result" in positions and "list" in positions["result"]:
+                            for pos in positions["result"]["list"]:
+                                if pos["symbol"] == self.symbol:
+                                    final_pnl = self._convert_to_decimal(pos.get("unrealisedPnl", 0))
+                                    break
+
+                except Exception as api_error:
+                    log_error(self.user_id, f"❌ [BYBIT PNL] Ошибка запроса closedPnL: {api_error}, используем unrealisedPnl", "FlashDropCatcher")
+                    # ФОЛБЭК: Используем unrealisedPnl из позиции
+                    positions = await self.api.get_positions(symbol=self.symbol)
+                    if positions and "result" in positions and "list" in positions["result"]:
+                        for pos in positions["result"]["list"]:
+                            if pos["symbol"] == self.symbol:
+                                final_pnl = self._convert_to_decimal(pos.get("unrealisedPnl", 0))
+                                break
 
                 self.position_active = False
 
-                log_info(self.user_id,
-                        f"✅ Позиция закрыта. Итоговый PnL: ${final_pnl:.2f}",
-                        "FlashDropCatcher")
+                log_info(self.user_id, f"✅ Позиция закрыта. PnL: ${final_pnl:.2f}", "FlashDropCatcher")
 
                 # Уведомление
                 if self.bot:
@@ -627,6 +947,103 @@ class FlashDropCatcherStrategy(BaseStrategy):
             except (ValueError, TypeError, ArithmeticError):
                 return Decimal('0')
         return Decimal('0')
+
+    async def get_detailed_status(self) -> Dict[str, Any]:
+        """Возвращает детальную информацию о текущей позиции для команды /trade_details"""
+        try:
+            if not self.position_active:
+                return {
+                    "has_position": False,
+                    "symbol": self.symbol,
+                    "strategy_type": StrategyType.FLASH_DROP_CATCHER.value,
+                    "account_priority": self.account_priority
+                }
+
+            current_price = await self._get_current_market_price()
+            if not current_price or current_price == Decimal('0'):
+                current_price = self.entry_price
+
+            current_pnl = await self._calculate_current_pnl(current_price)
+            price_change_percent = Decimal('0')
+            if self.entry_price > 0:
+                price_change_percent = ((current_price - self.entry_price) / self.entry_price) * Decimal('100')
+
+            breakeven_price = None
+            try:
+                positions = await self.api.get_positions(symbol=self.symbol)
+                if positions and len(positions) > 0:
+                    breakeven_price_from_exchange = positions[0].get("breakEvenPrice", None)
+                    if breakeven_price_from_exchange:
+                        breakeven_price = self._convert_to_decimal(breakeven_price_from_exchange)
+            except Exception as e:
+                log_warning(self.user_id, f"Не удалось получить breakEvenPrice: {e}", "FlashDropCatcher")
+
+            return {
+                "has_position": True,
+                "symbol": self.symbol,
+                "strategy_type": StrategyType.FLASH_DROP_CATCHER.value,
+                "account_priority": self.account_priority,
+                "position": {
+                    "direction": self.active_direction,
+                    "entry_price": float(self.entry_price),
+                    "current_price": float(current_price),
+                    "position_size": float(self.position_size),
+                    "total_position_size": float(self.position_size)
+                },
+                "averaging": {
+                    "count": 0,
+                    "executed": 0,
+                    "average_entry_price": None,
+                    "effective_entry_price": float(self.entry_price),
+                    "breakeven_price": float(breakeven_price) if breakeven_price else None,
+                    "use_breakeven_exit": False
+                },
+                "margin": {
+                    "initial_margin": float(self.get_config_value("order_amount", 200.0)),
+                    "current_total_margin": float(self.get_config_value("order_amount", 200.0)),
+                    "total_fees_paid": 0.0
+                },
+                "pnl": {
+                    "unrealized_pnl": float(current_pnl),
+                    "price_change_percent": float(price_change_percent),
+                    "peak_profit": float(self.highest_pnl)
+                },
+                "trailing_stop": {
+                    "current_level": self.current_trailing_level,
+                    "level_name": self._get_level_name(self.current_trailing_level),
+                    "highest_pnl": float(self.highest_pnl)
+                },
+                "stop_loss": {
+                    "has_stop_loss": True,
+                    "stop_loss_type": "hard_stop",
+                    "stop_loss_price": None,
+                    "stop_loss_usdt": float(self.HARD_STOP_LOSS_USDT)
+                }
+            }
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка получения детального статуса: {e}", "FlashDropCatcher")
+            return {
+                "has_position": False,
+                "symbol": self.symbol,
+                "strategy_type": StrategyType.FLASH_DROP_CATCHER.value,
+                "account_priority": self.account_priority,
+                "error": str(e)
+            }
+
+    async def _get_current_market_price(self) -> Optional[Decimal]:
+        """Получает текущую рыночную цену символа с биржи"""
+        try:
+            tickers = await self.api.get_tickers(symbol=self.symbol)
+            if tickers and "result" in tickers and "list" in tickers["result"]:
+                if len(tickers["result"]["list"]) > 0:
+                    last_price = tickers["result"]["list"][0].get("lastPrice")
+                    if last_price:
+                        return self._convert_to_decimal(last_price)
+            return None
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка получения текущей цены: {e}", "FlashDropCatcher")
+            return None
 
     async def _execute_strategy_logic(self):
         """Базовый метод выполнения логики (не используется в этой стратегии)"""
