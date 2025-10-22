@@ -103,7 +103,7 @@ class DefaultConfigs:
             "max_concurrent_positions": 2,  # Максимум 2 позиции одновременно
 
             # --- Параметры выхода ---
-            "hard_stop_loss_usdt": -15.0,  # Hard stop loss при -15$
+            "hard_stop_loss_usdt": -500.0,  # Hard stop loss при -15$
             "websocket_chunk_size": 150,  # Размер чанка для подписки на символы в WebSocket
         }
 

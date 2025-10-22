@@ -211,14 +211,15 @@ class FlashDropCatcherStrategy(BaseStrategy):
         log_info(self.user_id, "🔍 Применение фильтра ликвидности...", "FlashDropCatcher")
 
         try:
-            # Получаем тикеры всех символов
-            tickers_response = await self.api.get_tickers()
+            # Получаем тикеры ВСЕХ символов одним запросом
+            params = {"category": "linear"}
+            tickers_response = await self.api._make_request("GET", "/v5/market/tickers", params, private=False)
 
-            if not tickers_response or "result" not in tickers_response:
+            if not tickers_response or "list" not in tickers_response:
                 log_error(self.user_id, "Не удалось получить тикеры для фильтра ликвидности", "FlashDropCatcher")
                 return []
 
-            tickers = tickers_response["result"].get("list", [])
+            tickers = tickers_response.get("list", [])
             liquid_symbols = []
 
             for ticker in tickers:
@@ -250,14 +251,14 @@ class FlashDropCatcherStrategy(BaseStrategy):
         ОРИГИНАЛЬНАЯ ЛОГИКА ИЗ СКАНЕРА - НЕ ИЗМЕНЯТЬ ЧИСЛОВЫЕ ЗНАЧЕНИЯ!
         """
         try:
-            # Загружаем OHLCV свечи
-            ohlcv_response = await self.api.get_kline(
+            # Загружаем OHLCV свечи (используем правильное имя метода get_klines)
+            ohlcv_response = await self.api.get_klines(
                 symbol=symbol,
-                interval=self.TIMEFRAME_INTERVAL,
+                interval=f"{self.TIMEFRAME_INTERVAL}m",  # Добавляем "m" для минут
                 limit=self.HISTORY_BARS
             )
 
-            if not ohlcv_response or "result" not in ohlcv_response:
+            if not ohlcv_response:
                 # Инициализируем пустые данные
                 self.symbol_data[symbol] = {
                     'closes': deque(maxlen=self.HISTORY_BARS),
@@ -270,16 +271,15 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 }
                 return
 
-            klines = ohlcv_response["result"].get("list", [])
+            klines = ohlcv_response
 
             if len(klines) >= self.HISTORY_BARS:
-                # Bybit возвращает данные в обратном порядке (новые первыми), поэтому разворачиваем
-                klines = list(reversed(klines))
-
-                closes = [self._convert_to_decimal(k[4]) for k in klines]  # close price
-                volumes = [self._convert_to_decimal(k[5]) for k in klines]  # volume
-                highs = [self._convert_to_decimal(k[2]) for k in klines]  # high
-                lows = [self._convert_to_decimal(k[3]) for k in klines]  # low
+                # get_klines() возвращает список словарей, уже отсортированный от старых к новым
+                # Данные уже в формате Decimal
+                closes = [k["close"] for k in klines]
+                volumes = [k["volume"] for k in klines]
+                highs = [k["high"] for k in klines]
+                lows = [k["low"] for k in klines]
 
                 # Вычисляем волатильность для динамического порога
                 volatility = self._calculate_volatility(closes)
@@ -581,8 +581,9 @@ class FlashDropCatcherStrategy(BaseStrategy):
             all_positions = await self.api.get_positions()
             open_positions_count = 0
 
-            if all_positions and "result" in all_positions and "list" in all_positions["result"]:
-                for pos in all_positions["result"]["list"]:
+            # get_positions() возвращает List[Dict] напрямую
+            if all_positions and isinstance(all_positions, list):
+                for pos in all_positions:
                     position_size = float(pos.get("size", 0))
                     if position_size > 0:
                         open_positions_count += 1
@@ -640,13 +641,13 @@ class FlashDropCatcherStrategy(BaseStrategy):
             await self.api.set_leverage(symbol=self.symbol, leverage=leverage)
 
             # Получаем информацию о символе для правильного размера позиции
-            instruments = await self.api.get_instruments_info(symbol=self.symbol)
-            if not instruments or "result" not in instruments:
+            instrument_info = await self.api.get_instruments_info(symbol=self.symbol)
+            if not instrument_info:
                 log_error(self.user_id, "Не удалось получить информацию о символе", "FlashDropCatcher")
                 return
 
-            instrument = instruments["result"]["list"][0]
-            qty_step = Decimal(str(instrument.get("lotSizeFilter", {}).get("qtyStep", "0.001")))
+            # get_instruments_info возвращает словарь {symbol: info} для одного символа
+            qty_step = instrument_info.get("qtyStep", Decimal("0.001"))
 
             # Рассчитываем размер позиции
             position_size = (order_amount * leverage) / entry_price
@@ -664,7 +665,8 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 qty=Decimal(str(position_size))
             )
 
-            if order_result and "result" in order_result:
+            # place_order() возвращает order_id (строку), а не словарь
+            if order_result:
                 self.position_active = True
                 self.entry_price = entry_price
                 self.position_size = position_size
@@ -866,7 +868,8 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 reduce_only=True
             )
 
-            if close_result and "result" in close_result:
+            # place_order() возвращает order_id (строку), а не словарь
+            if close_result:
                 # ТОЧНЫЙ РАСЧЕТ PnL: Берём РЕАЛЬНЫЕ данные от биржи (closedPnL)
                 final_pnl = Decimal('0')
 
@@ -889,8 +892,8 @@ class FlashDropCatcherStrategy(BaseStrategy):
                         log_warning(self.user_id, f"⚠️ [BYBIT PNL] Не удалось получить closedPnL от биржи, используем unrealisedPnl", "FlashDropCatcher")
                         # ФОЛБЭК: Используем unrealisedPnl из позиции
                         positions = await self.api.get_positions(symbol=self.symbol)
-                        if positions and "result" in positions and "list" in positions["result"]:
-                            for pos in positions["result"]["list"]:
+                        if positions and isinstance(positions, list):
+                            for pos in positions:
                                 if pos["symbol"] == self.symbol:
                                     final_pnl = self._convert_to_decimal(pos.get("unrealisedPnl", 0))
                                     break
@@ -899,8 +902,8 @@ class FlashDropCatcherStrategy(BaseStrategy):
                     log_error(self.user_id, f"❌ [BYBIT PNL] Ошибка запроса closedPnL: {api_error}, используем unrealisedPnl", "FlashDropCatcher")
                     # ФОЛБЭК: Используем unrealisedPnl из позиции
                     positions = await self.api.get_positions(symbol=self.symbol)
-                    if positions and "result" in positions and "list" in positions["result"]:
-                        for pos in positions["result"]["list"]:
+                    if positions and isinstance(positions, list):
+                        for pos in positions:
                             if pos["symbol"] == self.symbol:
                                 final_pnl = self._convert_to_decimal(pos.get("unrealisedPnl", 0))
                                 break
@@ -973,7 +976,8 @@ class FlashDropCatcherStrategy(BaseStrategy):
             breakeven_price = None
             try:
                 positions = await self.api.get_positions(symbol=self.symbol)
-                if positions and len(positions) > 0:
+                # get_positions() возвращает List[Dict]
+                if positions and isinstance(positions, list) and len(positions) > 0:
                     breakeven_price_from_exchange = positions[0].get("breakEvenPrice", None)
                     if breakeven_price_from_exchange:
                         breakeven_price = self._convert_to_decimal(breakeven_price_from_exchange)
@@ -1036,12 +1040,9 @@ class FlashDropCatcherStrategy(BaseStrategy):
     async def _get_current_market_price(self) -> Optional[Decimal]:
         """Получает текущую рыночную цену символа с биржи"""
         try:
-            tickers = await self.api.get_tickers(symbol=self.symbol)
-            if tickers and "result" in tickers and "list" in tickers["result"]:
-                if len(tickers["result"]["list"]) > 0:
-                    last_price = tickers["result"]["list"][0].get("lastPrice")
-                    if last_price:
-                        return self._convert_to_decimal(last_price)
+            ticker = await self.api.get_ticker(symbol=self.symbol)
+            if ticker and "lastPrice" in ticker:
+                return ticker["lastPrice"]  # Уже в формате Decimal
             return None
         except Exception as e:
             log_error(self.user_id, f"Ошибка получения текущей цены: {e}", "FlashDropCatcher")
