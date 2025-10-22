@@ -89,13 +89,18 @@ def get_strategy_config_keyboard(strategy_type: str, config: Dict[str, Any]) -> 
             "averaging_trigger_loss_percent": f"  └─ Триггер убытка: {config.get('averaging_trigger_loss_percent', 15.0)}%",
         }
     elif strategy_type == StrategyType.FLASH_DROP_CATCHER.value:
+        # Toggle параметры (вкл/выкл) - отображаем статус
+        enable_heartbeat = config.get('enable_heartbeat_notifications', True)
+        heartbeat_status = "✅ Вкл" if enable_heartbeat else "❌ Выкл"
+
         editable_params = {
             "leverage": f"🎚️ Плечо: x{config.get('leverage', 10)}",
             "order_amount": f"💰 Сумма ордера: {config.get('order_amount', 50)} USDT",
+            "enable_heartbeat_notifications": f"💓 Heartbeat уведомления (каждые 30 мин): {heartbeat_status}",
         }
 
     # Определяем какие параметры toggle (boolean), а какие set (numeric)
-    toggle_params = ['enable_stop_loss', 'enable_stagnation_detector', 'enable_averaging']
+    toggle_params = ['enable_stop_loss', 'enable_stagnation_detector', 'enable_averaging', 'enable_heartbeat_notifications']
 
     for key, text in editable_params.items():
         # Для boolean параметров используем toggle вместо set

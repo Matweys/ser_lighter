@@ -105,6 +105,9 @@ class DefaultConfigs:
             # --- Параметры выхода ---
             "hard_stop_loss_usdt": -500.0,  # Hard stop loss при -15$
             "websocket_chunk_size": 150,  # Размер чанка для подписки на символы в WebSocket
+
+            # --- Heartbeat мониторинг ---
+            "enable_heartbeat_notifications": True,  # Включить/выключить уведомления о работе стратегии в Telegram
         }
 
     @staticmethod

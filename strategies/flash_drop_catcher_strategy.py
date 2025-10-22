@@ -65,6 +65,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
         # WebSocket задача
         self._scanner_task: Optional[asyncio.Task] = None
+        self._heartbeat_task: Optional[asyncio.Task] = None  # Задача для heartbeat мониторинга
         self._ws_url = "wss://stream.bybit.com/v5/public/linear"
 
         # === ПАРАМЕТРЫ ТОРГОВЛИ ===
@@ -90,6 +91,11 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
         # Список отфильтрованных ликвидных символов
         self._liquid_symbols: List[str] = []
+
+        # === HEARTBEAT МОНИТОРИНГ ===
+        self.last_heartbeat_time = datetime.now()
+        self.processed_candles_count = 0  # Счётчик обработанных свечей
+        self.detected_drops_count = 0  # Счётчик обнаруженных падений
 
         log_info(self.user_id,
                 f"🚀 FlashDropCatcher инициализирована для {self.symbol}",
@@ -137,6 +143,9 @@ class FlashDropCatcherStrategy(BaseStrategy):
         # Запускаем WebSocket сканер
         self._scanner_task = asyncio.create_task(self._run_websocket_scanner())
 
+        # Запускаем heartbeat мониторинг
+        self._heartbeat_task = asyncio.create_task(self._run_heartbeat_monitor())
+
         log_info(self.user_id,
                 f"✅ FlashDropCatcher запущена! Сканирование всех символов на падения...",
                 "FlashDropCatcher")
@@ -155,6 +164,14 @@ class FlashDropCatcherStrategy(BaseStrategy):
             self._scanner_task.cancel()
             try:
                 await self._scanner_task
+            except asyncio.CancelledError:
+                pass
+
+        # Останавливаем heartbeat мониторинг
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
             except asyncio.CancelledError:
                 pass
 
@@ -215,14 +232,14 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
         try:
             # Получаем тикеры ВСЕХ символов одним запросом
-            params = {"category": "linear"}
-            tickers_response = await self.api._make_request("GET", "/v5/market/tickers", params, private=False)
+            tickers_response = await self.api.get_tickers()
 
-            if not tickers_response or "list" not in tickers_response:
+            if not tickers_response:
                 log_error(self.user_id, "Не удалось получить тикеры для фильтра ликвидности", "FlashDropCatcher")
                 return []
 
-            tickers = tickers_response.get("list", [])
+            # get_tickers() возвращает список тикеров напрямую
+            tickers = tickers_response if isinstance(tickers_response, list) else []
             liquid_symbols = []
 
             for ticker in tickers:
@@ -485,6 +502,9 @@ class FlashDropCatcherStrategy(BaseStrategy):
                     data_obj['highs'].append(high)
                     data_obj['lows'].append(low)
 
+                    # Увеличиваем счётчик обработанных свечей
+                    self.processed_candles_count += 1
+
                     # Пересчитываем волатильность и динамический порог
                     closes_list = list(data_obj['closes'])
                     if len(closes_list) >= self.HISTORY_BARS:
@@ -556,6 +576,9 @@ class FlashDropCatcherStrategy(BaseStrategy):
             # 4. Все фильтры пройдены - генерируем качественный сигнал!
             drop_pct = rel_drop * Decimal('100')
             volatility_pct = data.get('volatility', Decimal('0')) * Decimal('100')
+
+            # Увеличиваем счётчик обнаруженных падений
+            self.detected_drops_count += 1
 
             log_warning(self.user_id,
                        f"🎯 КАЧЕСТВЕННЫЙ СИГНАЛ: {symbol} | "
@@ -1072,6 +1095,83 @@ class FlashDropCatcherStrategy(BaseStrategy):
         except Exception as e:
             log_error(self.user_id, f"Ошибка получения текущей цены: {e}", "FlashDropCatcher")
             return None
+
+    async def _run_heartbeat_monitor(self):
+        """
+        💓 HEARTBEAT МОНИТОРИНГ - Периодические уведомления в Telegram каждые 30 минут
+        Показывает что стратегия активна и работает правильно
+        """
+        heartbeat_interval = 1800  # 30 минут в секундах
+
+        while self.is_running:
+            try:
+                # Проверяем, включены ли heartbeat уведомления в Telegram
+                enable_heartbeat = self.get_config_value("enable_heartbeat_notifications", True)
+
+                # Формируем сообщение о статусе
+                elapsed_time = datetime.now() - self.last_heartbeat_time
+                elapsed_minutes = int(elapsed_time.total_seconds() / 60)
+
+                # Статус позиции
+                position_status = "🟢 НЕТ АКТИВНЫХ ПОЗИЦИЙ" if not self.position_active else f"🔵 АКТИВНА ПОЗИЦИЯ: {self.symbol}"
+
+                # Статистика за период (защита от деления на 0)
+                candles_per_minute = self.processed_candles_count / max(elapsed_minutes, 1) if elapsed_minutes > 0 else 0
+
+                # Формируем текст сообщения
+                message_text = (
+                    f"{'='*40}\n"
+                    f"💓 {hbold('HEARTBEAT - FLASH DROP CATCHER АКТИВНА')}\n"
+                    f"{'='*40}\n\n"
+                    f"⏱️  {hbold('Время работы:')} {elapsed_minutes} минут\n"
+                    f"📊 {hbold('Отслеживается символов:')} {len(self._liquid_symbols)}\n"
+                    f"🕯️  {hbold('Обработано свечей:')} {self.processed_candles_count} ({candles_per_minute:.1f}/мин)\n"
+                    f"🎯 {hbold('Обнаружено падений:')} {self.detected_drops_count}\n"
+                    f"📌 {hbold('Статус:')} {position_status}\n\n"
+                    f"⚙️  {hbold('Настройки:')}\n"
+                    f"  ▫️ Интервал свечей: {hcode(f'{self.TIMEFRAME_INTERVAL}m')}\n"
+                    f"  ▫️ Порог падения: {hcode(f'{float(self.BASE_DROP_PCT)*100:.1f}%-{float(self.MAX_DROP_PCT)*100:.1f}%')}\n"
+                    f"  ▫️ Множитель объёма: {hcode(f'{self.VOLUME_SPIKE_MIN}x')}\n"
+                    f"{'='*40}"
+                )
+
+                # Отправляем в Telegram если включено
+                if enable_heartbeat and self.bot:
+                    try:
+                        await self.bot.send_message(
+                            self.user_id,
+                            message_text
+                        )
+                        log_info(self.user_id, "Heartbeat уведомление отправлено в Telegram", "FlashDropCatcher")
+                    except Exception as telegram_error:
+                        log_error(self.user_id, f"Ошибка отправки Telegram heartbeat: {telegram_error}", "FlashDropCatcher")
+
+                # Дублируем в логи для отладки (всегда, независимо от настройки)
+                log_info(
+                    self.user_id,
+                    f"💓 HEARTBEAT: {elapsed_minutes}м работы | {len(self._liquid_symbols)} символов | "
+                    f"{self.processed_candles_count} свечей | {self.detected_drops_count} падений | {position_status}",
+                    "FlashDropCatcher"
+                )
+
+                # Сбрасываем счётчики для следующего периода
+                self.last_heartbeat_time = datetime.now()
+                self.processed_candles_count = 0
+                self.detected_drops_count = 0
+
+                # КРИТИЧНО: Sleep в КОНЦЕ цикла, чтобы первое сообщение показалось сразу
+                await asyncio.sleep(heartbeat_interval)
+
+                if not self.is_running:
+                    break
+
+            except asyncio.CancelledError:
+                log_info(self.user_id, "Heartbeat мониторинг остановлен", "FlashDropCatcher")
+                break
+            except Exception as e:
+                log_error(self.user_id, f"Ошибка heartbeat мониторинга: {e}", "FlashDropCatcher")
+                # Продолжаем работу даже при ошибке
+                await asyncio.sleep(60)
 
     async def _execute_strategy_logic(self):
         """Базовый метод выполнения логики (не используется в этой стратегии)"""

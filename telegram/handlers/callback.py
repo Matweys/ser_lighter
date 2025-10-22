@@ -618,7 +618,8 @@ async def callback_toggle_param(callback: CallbackQuery, state: FSMContext):
         param_names_ru = {
             "enable_stop_loss": "Stop Loss",
             "enable_stagnation_detector": "Усреднение #1 (Детектор застревания)",
-            "enable_averaging": "Усреднение #2 (Основное)"
+            "enable_averaging": "Усреднение #2 (Основное)",
+            "enable_heartbeat_notifications": "Heartbeat уведомления"
         }
         param_name_ru = param_names_ru.get(param_name, param_name)
         status_text = "включено" if new_value else "отключено"
