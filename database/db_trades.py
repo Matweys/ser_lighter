@@ -1537,7 +1537,7 @@ class _DatabaseManager:
             query = """
             SELECT id, user_id, symbol, side, order_type, quantity, price,
                    filled_quantity, average_price, status, order_id,
-                   client_order_id, strategy_type, metadata, created_at, updated_at
+                   client_order_id, strategy_type, bot_priority, metadata, created_at, updated_at
             FROM orders
             WHERE order_id = $1
             """
@@ -1559,6 +1559,202 @@ class _DatabaseManager:
     async def get_order_by_id(self, order_id: str) -> Optional[Dict[str, Any]]:
         """Алиас для get_order_by_exchange_id"""
         return await self.get_order_by_exchange_id(order_id)
+
+    async def get_open_order_for_position(self, user_id: int, symbol: str, bot_priority: int = 1) -> Optional[Dict[str, Any]]:
+        """
+        Получает последний FILLED ордер открытия позиции (order_purpose='OPEN') для расчёта entry_time.
+
+        ИСПОЛЬЗУЕТСЯ для получения filled_at из БД вместо self.entry_time в памяти.
+        Это обеспечивает НАДЁЖНОСТЬ - даже если бот перезапустится, время входа берётся из БД!
+
+        Args:
+            user_id: ID пользователя
+            symbol: Символ торговли
+            bot_priority: Приоритет бота (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
+
+        Returns:
+            Optional[Dict]: Данные ордера с filled_at и average_price, или None если не найден
+        """
+        try:
+            query = """
+            SELECT id, user_id, symbol, side, order_type, quantity, price,
+                   filled_quantity, average_price, status, order_id,
+                   client_order_id, strategy_type, bot_priority, order_purpose,
+                   filled_at, created_at, updated_at, metadata
+            FROM orders
+            WHERE user_id = $1
+              AND symbol = $2
+              AND bot_priority = $3
+              AND order_purpose = 'OPEN'
+              AND status = 'FILLED'
+            ORDER BY filled_at DESC
+            LIMIT 1
+            """
+
+            result = await self._execute_query(query, (user_id, symbol, bot_priority), fetch_one=True)
+
+            if result:
+                order_dict = dict(result)
+                if order_dict.get('metadata'):
+                    order_dict['metadata'] = json.loads(order_dict['metadata'])
+                return order_dict
+            return None
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка получения OPEN ордера для {symbol} Bot_{bot_priority}: {e}", module_name='database')
+            return None
+
+    async def get_all_open_positions(self, user_id: int) -> List[Dict[str, Any]]:
+        """
+        Получает ВСЕ открытые позиции пользователя из БД (для команды /trade_details).
+
+        КРИТИЧНО: Открытая позиция = есть OPEN ордер, но НЕТ соответствующего CLOSE ордера.
+        Работает НЕЗАВИСИМО от self.position_active в памяти - только БД как источник истины!
+
+        Показывает позиции для ВСЕХ стратегий (SignalScalper, FlashDropCatcher) и ВСЕХ ботов (Bot_1, Bot_2, Bot_3).
+
+        Args:
+            user_id: ID пользователя
+
+        Returns:
+            List[Dict]: Список открытых позиций с полной информацией
+
+        Структура каждой позиции:
+        {
+            "symbol": "BTCUSDT",
+            "strategy_type": "signal_scalper",
+            "bot_priority": 1,
+            "open_order": {...},  # Ордер открытия позиции
+            "averaging_orders": [...],  # Список ордеров усреднения (если есть)
+        }
+        """
+        try:
+            # Шаг 1: Находим все уникальные комбинации (symbol, strategy_type, bot_priority),
+            # для которых есть OPEN ордер, но НЕТ CLOSE ордера
+            query_positions = """
+            WITH open_positions AS (
+                SELECT DISTINCT
+                    symbol,
+                    strategy_type,
+                    bot_priority
+                FROM orders
+                WHERE user_id = $1
+                  AND order_purpose = 'OPEN'
+                  AND status = 'FILLED'
+            ),
+            closed_positions AS (
+                SELECT DISTINCT
+                    symbol,
+                    strategy_type,
+                    bot_priority
+                FROM orders
+                WHERE user_id = $1
+                  AND order_purpose = 'CLOSE'
+                  AND status = 'FILLED'
+            )
+            SELECT
+                op.symbol,
+                op.strategy_type,
+                op.bot_priority
+            FROM open_positions op
+            LEFT JOIN closed_positions cp
+                ON op.symbol = cp.symbol
+                AND op.strategy_type = cp.strategy_type
+                AND op.bot_priority = cp.bot_priority
+            WHERE cp.symbol IS NULL  -- Нет соответствующего CLOSE ордера
+            ORDER BY op.symbol, op.bot_priority
+            """
+
+            position_keys = await self._execute_query(query_positions, (user_id,), fetch_all=True)
+
+            if not position_keys:
+                return []
+
+            # Шаг 2: Для каждой открытой позиции получаем детальную информацию
+            open_positions = []
+
+            for pos_key in position_keys:
+                symbol = pos_key['symbol']
+                strategy_type = pos_key['strategy_type']
+                bot_priority = pos_key['bot_priority']
+
+                # Получаем OPEN ордер (последний FILLED)
+                query_open_order = """
+                SELECT id, user_id, symbol, side, order_type, quantity, price,
+                       filled_quantity, average_price, status, order_id,
+                       client_order_id, strategy_type, bot_priority, order_purpose,
+                       filled_at, created_at, updated_at, metadata
+                FROM orders
+                WHERE user_id = $1
+                  AND symbol = $2
+                  AND strategy_type = $3
+                  AND bot_priority = $4
+                  AND order_purpose = 'OPEN'
+                  AND status = 'FILLED'
+                ORDER BY filled_at DESC
+                LIMIT 1
+                """
+
+                open_order = await self._execute_query(
+                    query_open_order,
+                    (user_id, symbol, strategy_type, bot_priority),
+                    fetch_one=True
+                )
+
+                if not open_order:
+                    continue
+
+                open_order_dict = dict(open_order)
+                if open_order_dict.get('metadata'):
+                    open_order_dict['metadata'] = json.loads(open_order_dict['metadata'])
+
+                # Получаем все AVERAGING ордера (если есть)
+                query_averaging = """
+                SELECT id, user_id, symbol, side, order_type, quantity, price,
+                       filled_quantity, average_price, status, order_id,
+                       client_order_id, strategy_type, bot_priority, order_purpose,
+                       filled_at, created_at, updated_at, metadata
+                FROM orders
+                WHERE user_id = $1
+                  AND symbol = $2
+                  AND strategy_type = $3
+                  AND bot_priority = $4
+                  AND order_purpose = 'AVERAGING'
+                  AND status = 'FILLED'
+                ORDER BY filled_at ASC
+                """
+
+                averaging_orders = await self._execute_query(
+                    query_averaging,
+                    (user_id, symbol, strategy_type, bot_priority),
+                    fetch_all=True
+                )
+
+                averaging_orders_list = []
+                if averaging_orders:
+                    for avg_order in averaging_orders:
+                        avg_dict = dict(avg_order)
+                        if avg_dict.get('metadata'):
+                            avg_dict['metadata'] = json.loads(avg_dict['metadata'])
+                        averaging_orders_list.append(avg_dict)
+
+                # Формируем данные позиции
+                position_data = {
+                    "symbol": symbol,
+                    "strategy_type": strategy_type,
+                    "bot_priority": bot_priority,
+                    "open_order": open_order_dict,
+                    "averaging_orders": averaging_orders_list,
+                }
+
+                open_positions.append(position_data)
+
+            log_debug(user_id, f"Найдено {len(open_positions)} открытых позиций в БД", module_name='database')
+            return open_positions
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка получения всех открытых позиций: {e}", module_name='database')
+            return []
 
     # ===============================================================================
     # УЛУЧШЕННЫЕ МЕТОДЫ ДЛЯ РАБОТЫ С ОРДЕРАМИ (С ПОЛНОЙ ИНФОРМАЦИЕЙ)

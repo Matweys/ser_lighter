@@ -73,6 +73,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
         # Параметры позиции
         self.position_active = False
         self.entry_price: Decimal = Decimal('0')
+        self.entry_time: Optional[datetime] = None  # Время открытия позиции
         self.position_size: Decimal = Decimal('0')
         self.active_direction = "LONG"
 
@@ -671,6 +672,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
             if order_result:
                 self.position_active = True
                 self.entry_price = entry_price
+                self.entry_time = datetime.now()  # Сохраняем время открытия позиции
                 self.position_size = position_size
                 self.active_direction = "LONG"
 
@@ -874,6 +876,8 @@ class FlashDropCatcherStrategy(BaseStrategy):
             if close_result:
                 # ТОЧНЫЙ РАСЧЕТ PnL: Берём РЕАЛЬНЫЕ данные от биржи (closedPnL)
                 final_pnl = Decimal('0')
+                exit_price = Decimal('0')
+                commission = Decimal('0')
 
                 try:
                     log_info(self.user_id, f"[BYBIT API] Запрашиваю реальный closedPnL от биржи для {self.symbol}...", "FlashDropCatcher")
@@ -882,13 +886,20 @@ class FlashDropCatcherStrategy(BaseStrategy):
                     if closed_pnl_data:
                         # Используем ТОЧНЫЕ данные от биржи
                         final_pnl = closed_pnl_data['closedPnl']  # Уже с учетом ВСЕХ комиссий!
+                        exit_price = closed_pnl_data.get('avgExitPrice', Decimal('0'))
+
+                        # Получаем комиссию из closedPnl данных
+                        # closedPnl уже учитывает комиссии, поэтому извлекаем их отдельно
+                        gross_pnl = (exit_price - closed_pnl_data.get('avgEntryPrice', Decimal('0'))) * closed_pnl_data.get('closedSize', Decimal('0'))
+                        commission = gross_pnl - final_pnl  # Разница = комиссия
 
                         log_info(self.user_id,
                                 f"✅ [BYBIT PNL] Получен ТОЧНЫЙ PnL от биржи: "
                                 f"closedPnl={final_pnl:.4f} USDT, "
                                 f"avgEntryPrice={closed_pnl_data['avgEntryPrice']:.4f}, "
-                                f"avgExitPrice={closed_pnl_data['avgExitPrice']:.4f}, "
-                                f"closedSize={closed_pnl_data['closedSize']}",
+                                f"avgExitPrice={exit_price:.4f}, "
+                                f"closedSize={closed_pnl_data['closedSize']}, "
+                                f"commission={commission:.4f}",
                                 "FlashDropCatcher")
                     else:
                         log_warning(self.user_id, f"⚠️ [BYBIT PNL] Не удалось получить closedPnL от биржи, используем unrealisedPnl", "FlashDropCatcher")
@@ -910,27 +921,39 @@ class FlashDropCatcherStrategy(BaseStrategy):
                                 final_pnl = self._convert_to_decimal(pos.get("unrealisedPnl", 0))
                                 break
 
-                self.position_active = False
-
-                log_info(self.user_id, f"✅ Позиция закрыта. PnL: ${final_pnl:.2f}", "FlashDropCatcher")
-
-                # Уведомление
-                if self.bot:
-                    reason_emoji = "💰" if "profit" in reason else "🛑"
-                    await self.bot.send_message(
-                        self.user_id,
-                        f"{hbold(f'{reason_emoji} ПОЗИЦИЯ ЗАКРЫТА')}\n\n"
-                        f"Символ: {hcode(self.symbol)}\n"
-                        f"Причина: {hcode(reason)}\n"
-                        f"PnL: {hcode(f'${final_pnl:.2f}')}"
-                    )
+                # СОХРАНЯЕМ значения перед сбросом для передачи в уведомление
+                # ПОЛУЧАЕМ ИЗ БД для надёжности (работает даже после перезапуска бота)
+                from database.db_trades import db_manager
+                open_order = await db_manager.get_open_order_for_position(self.user_id, self.symbol, self.account_priority)
+                if open_order:
+                    saved_entry_time = open_order.get('filled_at')  # Время из БД
+                    saved_entry_price = open_order.get('average_price')  # Цена из БД
+                    log_debug(self.user_id, f"[ИЗ БД] Время входа: {saved_entry_time}, Цена входа: {saved_entry_price}", "FlashDropCatcher")
+                else:
+                    # Fallback на переменные в памяти (если БД недоступна)
+                    saved_entry_time = self.entry_time
+                    saved_entry_price = self.entry_price
+                    log_warning(self.user_id, f"[FALLBACK] Не найден OPEN ордер в БД, используем данные из памяти", "FlashDropCatcher")
 
                 # Сбрасываем параметры
+                self.position_active = False
                 self.entry_price = Decimal('0')
+                self.entry_time = None  # Сбрасываем время входа
                 self.position_size = Decimal('0')
                 self.highest_pnl = Decimal('0')
                 self.current_trailing_level = 0
                 self.last_trailing_notification_level = -1
+
+                log_info(self.user_id, f"✅ Позиция закрыта. PnL: ${final_pnl:.2f}", "FlashDropCatcher")
+
+                # ИСПОЛЬЗУЕМ БАЗОВЫЙ МЕТОД для отправки уведомления (с временем и ценами)
+                await self._send_trade_close_notification(
+                    pnl=final_pnl,
+                    commission=commission,
+                    exit_price=exit_price if exit_price > Decimal('0') else None,
+                    entry_price=saved_entry_price,
+                    entry_time=saved_entry_time
+                )
 
             else:
                 log_error(self.user_id, "Не удалось закрыть позицию", "FlashDropCatcher")

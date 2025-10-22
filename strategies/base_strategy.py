@@ -138,6 +138,51 @@ class BaseStrategy(ABC):
         except (ValueError, TypeError):
             return Decimal('0')
 
+    @staticmethod
+    def _format_duration_russian(duration_seconds: int) -> str:
+        """
+        Форматирует длительность в читаемый вид на русском языке.
+
+        Args:
+            duration_seconds: Длительность в секундах
+
+        Returns:
+            Строка вида "1 минуту 20 секунд" или "2 часа 15 минут 30 секунд"
+        """
+        hours = duration_seconds // 3600
+        minutes = (duration_seconds % 3600) // 60
+        seconds = duration_seconds % 60
+
+        parts = []
+
+        # Часы
+        if hours > 0:
+            if hours == 1:
+                parts.append("1 час")
+            elif 2 <= hours <= 4:
+                parts.append(f"{hours} часа")
+            else:
+                parts.append(f"{hours} часов")
+
+        # Минуты
+        if minutes > 0:
+            if minutes == 1:
+                parts.append("1 минуту")
+            elif 2 <= minutes <= 4:
+                parts.append(f"{minutes} минуты")
+            else:
+                parts.append(f"{minutes} минут")
+
+        # Секунды
+        if seconds > 0 or len(parts) == 0:  # Показываем секунды если есть, или если ничего нет
+            if seconds == 1:
+                parts.append("1 секунду")
+            elif 2 <= seconds <= 4:
+                parts.append(f"{seconds} секунды")
+            else:
+                parts.append(f"{seconds} секунд")
+
+        return " ".join(parts)
 
     @staticmethod
     def _calculate_precise_stop_loss(entry_price: Decimal, qty: Decimal, sl_usdt: Decimal, is_long: bool) -> Decimal:
@@ -1202,9 +1247,6 @@ class BaseStrategy(ABC):
             leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
             actual_amount = (price * quantity) / leverage
 
-            # Получаем информацию о SL
-            sl_price, sl_loss = self._get_stop_loss_info(side, price, quantity)
-
             # Формируем блок с ценой сигнала если она передана
             signal_price_text = ""
             if signal_price:
@@ -1215,6 +1257,24 @@ class BaseStrategy(ABC):
                     f"▫️ {hbold('Цена сигнала:')} {hcode(f'{signal_price:.4f} USDT')}\n"
                     f"▫️ {hbold('Фактическая цена:')} {hcode(f'{price:.4f} USDT')}\n"
                     f"▫️ {hbold('Проскальзывание:')} {hcode(f'{slippage:.4f} USDT ({slippage_percent:.3f}%)')}\n"
+                )
+
+            # КРИТИЧНО: Проверяем настройку enable_stop_loss (может меняться динамически!)
+            # Блок SL показываем ВСЕГДА, но содержимое зависит от текущей настройки пользователя
+            enable_stop_loss = self.get_config_value("enable_stop_loss", True)
+            if enable_stop_loss:
+                # SL включен - рассчитываем и показываем цену SL и убыток
+                sl_price, sl_loss = self._get_stop_loss_info(side, price, quantity)
+                sl_text = (
+                    f"\n🛡️ {hbold('Stop Loss:')}\n"
+                    f"▫️ {hbold('SL цена:')} {hcode(f'{sl_price:.4f} USDT')}\n"
+                    f"▫️ {hbold('Ожидаемый убыток:')} {hcode(f'-{sl_loss:.2f} USDT')}"
+                )
+            else:
+                # SL отключен - показываем предупреждение
+                sl_text = (
+                    f"\n🛡️ {hbold('Stop Loss:')} ⚠️ {hcode('ОТКЛЮЧЕН')}\n"
+                    f"▫️ Позиция открыта без стоп-лосса"
                 )
 
             # Multi-Account Support: добавляем префикс бота
@@ -1228,10 +1288,8 @@ class BaseStrategy(ABC):
                 f"▫️ {hbold('Направление:')} {side_text}\n"
                 f"▫️ {hbold('Объем:')} {hcode(str(quantity))}\n"
                 f"▫️ {hbold('Стоимость позиции:')} {hcode(f'{actual_amount:.2f} USDT')}"
-                f"{signal_price_text}\n"
-                f"🛡️ {hbold('Stop Loss:')}\n"
-                f"▫️ {hbold('SL цена:')} {hcode(f'{sl_price:.4f} USDT')}\n"
-                f"▫️ {hbold('Ожидаемый убыток:')} {hcode(f'-{sl_loss:.2f} USDT')}"
+                f"{signal_price_text}"
+                f"{sl_text}"
             )
 
             # Добавляем предупреждение, если фактическая сумма отличается от запрошенной
@@ -1309,30 +1367,52 @@ class BaseStrategy(ABC):
                 # Fallback для стратегий без current_total_margin
                 total_margin = (new_avg_price * new_total_size) / leverage
 
-            # Получаем информацию о SL для новой позиции
-            if side:
-                # Используем реальный SL если он есть (для стратегий с усреднением)
-                if hasattr(self, 'stop_loss_price') and self.stop_loss_price:
-                    sl_price = self.stop_loss_price
-                    # Точный расчёт убытка на основе реального SL
-                    is_long = side.lower() == 'buy'
-                    if is_long:
-                        actual_loss = (new_avg_price - sl_price) * new_total_size
-                    else:
-                        actual_loss = (sl_price - new_avg_price) * new_total_size
+            # КРИТИЧНО: Проверяем настройку enable_stop_loss (может меняться динамически!)
+            # Блок SL показываем ВСЕГДА, но содержимое зависит от текущей настройки пользователя
+            enable_stop_loss = self.get_config_value("enable_stop_loss", True)
 
-                    # Добавляем комиссию при закрытии (из конфига)
-                    from core.settings_config import EXCHANGE_FEES
-                    from core.enums import ExchangeType
-                    taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')
-                    estimated_close_fee = sl_price * new_total_size * taker_fee_rate
-                    sl_loss = actual_loss + estimated_close_fee
+            if enable_stop_loss:
+                # SL включен - проверяем наличие side для расчёта
+                if side:
+                    # Рассчитываем и показываем информацию о SL для новой позиции
+                    # Используем реальный SL если он есть (для стратегий с усреднением)
+                    if hasattr(self, 'stop_loss_price') and self.stop_loss_price:
+                        sl_price = self.stop_loss_price
+                        # Точный расчёт убытка на основе реального SL
+                        is_long = side.lower() == 'buy'
+                        if is_long:
+                            actual_loss = (new_avg_price - sl_price) * new_total_size
+                        else:
+                            actual_loss = (sl_price - new_avg_price) * new_total_size
+
+                        # Добавляем комиссию при закрытии (из конфига)
+                        from core.settings_config import EXCHANGE_FEES
+                        from core.enums import ExchangeType
+                        taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')
+                        estimated_close_fee = sl_price * new_total_size * taker_fee_rate
+                        sl_loss = actual_loss + estimated_close_fee
+                    else:
+                        sl_price, sl_loss = self._get_stop_loss_info(side, new_avg_price, new_total_size)
+
+                    # Формируем блок с информацией о SL
+                    sl_text = (
+                        f"🛡️ {hbold('ОБНОВЛЕННЫЙ STOP LOSS:')}\n"
+                        f"▫️ {hbold('SL цена:')} {hcode(f'{sl_price:.4f} USDT')}\n"
+                        f"▫️ {hbold('Ожидаемый убыток:')} {hcode(f'-{sl_loss:.2f} USDT')}"
+                    )
                 else:
-                    sl_price, sl_loss = self._get_stop_loss_info(side, new_avg_price, new_total_size)
+                    # SL включен, но side не передан - невозможно рассчитать
+                    log_warning(self.user_id, f"⚠️ SL включен, но параметр 'side' не передан для {self.symbol}. Расчёт SL невозможен.", "base_strategy")
+                    sl_text = (
+                        f"🛡️ {hbold('STOP LOSS:')} ⚠️ {hcode('НЕ РАССЧИТАН')}\n"
+                        f"▫️ Направление позиции не определено"
+                    )
             else:
-                # Если side не передан - логируем предупреждение, но уведомление отправляем
-                log_error(self.user_id, f"⚠️ ПРЕДУПРЕЖДЕНИЕ: Параметр 'side' не передан в уведомление об усреднении для {self.symbol}. SL не может быть отображен корректно.", "base_strategy")
-                sl_price, sl_loss = new_avg_price, Decimal('0.0')  # SL не рассчитан
+                # SL отключен пользователем - показываем предупреждение
+                sl_text = (
+                    f"🛡️ {hbold('STOP LOSS:')} ⚠️ {hcode('ОТКЛЮЧЕН')}\n"
+                    f"▫️ Усреднённая позиция без стоп-лосса"
+                )
 
             # Формируем блок "ПОЧЕМУ произошло усреднение"
             trigger_reason = ""
@@ -1383,9 +1463,7 @@ class BaseStrategy(ABC):
                 f"{before_block}"
                 f"{averaging_block}"
                 f"{after_block}"
-                f"🛡️ {hbold('ОБНОВЛЕННЫЙ STOP LOSS:')}\n"
-                f"▫️ {hbold('SL цена:')} {hcode(f'{sl_price:.4f} USDT')}\n"
-                f"▫️ {hbold('Ожидаемый убыток:')} {hcode(f'-{sl_loss:.2f} USDT')}"
+                f"{sl_text}"
             )
 
             # Отправляем асинхронно чтобы не блокировать логику стратегии
@@ -1396,7 +1474,7 @@ class BaseStrategy(ABC):
 
 
     # strategies/base_strategy.py -> _send_trade_close_notification
-    async def _send_trade_close_notification(self, pnl: Decimal, commission: Decimal = Decimal('0'), exit_price: Optional[Decimal] = None):
+    async def _send_trade_close_notification(self, pnl: Decimal, commission: Decimal = Decimal('0'), exit_price: Optional[Decimal] = None, entry_price: Optional[Decimal] = None, entry_time: Optional[datetime] = None):
         """Отправляет уведомление, обновляет статистику и ОБНОВЛЯЕТ запись о сделке в БД."""
         try:
             # --- БЛОК ДЛЯ ОБНОВЛЕНИЯ В БД ПРИ ЗАКРЫТИИ ---
@@ -1437,6 +1515,18 @@ class BaseStrategy(ABC):
             # Multi-Account Support: добавляем префикс бота
             bot_prefix = self._get_bot_prefix()
 
+            # Рассчитываем длительность сделки если доступно entry_time
+            duration_line = ""
+            if entry_time:
+                duration_seconds = int((datetime.now() - entry_time).total_seconds())
+                duration_formatted = self._format_duration_russian(duration_seconds)
+                duration_line = f"▫️ {hbold('Время сделки:')} {hcode(duration_formatted)}\n"
+
+            # Формируем строку с ценами входа/выхода если доступны обе цены
+            prices_line = ""
+            if entry_price and exit_price:
+                prices_line = f"▫️ {hbold('Цены:')} Вход ${entry_price:.4f} → Выход ${exit_price:.4f}\n"
+
             # ПРОЗРАЧНОЕ УВЕДОМЛЕНИЕ: показываем честный результат с учётом всех комиссий
             if pnl >= 0:
                 # Прибыльная сделка
@@ -1450,6 +1540,8 @@ class BaseStrategy(ABC):
                     f"▫️ {hbold('Результат:')} {result_text}\n"
                     f"▫️ {hbold('Чистый доход:')} {hcode(f'+{pnl:.2f} USDT')}\n"
                     f"▫️ {hbold('Комиссии:')} {hcode(f'{commission:.2f} USDT')}\n"
+                    f"{duration_line}"
+                    f"{prices_line}"
                     f"▫️ {hbold('Win Rate стратегии:')} {hcode(f'{win_rate:.2f}%')}"
                 )
             else:
@@ -1466,6 +1558,8 @@ class BaseStrategy(ABC):
                     f"▫️ {hbold('Результат:')} {result_text}\n"
                     f"▫️ {hbold('Общий убыток:')} {hcode(f'-{total_loss:.2f} USDT')}\n"
                     f"▫️ {hbold('(включая комиссии:')} {hcode(f'{commission:.2f} USDT)')}\n"
+                    f"{duration_line}"
+                    f"{prices_line}"
                     f"▫️ {hbold('Win Rate стратегии:')} {hcode(f'{win_rate:.2f}%')}"
                 )
             # Отправляем асинхронно чтобы не блокировать логику стратегии

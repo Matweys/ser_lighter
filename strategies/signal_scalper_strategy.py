@@ -33,6 +33,7 @@ class SignalScalperStrategy(BaseStrategy):
         self.position_active = False
         self.active_direction: Optional[str] = None  # "LONG" или "SHORT"
         self.entry_price: Optional[Decimal] = None
+        self.entry_time: Optional[datetime] = None  # Время открытия позиции
         self.position_size: Optional[Decimal] = None
         self.last_closed_direction: Optional[str] = None
         self.hold_signal_counter = 0
@@ -607,10 +608,18 @@ class SignalScalperStrategy(BaseStrategy):
                            "SignalScalper")
                 return
 
-            # Проверяем что ордер принадлежит ЭТОЙ стратегии (symbol и user_id)
+            # Проверяем что ордер принадлежит ЭТОЙ стратегии (symbol, user_id и bot_priority)
             if order_in_db['symbol'] != self.symbol or order_in_db['user_id'] != self.user_id:
                 log_debug(self.user_id,
                          f"[НЕ НАШ] Ордер {event.order_id} принадлежит другой стратегии или пользователю. ИГНОРИРУЮ.",
+                         "SignalScalper")
+                return
+
+            # КРИТИЧНО для Multi-Account: Проверяем что ордер принадлежит ЭТОМУ боту
+            order_bot_priority = order_in_db.get('bot_priority', 1)  # По умолчанию 1 для обратной совместимости
+            if order_bot_priority != self.account_priority:
+                log_debug(self.user_id,
+                         f"[НЕ НАШ БОТ] Ордер {event.order_id} принадлежит Bot_{order_bot_priority}, а это Bot_{self.account_priority}. ИГНОРИРУЮ.",
                          "SignalScalper")
                 return
 
@@ -688,6 +697,7 @@ class SignalScalperStrategy(BaseStrategy):
                                     self.position_active = True
                                     self.active_direction = "LONG" if position_side == "buy" else "SHORT"
                                     self.entry_price = event.price
+                                    self.entry_time = datetime.now()  # Сохраняем время открытия позиции
                                     self.position_size = event.qty
                                     self.peak_profit_usd = Decimal('0')
                                     self.hold_signal_counter = 0
@@ -743,6 +753,7 @@ class SignalScalperStrategy(BaseStrategy):
             self.position_active = True
             self.active_direction = "LONG" if event.side == "Buy" else "SHORT"
             self.entry_price = event.price
+            self.entry_time = datetime.now()  # Сохраняем время открытия позиции
             self.position_size = event.qty
             self.peak_profit_usd = Decimal('0')
             self.hold_signal_counter = 0
@@ -1008,10 +1019,25 @@ class SignalScalperStrategy(BaseStrategy):
             if self.stop_loss_order_id:
                 await self._cancel_stop_loss_order()
 
+            # СОХРАНЯЕМ значения перед сбросом для передачи в уведомление
+            # ПОЛУЧАЕМ ИЗ БД для надёжности (работает даже после перезапуска бота)
+            from database.db_trades import db_manager
+            open_order = await db_manager.get_open_order_for_position(self.user_id, self.symbol, self.account_priority)
+            if open_order:
+                saved_entry_time = open_order.get('filled_at')  # Время из БД
+                saved_entry_price = open_order.get('average_price')  # Цена из БД
+                log_debug(self.user_id, f"[ИЗ БД] Время входа: {saved_entry_time}, Цена входа: {saved_entry_price}", "SignalScalper")
+            else:
+                # Fallback на переменные в памяти (если БД недоступна)
+                saved_entry_time = self.entry_time
+                saved_entry_price = self.entry_price
+                log_warning(self.user_id, f"[FALLBACK] Не найден OPEN ордер в БД, используем данные из памяти", "SignalScalper")
+
             # Сброс состояния (ВКЛЮЧАЯ ПЕРЕМЕННЫЕ УСРЕДНЕНИЯ)
             self.position_active = False
             self.active_direction = None
             self.entry_price = None
+            self.entry_time = None  # Сбрасываем время входа
             self.position_size = None
 
             # СБРОС ПЕРЕМЕННЫХ ПРОМЕЖУТОЧНОГО УСРЕДНЕНИЯ
@@ -1051,8 +1077,8 @@ class SignalScalperStrategy(BaseStrategy):
             log_info(self.user_id, f"Конфигурация разморожена после закрытия сделки по {self.symbol}", "SignalScalper")
 
             await self.event_bus.unsubscribe(self._handle_price_update)
-            # МГНОВЕННО отправляем уведомление
-            await self._send_trade_close_notification(pnl_net, event.fee, exit_price=event.price)
+            # МГНОВЕННО отправляем уведомление (используем сохраненные значения)
+            await self._send_trade_close_notification(pnl_net, event.fee, exit_price=event.price, entry_price=saved_entry_price, entry_time=saved_entry_time)
             log_info(self.user_id, f"[УСПЕХ] Позиция {self.symbol} закрыта быстро! PnL: {pnl_net:.2f}$", "SignalScalper")
 
             # ПРОВЕРКА ОТЛОЖЕННОЙ ОСТАНОВКИ
@@ -1754,7 +1780,7 @@ class SignalScalperStrategy(BaseStrategy):
             current_price = self._last_known_price if self._last_known_price else self.entry_price
 
             # Рассчитываем текущий PnL
-            current_pnl = self._calculate_unrealized_pnl()
+            current_pnl = await self._calculate_current_pnl(current_price)
 
             # Определяем цену входа (средняя если было усреднение)
             effective_entry_price = self.average_entry_price if self.average_entry_price > 0 else self.entry_price

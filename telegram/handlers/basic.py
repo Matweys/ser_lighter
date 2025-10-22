@@ -207,161 +207,214 @@ async def cmd_help(message: Message, state: FSMContext):
 @router.message(Command("trade_details"))
 async def cmd_trade_details(message: Message, state: FSMContext):
     """
-    Обработчик команды /trade_details - детальная информация о текущих позициях стратегий.
-    Показывает полную информацию о каждой активной позиции: цену входа, текущую цену,
-    процент просадки, количество усреднений, цену безубытка и т.д.
+    Обработчик команды /trade_details - детальная информация о текущих позициях.
+
+    КРИТИЧНО: Показывает ТОЛЬКО позиции которые:
+    1. Бот создал и записал в БД (есть OPEN ордер)
+    2. РЕАЛЬНО открыты на бирже (проверка через API)
+
+    Если позиция есть в БД но закрыта на бирже - НЕ показывает!
+    Работает для ВСЕХ стратегий и ВСЕХ ботов (Bot_1, Bot_2, Bot_3).
     """
     user_id = message.from_user.id
     await basic_handler.log_command_usage(user_id, "trade_details")
 
     try:
-        # Проверяем, запущена ли торговая сессия
-        if not basic_handler.bot_application:
-            await message.answer("⚠️ Система не инициализирована. Попробуйте позже.")
-            return
+        from decimal import Decimal
 
-        # Проверяем наличие активной сессии пользователя
-        if user_id not in basic_handler.bot_application.active_sessions:
+        # ШАГ 1: Получаем ВСЕ открытые позиции из БД (OPEN без CLOSE)
+        db_positions = await db_manager.get_all_open_positions(user_id)
+
+        if not db_positions:
             await message.answer(
-                "❌ <b>Торговая сессия не активна</b>\n\n"
+                "ℹ️ <b>Нет открытых позиций в БД</b>\n\n"
+                "Все позиции, созданные ботом, будут отображаться здесь.\n"
                 "Запустите автоторговлю командой /autotrade_start",
                 parse_mode="HTML"
             )
             return
 
-        # Получаем активную сессию пользователя
-        user_session = basic_handler.bot_application.active_sessions[user_id]
-
-        # Получаем все активные стратегии
-        active_strategies = list(user_session.active_strategies.values())
-
-        if not active_strategies:
+        # ШАГ 2: Получаем API ключи и РЕАЛЬНЫЕ позиции с биржи
+        api_keys_list = await db_manager.get_all_user_api_keys(user_id, "bybit")
+        if not api_keys_list:
             await message.answer(
-                "ℹ️ <b>Нет активных стратегий</b>\n\n"
-                "Настройте стратегии в /settings",
+                "❌ <b>API ключи не настроены</b>\n\n"
+                "Настройте API ключи для просмотра позиций.",
                 parse_mode="HTML"
             )
             return
 
-        # Собираем детальную информацию по всем стратегиям
-        positions_found = False
+        # ШАГ 3: Получаем РЕАЛЬНЫЕ позиции со ВСЕХ аккаунтов на бирже
+        exchange_positions = {}  # {(symbol, bot_priority): position_data}
+
+        for key_data in api_keys_list:
+            priority = key_data['priority']
+            try:
+                async with BybitAPI(
+                    api_key=key_data['api_key'],
+                    secret_key=key_data['secret_key'],
+                    demo_mode=system_config.demo_mode
+                ) as api:
+                    positions = await api.get_positions()
+
+                    if positions:
+                        for pos in positions:
+                            size = float(pos.get('size', 0))
+                            if size != 0:  # Только активные позиции
+                                symbol = pos.get('symbol', '')
+                                key = (symbol, priority)
+                                exchange_positions[key] = pos
+            except Exception as e:
+                log_error(user_id, f"Ошибка получения позиций для Bot{priority}: {e}", module_name='basic_handlers')
+
+        # ШАГ 4: Сопоставляем DB позиции с реальными позициями на бирже
+        # Показываем ТОЛЬКО если позиция есть И в БД И на бирже!
+        verified_positions = []
+
+        for db_pos in db_positions:
+            symbol = db_pos["symbol"]
+            bot_priority = db_pos["bot_priority"]
+            key = (symbol, bot_priority)
+
+            # КРИТИЧНО: Проверяем что позиция РЕАЛЬНО открыта на бирже!
+            if key in exchange_positions:
+                # Позиция есть в БД И на бирже - показываем!
+                verified_positions.append({
+                    "db_position": db_pos,
+                    "exchange_position": exchange_positions[key]
+                })
+            else:
+                # Позиция в БД но НЕТ на бирже - пропускаем!
+                log_warning(user_id,
+                    f"⚠️ Позиция {symbol} Bot{bot_priority} есть в БД но закрыта на бирже! Не показываем.",
+                    module_name='basic_handlers')
+
+        if not verified_positions:
+            await message.answer(
+                "ℹ️ <b>Нет активных позиций на бирже</b>\n\n"
+                "Все позиции из БД закрыты или были закрыты вручную.",
+                parse_mode="HTML"
+            )
+            return
+
+        # ШАГ 5: Форматируем вывод для каждой ПРОВЕРЕННОЙ позиции
         status_text = "📊 <b>ДЕТАЛЬНАЯ ИНФОРМАЦИЯ О ПОЗИЦИЯХ</b>\n"
+        status_text += "✅ <b>Проверено: БД + Реальное состояние биржи</b>\n"
         status_text += "═" * 40 + "\n\n"
 
-        for strategy in active_strategies:
-            # Проверяем, есть ли метод get_detailed_status
-            if not hasattr(strategy, 'get_detailed_status'):
-                continue
+        for verified_pos in verified_positions:
+            db_pos = verified_pos["db_position"]
+            exchange_pos = verified_pos["exchange_position"]
 
-            # Получаем детальный статус от стратегии
-            detailed_status = await strategy.get_detailed_status()
+            # Данные ИЗ БД (источник истины для ордеров бота)
+            symbol = db_pos["symbol"]
+            strategy_type = db_pos["strategy_type"]
+            bot_priority = db_pos["bot_priority"]
+            open_order = db_pos["open_order"]
+            averaging_orders = db_pos["averaging_orders"]
 
-            # Пропускаем если нет позиции
-            if not detailed_status.get("has_position", False):
-                continue
-
-            positions_found = True
-            symbol = detailed_status["symbol"]
             symbol_short = symbol.replace('USDT', '')
-            account_priority = detailed_status.get("account_priority", 1)
 
-            # Определяем приоритет бота для multi-account режима
+            # Определяем приоритет бота
             priority_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
-            priority_emoji = priority_emojis.get(account_priority, f"#{account_priority}")
+            priority_emoji = priority_emojis.get(bot_priority, f"#{bot_priority}")
 
-            # Основная информация о позиции
-            position = detailed_status["position"]
-            direction = position["direction"]
+            # Стратегия
+            strategy_names = {
+                "signal_scalper": "SignalScalper",
+                "flash_drop_catcher": "FlashDropCatcher"
+            }
+            strategy_name = strategy_names.get(strategy_type, strategy_type)
+
+            # Направление позиции (определяем по стороне OPEN ордера из БД)
+            open_side = open_order["side"]  # "Buy" или "Sell"
+            direction = "LONG" if open_side == "Buy" else "SHORT"
             direction_emoji = "📈" if direction == "LONG" else "📉"
-            entry_price = position["entry_price"]
-            current_price = position["current_price"]
-            position_size = position["position_size"]
-            total_position_size = position.get("total_position_size", position_size)
 
-            # Информация об усреднениях
-            averaging = detailed_status["averaging"]
-            averaging_count = averaging["count"]
-            average_entry_price = averaging.get("average_entry_price")
-            effective_entry_price = averaging.get("effective_entry_price", entry_price)
-            breakeven_price = averaging.get("breakeven_price")
-            use_breakeven_exit = averaging.get("use_breakeven_exit", False)
+            # Цена входа ИЗ БД (OPEN ордер)
+            entry_price = Decimal(str(open_order["average_price"]))
+            initial_quantity = Decimal(str(open_order["filled_quantity"]))
 
-            # Информация о марже
-            margin = detailed_status["margin"]
-            initial_margin = margin["initial_margin"]
-            current_total_margin = margin["current_total_margin"]
-            total_fees_paid = margin["total_fees_paid"]
+            # Если есть усреднения ИЗ БД - рассчитываем среднюю цену
+            total_quantity = initial_quantity
+            total_cost = entry_price * initial_quantity
 
-            # PnL информация
-            pnl = detailed_status["pnl"]
-            unrealized_pnl = pnl["unrealized_pnl"]
-            price_change_percent = pnl["price_change_percent"]
+            for avg_order in averaging_orders:
+                avg_price = Decimal(str(avg_order["average_price"]))
+                avg_qty = Decimal(str(avg_order["filled_quantity"]))
+                total_quantity += avg_qty
+                total_cost += avg_price * avg_qty
 
-            # Форматируем заголовок
-            status_text += f"{priority_emoji} <b>{symbol_short}</b> | {direction_emoji} {direction}\n"
+            average_entry_price = total_cost / total_quantity if total_quantity > 0 else entry_price
+            averaging_count = len(averaging_orders)
+
+            # Текущая цена и PnL С БИРЖИ (реальное состояние)
+            current_price = Decimal(str(exchange_pos.get("markPrice", exchange_pos.get("lastPrice", 0))))
+            unrealized_pnl_from_exchange = Decimal(str(exchange_pos.get("unrealisedPnl", 0)))
+
+            # Рассчитываем процент изменения
+            if direction == "LONG":
+                price_change_percent = ((current_price - average_entry_price) / average_entry_price) * Decimal('100')
+            else:  # SHORT
+                price_change_percent = ((average_entry_price - current_price) / average_entry_price) * Decimal('100')
+
+            # Получаем цену безубытка С БИРЖИ
+            breakeven_price = None
+            breakeven_price_str = exchange_pos.get("breakEvenPrice", "0")
+            if breakeven_price_str and breakeven_price_str != "0" and breakeven_price_str != "":
+                try:
+                    breakeven_price = Decimal(str(breakeven_price_str))
+                except:
+                    pass
+
+            # ФОРМАТИРУЕМ ВЫВОД
+            status_text += f"{priority_emoji} <b>{symbol_short}</b> | {direction_emoji} {direction} | {strategy_name}\n"
             status_text += "─" * 35 + "\n"
 
             # ЦЕНЫ
             status_text += f"💵 <b>Цены:</b>\n"
-            if averaging_count > 0 and average_entry_price:
-                # Если было усреднение - показываем детали
-                status_text += f"  • Первый вход: ${entry_price:.4f}\n"
-                status_text += f"  • Средняя цена: ${average_entry_price:.4f}\n"
-                status_text += f"  • Текущая цена: ${current_price:.4f}\n"
+            if averaging_count > 0:
+                status_text += f"  • Первый вход: ${float(entry_price):.4f}\n"
+                status_text += f"  • Средняя цена: ${float(average_entry_price):.4f}\n"
+                status_text += f"  • Текущая цена: ${float(current_price):.4f}\n"
 
-                # Цена безубытка
                 if breakeven_price:
                     distance_to_be = abs(current_price - breakeven_price)
                     distance_pct = (distance_to_be / breakeven_price) * 100
                     be_emoji = "✅" if (direction == "LONG" and current_price >= breakeven_price) or (direction == "SHORT" and current_price <= breakeven_price) else "⏳"
-                    status_text += f"  • Безубыток: ${breakeven_price:.4f} {be_emoji}\n"
+                    status_text += f"  • Безубыток: ${float(breakeven_price):.4f} {be_emoji}\n"
                     if be_emoji == "⏳":
-                        status_text += f"     (до БЕ: {distance_pct:.2f}%)\n"
+                        status_text += f"     (до БЕ: {float(distance_pct):.2f}%)\n"
             else:
-                # Обычная позиция без усреднения
-                status_text += f"  • Цена входа: ${entry_price:.4f}\n"
-                status_text += f"  • Текущая цена: ${current_price:.4f}\n"
+                status_text += f"  • Цена входа: ${float(entry_price):.4f}\n"
+                status_text += f"  • Текущая цена: ${float(current_price):.4f}\n"
 
-            # ПРОСАДКА/ПРИБЫЛЬ
-            pnl_emoji = "🟢" if unrealized_pnl >= 0 else "🔴"
+            # PnL (используем данные С БИРЖИ)
+            pnl_emoji = "🟢" if unrealized_pnl_from_exchange >= 0 else "🔴"
             change_emoji = "📈" if price_change_percent >= 0 else "📉"
-            status_text += f"\n{pnl_emoji} <b>{'Прибыль' if unrealized_pnl >= 0 else 'Просадка'}:</b> ${unrealized_pnl:.2f}\n"
-            status_text += f"{change_emoji} <b>Изменение цены:</b> {price_change_percent:+.2f}%\n"
+            status_text += f"\n{pnl_emoji} <b>{'Прибыль' if unrealized_pnl_from_exchange >= 0 else 'Просадка'}:</b> ${float(unrealized_pnl_from_exchange):.2f}\n"
+            status_text += f"{change_emoji} <b>Изменение цены:</b> {float(price_change_percent):+.2f}%\n"
 
             # УСРЕДНЕНИЯ
             if averaging_count > 0:
                 status_text += f"\n🔄 <b>Усреднения:</b> {averaging_count}\n"
-                status_text += f"  • Начальная маржа: ${initial_margin:.2f}\n"
-                status_text += f"  • Общая маржа: ${current_total_margin:.2f}\n"
-                status_text += f"  • Комиссии: ${total_fees_paid:.2f}\n"
-                status_text += f"  • Объем позиции: {total_position_size}\n"
-
-                if use_breakeven_exit:
-                    status_text += f"  • 🎯 Выход в БУ активирован\n"
-
-            # СТОП-ЛОСС
-            stop_loss = detailed_status.get("stop_loss", {})
-            if stop_loss.get("has_stop_loss"):
-                sl_price = stop_loss.get("stop_loss_price")
-                if sl_price:
-                    status_text += f"\n🛡️ <b>Stop Loss:</b> ${sl_price:.4f}\n"
+                status_text += f"  • Начальный объем: {float(initial_quantity)}\n"
+                status_text += f"  • Общий объем: {float(total_quantity)}\n"
 
             status_text += "\n"
 
-        if not positions_found:
-            status_text += "ℹ️ Нет открытых позиций\n\n"
-            status_text += "Стратегии активны и ожидают сигналов для входа."
-
-        # Добавляем timestamp
+        # Timestamp
         from datetime import datetime, timezone, timedelta
         moscow_tz = timezone(timedelta(hours=3))
         current_time = datetime.now(moscow_tz).strftime('%H:%M:%S')
-        status_text += f"\n🕐 Обновлено: {current_time} МСК"
+        status_text += f"🕐 Обновлено: {current_time} МСК"
 
         await message.answer(status_text, parse_mode="HTML")
 
     except Exception as e:
         log_error(user_id, f"Ошибка в команде /trade_details: {e}", module_name='basic_handlers')
+        import traceback
+        log_error(user_id, f"Traceback: {traceback.format_exc()}", module_name='basic_handlers')
         await message.answer("❌ Произошла ошибка при получении детальной информации о позициях.")
 
 
