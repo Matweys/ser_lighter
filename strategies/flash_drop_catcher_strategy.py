@@ -123,7 +123,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
         """Запуск стратегии"""
         if self.is_running:
             log_warning(self.user_id, "FlashDropCatcher уже запущена", "FlashDropCatcher")
-            return
+            return True
 
         self.is_running = True
 
@@ -139,6 +139,8 @@ class FlashDropCatcherStrategy(BaseStrategy):
         log_info(self.user_id,
                 f"✅ FlashDropCatcher запущена! Сканирование всех символов на падения...",
                 "FlashDropCatcher")
+
+        return True
 
     async def stop(self, reason: str = "Manual stop") -> bool:
         """Остановка стратегии"""
