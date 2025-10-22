@@ -251,7 +251,24 @@ class BybitAPI:
             log_error(self.user_id, f"Ошибка получения тикера {symbol}: {e}", module_name="bybit_api")
             
         return None
-    
+
+    async def get_all_tickers(self) -> Optional[List[Dict[str, Any]]]:
+        """Получение тикеров ВСЕХ инструментов (без фильтра по symbol)"""
+        try:
+            params = {
+                "category": "linear"
+            }
+
+            result = await self._make_request("GET", "/v5/market/tickers", params, private=False)
+
+            if result and "list" in result:
+                return result["list"]
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка получения всех тикеров: {e}", module_name="bybit_api")
+
+        return None
+
     async def get_order_book(self, symbol: str, limit: int = 25) -> Optional[Dict[str, Any]]:
         """Получение стакана ордеров"""
         try:

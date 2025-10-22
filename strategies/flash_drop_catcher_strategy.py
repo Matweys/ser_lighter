@@ -231,15 +231,12 @@ class FlashDropCatcherStrategy(BaseStrategy):
         log_info(self.user_id, "🔍 Применение фильтра ликвидности...", "FlashDropCatcher")
 
         try:
-            # Получаем тикеры ВСЕХ символов одним запросом
-            tickers_response = await self.api.get_tickers()
+            # Получаем тикеры ВСЕХ символов одним запросом через публичный метод API
+            tickers = await self.api.get_all_tickers()
 
-            if not tickers_response:
+            if not tickers:
                 log_error(self.user_id, "Не удалось получить тикеры для фильтра ликвидности", "FlashDropCatcher")
                 return []
-
-            # get_tickers() возвращает список тикеров напрямую
-            tickers = tickers_response if isinstance(tickers_response, list) else []
             liquid_symbols = []
 
             for ticker in tickers:
@@ -1105,6 +1102,12 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
         while self.is_running:
             try:
+                # КРИТИЧНО: Sleep в НАЧАЛЕ цикла, чтобы первое сообщение пришло через 30 минут после запуска
+                await asyncio.sleep(heartbeat_interval)
+
+                if not self.is_running:
+                    break
+
                 # Проверяем, включены ли heartbeat уведомления в Telegram
                 enable_heartbeat = self.get_config_value("enable_heartbeat_notifications", True)
 
@@ -1158,12 +1161,6 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 self.last_heartbeat_time = datetime.now()
                 self.processed_candles_count = 0
                 self.detected_drops_count = 0
-
-                # КРИТИЧНО: Sleep в КОНЦЕ цикла, чтобы первое сообщение показалось сразу
-                await asyncio.sleep(heartbeat_interval)
-
-                if not self.is_running:
-                    break
 
             except asyncio.CancelledError:
                 log_info(self.user_id, "Heartbeat мониторинг остановлен", "FlashDropCatcher")
