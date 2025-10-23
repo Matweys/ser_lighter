@@ -358,19 +358,24 @@ class DataFeedHandler:
     """
     Персональный обработчик данных для пользователя
     Управляет подписками на рыночные данные и приватные события
+
+    MULTI-ACCOUNT SUPPORT: Может создаваться несколько экземпляров для одного пользователя
+    (по одному на каждый account_priority: 1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
     """
 
-    def __init__(self, user_id: int, event_bus: EventBus, global_ws_manager: "GlobalWebSocketManager"):
+    def __init__(self, user_id: int, event_bus: EventBus, global_ws_manager: "GlobalWebSocketManager",
+                 account_priority: int = 1):
         self.user_id = user_id
         self.event_bus = event_bus
         self.global_ws_manager = global_ws_manager
+        self.account_priority = account_priority  # 1=PRIMARY, 2=SECONDARY, 3=TERTIARY
         self.running = False
 
         # Приватное WebSocket соединение
         self.private_connection: Optional[websockets.WebSocketClientProtocol] = None
         self._private_task: Optional[asyncio.Task] = None
 
-        # API ключи пользователя
+        # API ключи пользователя (для конкретного account_priority)
         self.api_key: Optional[str] = None
         self.api_secret: Optional[str] = None
 
@@ -459,16 +464,23 @@ class DataFeedHandler:
         log_info(self.user_id, "DataFeedHandler остановлен", module_name=__name__)
 
     async def _load_api_credentials(self):
-        """Загрузка API ключей пользователя"""
+        """
+        Загрузка API ключей пользователя для конкретного аккаунта (account_priority).
+
+        MULTI-ACCOUNT SUPPORT: Каждый DataFeedHandler загружает свой API ключ (1, 2 или 3)
+        """
         try:
-            # ИСПРАВЛЕНО: Multi-Account Support - получаем PRIMARY ключ
-            keys = await db_manager.get_api_keys(self.user_id, "bybit", account_priority=1)
+            keys = await db_manager.get_api_keys(self.user_id, "bybit", account_priority=self.account_priority)
             if keys:
                 # Метод возвращает кортеж (api_key, secret_key, passphrase)
                 self.api_key, self.api_secret, _ = keys
-                log_info(self.user_id, "API ключи загружены", module_name=__name__)
+                log_info(self.user_id,
+                        f"API ключи загружены для account_priority={self.account_priority} (Bot_{self.account_priority})",
+                        module_name=__name__)
             else:
-                log_info(self.user_id, "API ключи не найдены", module_name=__name__)
+                log_info(self.user_id,
+                        f"API ключи не найдены для account_priority={self.account_priority}",
+                        module_name=__name__)
         except Exception as e:
             log_error(self.user_id, f"Ошибка загрузки API ключей: {e}", module_name=__name__)
 
@@ -650,14 +662,48 @@ class DataFeedHandler:
 
 
     async def _handle_position_update(self, position_data: List[Dict]):
-        """Обработка обновления позиции"""
+        """
+        Обработка обновления позиции через WebSocket.
+        КРИТИЧНО: Мгновенно обнаруживает ручное закрытие позиции пользователем (size=0).
+
+        MULTI-ACCOUNT SUPPORT: Каждый DataFeedHandler подключён к своему аккаунту,
+        поэтому проверяет только СВОЙ account_priority.
+        """
         try:
             for position in position_data:
+                symbol = position.get("symbol", "")
+                size = Decimal(str(position.get("size", "0")))
+
+                # КРИТИЧНО: Проверяем ручное закрытие позиции (size=0)
+                if size == Decimal('0'):
+                    # Позиция закрыта! Проверяем БД для ЭТОГО account_priority
+                    open_order = await db_manager.get_open_order_for_position(
+                        self.user_id,
+                        symbol,
+                        bot_priority=self.account_priority  # Проверяем только СВОЙ приоритет!
+                    )
+
+                    if open_order:
+                        log_warning(self.user_id,
+                                   f"⚠️ ОБНАРУЖЕНО РУЧНОЕ ЗАКРЫТИЕ через WebSocket (Bot_{self.account_priority}): "
+                                   f"Позиция {symbol} закрыта (size=0), но в БД есть открытый ордер!",
+                                   module_name=__name__)
+
+                        # Публикуем событие ручного закрытия с указанием bot_priority
+                        closed_event = PositionClosedEvent(
+                            user_id=self.user_id,
+                            symbol=symbol,
+                            bot_priority=self.account_priority,  # КРИТИЧНО: Указываем какой бот!
+                            closed_manually=True  # Флаг ручного закрытия
+                        )
+                        await self.event_bus.publish(closed_event)
+
+                # Публикуем обычное событие обновления позиции (для управления подписками)
                 position_event = PositionUpdateEvent(
                     user_id=self.user_id,
-                    symbol=position.get("symbol", ""),
+                    symbol=symbol,
                     side=position.get("side", ""),
-                    size=Decimal(str(position.get("size", "0"))),
+                    size=size,
                     entry_price=Decimal(str(position.get("avgPrice", "0"))),
                     mark_price=Decimal(str(position.get("markPrice", "0"))),
                     unrealized_pnl=Decimal(str(position.get("unrealisedPnl", "0")))

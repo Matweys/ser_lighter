@@ -77,7 +77,8 @@ class UserSession:
         self.api: Optional[BybitAPI] = None
         # Основные компоненты
         self.meta_strategist: Optional[MetaStrategist] = None
-        self.data_feed_handler: Optional[DataFeedHandler] = None
+        self.data_feed_handler: Optional[DataFeedHandler] = None  # Для обычного режима (1 API ключ)
+        self.data_feed_handlers: List[DataFeedHandler] = []  # Для multi-account режима (3 API ключа)
 
         # Управление стратегиями
         self.active_strategies: Dict[str, BaseStrategy] = {}
@@ -674,7 +675,27 @@ class UserSession:
                 log_info(self.user_id, "✅ API клиент инициализирован (обычный режим)", module_name=__name__)
 
             # Инициализация компонентов
-            self.data_feed_handler = DataFeedHandler(self.user_id, self.event_bus, self.global_ws_manager)
+            # === MULTI-ACCOUNT MODE: Создаём 3 DataFeedHandler (по одному на каждый аккаунт) ===
+            if len(self.api_clients) == 3:
+                log_info(self.user_id, "🔀 Создаю 3 DataFeedHandler для multi-account режима", module_name=__name__)
+                for priority in [1, 2, 3]:
+                    handler = DataFeedHandler(
+                        user_id=self.user_id,
+                        event_bus=self.event_bus,
+                        global_ws_manager=self.global_ws_manager,
+                        account_priority=priority  # Каждый обработчик для своего аккаунта!
+                    )
+                    self.data_feed_handlers.append(handler)
+                    log_info(self.user_id, f"✅ DataFeedHandler #{priority} создан (Bot_{priority})", module_name=__name__)
+            else:
+                # Обычный режим - создаём один DataFeedHandler
+                self.data_feed_handler = DataFeedHandler(
+                    user_id=self.user_id,
+                    event_bus=self.event_bus,
+                    global_ws_manager=self.global_ws_manager,
+                    account_priority=1  # В обычном режиме всегда PRIMARY
+                )
+                log_info(self.user_id, "✅ DataFeedHandler создан (обычный режим)", module_name=__name__)
 
             # Создаем независимый анализатор
             market_analyzer = MarketAnalyzer(user_id=self.user_id, bybit_api=self.api)
@@ -696,8 +717,16 @@ class UserSession:
     async def _start_components(self):
         """Запуск компонентов сессии"""
         try:
-            # Запуск DataFeedHandler
-            await self.data_feed_handler.start()
+            # Запуск DataFeedHandler (multi-account или обычный режим)
+            if self.data_feed_handlers:
+                # Multi-account режим - запускаем ВСЕ DataFeedHandler'ы
+                for priority, handler in enumerate(self.data_feed_handlers, start=1):
+                    await handler.start()
+                    log_info(self.user_id, f"✅ DataFeedHandler #{priority} запущен (Bot_{priority})", module_name=__name__)
+            elif self.data_feed_handler:
+                # Обычный режим - запускаем единственный DataFeedHandler
+                await self.data_feed_handler.start()
+                log_info(self.user_id, "✅ DataFeedHandler запущен (обычный режим)", module_name=__name__)
 
             # Запуск MetaStrategist
             await self.meta_strategist.start()
@@ -737,8 +766,21 @@ class UserSession:
             if self.meta_strategist:
                 await self.meta_strategist.stop()
 
-            if self.data_feed_handler:
+            # Остановка DataFeedHandler (multi-account или обычный режим)
+            if self.data_feed_handlers:
+                # Multi-account режим - останавливаем ВСЕ DataFeedHandler'ы
+                log_info(self.user_id, f"Остановка {len(self.data_feed_handlers)} DataFeedHandler'ов...", module_name=__name__)
+                for priority, handler in enumerate(self.data_feed_handlers, start=1):
+                    try:
+                        await handler.stop()
+                        log_info(self.user_id, f"✅ DataFeedHandler #{priority} остановлен (Bot_{priority})", module_name=__name__)
+                    except Exception as handler_error:
+                        log_error(self.user_id, f"Ошибка остановки DataFeedHandler #{priority}: {handler_error}", module_name=__name__)
+                self.data_feed_handlers.clear()
+            elif self.data_feed_handler:
+                # Обычный режим - останавливаем единственный DataFeedHandler
                 await self.data_feed_handler.stop()
+                log_info(self.user_id, "✅ DataFeedHandler остановлен (обычный режим)", module_name=__name__)
 
             # === ЗАКРЫТИЕ API СОЕДИНЕНИЙ ===
             # Закрываем все API клиенты в multi-account режиме

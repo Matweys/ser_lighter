@@ -69,14 +69,20 @@ class PositionUpdateEvent(BaseEvent):
 
 @dataclass
 class PositionClosedEvent(BaseEvent):
-    """Событие о закрытии позиции"""
+    """
+    Событие о закрытии позиции
+
+    MULTI-ACCOUNT SUPPORT: Содержит bot_priority для идентификации какой бот должен обработать событие
+    """
     symbol: str
-    side: str
-    size: Decimal
-    entry_price: Decimal
-    exit_price: Decimal
-    realized_pnl: Decimal
+    side: Optional[str] = None
+    size: Optional[Decimal] = None
+    entry_price: Optional[Decimal] = None
+    exit_price: Optional[Decimal] = None
+    realized_pnl: Optional[Decimal] = None
     strategy_type: Optional[str] = None
+    bot_priority: Optional[int] = None  # 1=PRIMARY, 2=SECONDARY, 3=TERTIARY (None = для всех)
+    closed_manually: bool = False  # Флаг ручного закрытия через WebSocket
     event_type: EventType = field(default=EventType.POSITION_CLOSED, init=False)
 
 

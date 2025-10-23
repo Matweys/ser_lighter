@@ -8,7 +8,7 @@ from api.bybit_api import BybitAPI
 from .base_strategy import BaseStrategy
 from core.enums import StrategyType, EventType
 from core.logger import log_info, log_error, log_warning, log_debug
-from core.events import EventBus, NewCandleEvent, PriceUpdateEvent, OrderFilledEvent
+from core.events import EventBus, NewCandleEvent, PriceUpdateEvent, OrderFilledEvent, PositionClosedEvent
 from analysis.signal_analyzer import SignalAnalyzer, SignalAnalysisResult
 from analysis.spike_detector import SpikeDetector
 from core.concurrency_manager import strategy_locked
@@ -61,7 +61,7 @@ class SignalScalperStrategy(BaseStrategy):
         # СИСТЕМА КОНТРОЛЯ РЕВЕРСОВ
         self.last_reversal_time: Optional[float] = None  # Время последнего реверса
         self.reversal_cooldown_seconds = 60  # Кулдаун после реверса в секундах (1 минута)
-        self.reversal_required_confirmations = 3  # Требуемые подтверждения после реверса
+        self.reversal_required_confirmations = 2  # Требуемые подтверждения после реверса
         self.after_reversal_mode = False  # Флаг: находимся ли мы в режиме после реверса
 
 
@@ -167,6 +167,8 @@ class SignalScalperStrategy(BaseStrategy):
         if is_started:
             # Основной триггер стратегии - новая 5-минутная свеча
             await self.event_bus.subscribe(EventType.NEW_CANDLE, self._handle_new_candle, user_id=self.user_id)
+            # КРИТИЧНО: Подписываемся на ручное закрытие позиции через WebSocket
+            await self.event_bus.subscribe(EventType.POSITION_CLOSED, self._handle_manual_close, user_id=self.user_id)
         return is_started
 
     async def stop(self, reason: str = "Manual stop"):
@@ -174,6 +176,7 @@ class SignalScalperStrategy(BaseStrategy):
         # КРИТИЧНО: Сначала останавливаем стратегию (is_running=False), затем отписываемся
         await super().stop(reason)
         await self.event_bus.unsubscribe(self._handle_new_candle)
+        await self.event_bus.unsubscribe(self._handle_manual_close)
 
     @strategy_locked
     async def _handle_new_candle(self, event: NewCandleEvent):
@@ -1866,6 +1869,139 @@ class SignalScalperStrategy(BaseStrategy):
                 "strategy_type": self.strategy_type.value,
                 "error": str(e)
             }
+
+    @strategy_locked
+    async def _handle_manual_close(self, event):
+        """
+        МГНОВЕННЫЙ обработчик ручного закрытия позиции через WebSocket.
+        Вызывается когда пользователь вручную закрыл позицию на бирже.
+
+        THREAD-SAFE: Защищено декоратором @strategy_locked для предотвращения race conditions.
+        """
+        if not isinstance(event, PositionClosedEvent):
+            return
+
+        # Проверяем что это наш символ
+        if event.symbol != self.symbol or not self.position_active:
+            return
+
+        # КРИТИЧНО: Фильтруем по bot_priority - обрабатываем только события для НАШЕГО аккаунта
+        if hasattr(event, 'bot_priority') and event.bot_priority is not None:
+            if event.bot_priority != self.account_priority:
+                log_debug(self.user_id,
+                         f"Пропускаю manual close event для bot_priority={event.bot_priority}, мой priority={self.account_priority}",
+                         module_name="SignalScalper")
+                return
+
+        log_warning(self.user_id,
+                   f"⚠️ ОБРАБОТКА РУЧНОГО ЗАКРЫТИЯ через WebSocket: {event.symbol}",
+                   "SignalScalper")
+
+        try:
+            # Получаем ТОЧНЫЙ PnL от биржи
+            final_pnl = Decimal('0')
+            exit_price = Decimal('0')
+            commission = Decimal('0')
+
+            try:
+                closed_pnl_data = await self.api.get_closed_pnl(self.symbol, limit=1)
+                if closed_pnl_data:
+                    final_pnl = closed_pnl_data['closedPnl']
+                    exit_price = closed_pnl_data.get('avgExitPrice', Decimal('0'))
+                    entry_price_from_exchange = closed_pnl_data.get('avgEntryPrice', Decimal('0'))
+                    gross_pnl = (exit_price - entry_price_from_exchange) * closed_pnl_data.get('closedSize', Decimal('0')) if self.active_direction == "LONG" else (entry_price_from_exchange - exit_price) * closed_pnl_data.get('closedSize', Decimal('0'))
+                    commission = gross_pnl - final_pnl
+            except Exception as api_error:
+                log_error(self.user_id, f"❌ Ошибка получения closedPnL: {api_error}", "SignalScalper")
+
+            # Получаем данные из БД
+            from database.db_trades import db_manager
+            open_order = await db_manager.get_open_order_for_position(self.user_id, self.symbol, self.account_priority)
+            if open_order:
+                saved_entry_time = open_order.get('filled_at')
+                saved_entry_price = open_order.get('average_price')
+
+                # Обновляем БД - закрываем ордер
+                try:
+                    position_size_to_report = self.total_position_size if self.total_position_size > 0 else self.position_size
+                    await db_manager.close_order(
+                        order_id=open_order['order_id'],
+                        close_price=float(exit_price) if exit_price > Decimal('0') else None,
+                        close_size=float(position_size_to_report) if position_size_to_report > 0 else None,
+                        realized_pnl=float(final_pnl),
+                        close_reason="manual_close_by_user"
+                    )
+                    log_info(self.user_id, f"✅ Ордер {open_order['order_id']} закрыт в БД (ручное закрытие)", "SignalScalper")
+                except Exception as db_error:
+                    log_error(self.user_id, f"❌ Ошибка обновления БД: {db_error}", "SignalScalper")
+            else:
+                saved_entry_time = self.entry_time
+                saved_entry_price = self.entry_price
+
+            # Отменяем стоп-лосс если был установлен
+            if self.stop_loss_order_id:
+                try:
+                    await self._cancel_stop_loss_order()
+                except Exception as sl_error:
+                    log_error(self.user_id, f"❌ Ошибка отмены SL: {sl_error}", "SignalScalper")
+
+            # Сбрасываем состояние (ВКЛЮЧАЯ ВСЕ ПЕРЕМЕННЫЕ УСРЕДНЕНИЯ)
+            self.position_active = False
+            self.active_direction = None
+            self.entry_price = None
+            self.entry_time = None
+            self.position_size = None
+            self.peak_profit_usd = Decimal('0')
+            self.hold_signal_counter = 0
+
+            # СБРОС ПЕРЕМЕННЫХ ПРОМЕЖУТОЧНОГО УСРЕДНЕНИЯ
+            self.intermediate_averaging_executed = False
+
+            # СБРОС ПЕРЕМЕННЫХ ОСНОВНОГО УСРЕДНЕНИЯ
+            self.averaging_executed = False
+            self.averaging_count = 0
+            self.initial_margin_usd = Decimal('0')
+            self.current_total_margin = Decimal('0')
+            self.total_fees_paid = Decimal('0')
+            self.total_position_size = Decimal('0')
+            self.average_entry_price = Decimal('0')
+
+            # СБРОС ФЛАГА ДЕТЕКТОРА ЗАСТРЕВАНИЯ
+            self.stagnation_averaging_executed = False
+            self._reset_stagnation_monitor()
+
+            # СБРОС ФЛАГА ВЫХОДА В БЕЗУБЫТОК
+            self.use_breakeven_exit = False
+
+            # СБРОС ФЛАГОВ ИНТЕЛЛЕКТУАЛЬНОГО SL (если есть)
+            if hasattr(self, 'sl_extended'):
+                self.sl_extended = False
+            if hasattr(self, 'sl_extension_notified'):
+                self.sl_extension_notified = False
+
+            # РАЗМОРОЗКА КОНФИГУРАЦИИ
+            self.active_trade_config = None
+            self.config_frozen = False
+
+            # Отписываемся от обновлений цены
+            try:
+                await self.event_bus.unsubscribe(self._handle_price_update)
+            except Exception as unsub_error:
+                log_debug(self.user_id, f"Не удалось отписаться от price_update: {unsub_error}", "SignalScalper")
+
+            log_info(self.user_id, f"✅ Позиция закрыта вручную. PnL: ${final_pnl:.2f}", "SignalScalper")
+
+            # Отправляем уведомление
+            await self._send_trade_close_notification(
+                pnl=final_pnl,
+                commission=commission,
+                exit_price=exit_price if exit_price > Decimal('0') else None,
+                entry_price=saved_entry_price,
+                entry_time=saved_entry_time
+            )
+
+        except Exception as e:
+            log_error(self.user_id, f"❌ Ошибка обработки ручного закрытия: {e}", "SignalScalper")
 
     async def _execute_strategy_logic(self):
         """Пустышка, так как логика теперь управляется событиями свечей."""

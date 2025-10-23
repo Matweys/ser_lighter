@@ -18,7 +18,7 @@ from collections import defaultdict, deque
 from aiogram import Bot
 from core.logger import log_info, log_error, log_warning, log_debug
 from core.enums import StrategyType, PositionSide
-from core.events import EventType, EventBus, PriceUpdateEvent
+from core.events import EventType, EventBus, PriceUpdateEvent, OrderFilledEvent
 from api.bybit_api import BybitAPI
 from .base_strategy import BaseStrategy
 from aiogram.utils.markdown import hbold, hcode
@@ -146,8 +146,13 @@ class FlashDropCatcherStrategy(BaseStrategy):
         # Загружаем конфигурацию
         await self._load_config()
 
-        # Подписываемся на события обновления цен
-        await self.event_bus.subscribe(EventType.PRICE_UPDATE, self.handle_price_update, user_id=self.user_id)
+        # КРИТИЧНО: НЕ подписываемся напрямую на PRICE_UPDATE!
+        # BaseStrategy уже подписан через handle_event → _handle_price_update_wrapper → _handle_price_update
+        # Дублирующая подписка вызывает конфликты и лишние вызовы
+
+        # КРИТИЧНО: Подписываемся на ручное закрытие позиции
+        from core.events import PositionClosedEvent
+        await self.event_bus.subscribe(EventType.POSITION_CLOSED, self._handle_manual_close, user_id=self.user_id)
 
         # Запускаем WebSocket сканер
         self._scanner_task = asyncio.create_task(self._run_websocket_scanner())
@@ -192,8 +197,8 @@ class FlashDropCatcherStrategy(BaseStrategy):
             except asyncio.CancelledError:
                 pass
 
-        # Отписываемся от событий
-        await self.event_bus.unsubscribe(self.handle_price_update)
+        # КРИТИЧНО: НЕ отписываемся от PRICE_UPDATE вручную!
+        # BaseStrategy автоматически управляет подпиской через handle_event
 
         log_info(self.user_id, f"⏹️ FlashDropCatcher остановлена: {reason}", "FlashDropCatcher")
         return True
@@ -726,10 +731,47 @@ class FlashDropCatcherStrategy(BaseStrategy):
             if order_result:
                 self.trades_opened += 1  # Увеличиваем счётчик успешно открытых сделок
                 self.position_active = True
-                self.entry_price = entry_price
                 self.entry_time = datetime.now()  # Сохраняем время открытия позиции
                 self.position_size = position_size
                 self.active_direction = "LONG"
+
+                # КРИТИЧНО: Получаем РЕАЛЬНУЮ цену исполнения с биржи (не используем цену сигнала!)
+                try:
+                    # Даём бирже время обработать ордер
+                    await asyncio.sleep(0.5)
+
+                    # Получаем реальную позицию с биржи
+                    positions = await self.api.get_positions(symbol=self.symbol)
+                    if positions and isinstance(positions, list) and len(positions) > 0:
+                        # avgPrice - это РЕАЛЬНАЯ средняя цена исполнения ордера
+                        real_entry_price = self._convert_to_decimal(positions[0].get("avgPrice", entry_price))
+
+                        if real_entry_price > Decimal('0'):
+                            self.entry_price = real_entry_price
+
+                            # Рассчитываем проскальзывание для логирования
+                            slippage = ((real_entry_price - entry_price) / entry_price) * Decimal('100')
+
+                            log_info(self.user_id,
+                                    f"✅ РЕАЛЬНАЯ цена исполнения: {real_entry_price:.8f} "
+                                    f"(сигнал: {entry_price:.8f}, проскальзывание: {float(slippage):.2f}%)",
+                                    "FlashDropCatcher")
+                        else:
+                            log_warning(self.user_id,
+                                       f"⚠️ Не удалось получить avgPrice с биржи, используем цену сигнала {entry_price}",
+                                       "FlashDropCatcher")
+                            self.entry_price = entry_price
+                    else:
+                        log_warning(self.user_id,
+                                   f"⚠️ Позиция не найдена на бирже, используем цену сигнала {entry_price}",
+                                   "FlashDropCatcher")
+                        self.entry_price = entry_price
+
+                except Exception as price_fetch_error:
+                    log_error(self.user_id,
+                             f"❌ Ошибка получения реальной цены с биржи: {price_fetch_error}, используем цену сигнала {entry_price}",
+                             "FlashDropCatcher")
+                    self.entry_price = entry_price
 
                 # Сбрасываем trailing stop параметры
                 self.highest_pnl = Decimal('0')
@@ -739,7 +781,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 # Запускаем мониторинг позиции
                 self._position_monitor_task = asyncio.create_task(self._monitor_position())
 
-                log_info(self.user_id, f"✅ LONG позиция открыта по цене {entry_price}", "FlashDropCatcher")
+                log_info(self.user_id, f"✅ LONG позиция открыта по РЕАЛЬНОЙ цене {self.entry_price:.8f}", "FlashDropCatcher")
 
                 # Уведомление
                 if self.bot:
@@ -789,6 +831,10 @@ class FlashDropCatcherStrategy(BaseStrategy):
             log_info(self.user_id, "Мониторинг позиции отменен", "FlashDropCatcher")
         except Exception as e:
             log_error(self.user_id, f"Ошибка мониторинга позиции: {e}", "FlashDropCatcher")
+
+    async def _handle_price_update(self, event: PriceUpdateEvent):
+        """Внутренний метод обработки обновления цены (вызывается из BaseStrategy)"""
+        await self.handle_price_update(event)
 
     @strategy_locked
     async def handle_price_update(self, event: PriceUpdateEvent):
@@ -1180,17 +1226,23 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 # Формируем детализацию по падениям
                 drops_detail = ""
                 if self.detected_drops_count > 0:
-                    drops_detail += f"\n🎯 {hbold('Обнаружено падений:')} {self.detected_drops_count}"
+                    # Качественные падения (прошли все фильтры)
+                    drops_detail += f"\n📉 {hbold('Качественных падений обнаружено:')} {self.detected_drops_count}"
 
-                    # Показываем причины отклонения, если были
-                    if self.rejected_due_to_position_exists > 0 or self.rejected_due_to_max_positions > 0:
-                        drops_detail += f"\n   ├─ ❌ Отклонено (уже есть позиция): {self.rejected_due_to_position_exists}"
-                        drops_detail += f"\n   ├─ ❌ Отклонено (лимит позиций): {self.rejected_due_to_max_positions}"
-                        drops_detail += f"\n   └─ ✅ Открыто сделок: {self.trades_opened}"
-                    else:
-                        drops_detail += f"\n   └─ ✅ Открыто сделок: {self.trades_opened}"
+                    # Из них сколько отработали (вошли в сделку)
+                    drops_detail += f"\n   ├─ ✅ Отработано (вход в сделку): {self.trades_opened}"
+
+                    # Сколько пропустили и почему
+                    rejected_total = self.rejected_due_to_position_exists + self.rejected_due_to_max_positions
+                    if rejected_total > 0:
+                        drops_detail += f"\n   └─ ⏭️  Пропущено: {rejected_total}"
+                        if self.rejected_due_to_position_exists > 0:
+                            drops_detail += f"\n       ▪️ Уже открыта позиция: {self.rejected_due_to_position_exists}"
+                        if self.rejected_due_to_max_positions > 0:
+                            drops_detail += f"\n       ▪️ Достигнут лимит ({self.MAX_CONCURRENT_POSITIONS} поз.): {self.rejected_due_to_max_positions}"
                 else:
-                    drops_detail += f"\n🎯 {hbold('Обнаружено падений:')} 0 (ожидаем качественные сигналы)"
+                    drops_detail += f"\n📉 {hbold('Качественных падений обнаружено:')} 0"
+                    drops_detail += f"\n   └─ ⏳ Ожидаем качественные сигналы..."
 
                 # Формируем текст сообщения
                 message_text = (
@@ -1241,6 +1293,86 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 log_error(self.user_id, f"Ошибка heartbeat мониторинга: {e}", "FlashDropCatcher")
                 # Продолжаем работу даже при ошибке
                 await asyncio.sleep(60)
+
+    async def _handle_manual_close(self, event):
+        """
+        МГНОВЕННЫЙ обработчик ручного закрытия позиции через WebSocket.
+        Вызывается когда пользователь вручную закрыл позицию на бирже.
+        """
+        from core.events import PositionClosedEvent
+
+        if not isinstance(event, PositionClosedEvent):
+            return
+
+        # Проверяем что это наш символ
+        if event.symbol != self.symbol or not self.position_active:
+            return
+
+        log_warning(self.user_id,
+                   f"⚠️ ОБРАБОТКА РУЧНОГО ЗАКРЫТИЯ через WebSocket: {event.symbol}",
+                   "FlashDropCatcher")
+
+        try:
+            # Получаем ТОЧНЫЙ PnL от биржи
+            final_pnl = Decimal('0')
+            exit_price = Decimal('0')
+            commission = Decimal('0')
+
+            try:
+                closed_pnl_data = await self.api.get_closed_pnl(self.symbol, limit=1)
+                if closed_pnl_data:
+                    final_pnl = closed_pnl_data['closedPnl']
+                    exit_price = closed_pnl_data.get('avgExitPrice', Decimal('0'))
+                    gross_pnl = (exit_price - closed_pnl_data.get('avgEntryPrice', Decimal('0'))) * closed_pnl_data.get('closedSize', Decimal('0'))
+                    commission = gross_pnl - final_pnl
+            except Exception as api_error:
+                log_error(self.user_id, f"❌ Ошибка получения closedPnL: {api_error}", "FlashDropCatcher")
+
+            # Получаем данные из БД
+            from database.db_trades import db_manager
+            open_order = await db_manager.get_open_order_for_position(self.user_id, self.symbol, self.account_priority)
+            if open_order:
+                saved_entry_time = open_order.get('filled_at')
+                saved_entry_price = open_order.get('average_price')
+
+                # Обновляем БД - закрываем ордер
+                try:
+                    await db_manager.close_order(
+                        order_id=open_order['order_id'],
+                        close_price=float(exit_price) if exit_price > Decimal('0') else None,
+                        close_size=float(self.position_size) if self.position_size > 0 else None,
+                        realized_pnl=float(final_pnl),
+                        close_reason="manual_close_by_user"
+                    )
+                    log_info(self.user_id, f"✅ Ордер {open_order['order_id']} закрыт в БД (ручное закрытие)", "FlashDropCatcher")
+                except Exception as db_error:
+                    log_error(self.user_id, f"❌ Ошибка обновления БД: {db_error}", "FlashDropCatcher")
+            else:
+                saved_entry_time = self.entry_time
+                saved_entry_price = self.entry_price
+
+            # Сбрасываем состояние
+            self.position_active = False
+            self.entry_price = Decimal('0')
+            self.entry_time = None
+            self.position_size = Decimal('0')
+            self.highest_pnl = Decimal('0')
+            self.current_trailing_level = 0
+            self.last_trailing_notification_level = -1
+
+            log_info(self.user_id, f"✅ Позиция закрыта вручную. PnL: ${final_pnl:.2f}", "FlashDropCatcher")
+
+            # Отправляем уведомление
+            await self._send_trade_close_notification(
+                pnl=final_pnl,
+                commission=commission,
+                exit_price=exit_price if exit_price > Decimal('0') else None,
+                entry_price=saved_entry_price,
+                entry_time=saved_entry_time
+            )
+
+        except Exception as e:
+            log_error(self.user_id, f"❌ Ошибка обработки ручного закрытия: {e}", "FlashDropCatcher")
 
     async def _execute_strategy_logic(self):
         """Базовый метод выполнения логики (не используется в этой стратегии)"""

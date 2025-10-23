@@ -1518,9 +1518,10 @@ class BaseStrategy(ABC):
             # Рассчитываем длительность сделки если доступно entry_time
             duration_line = ""
             if entry_time:
-                # Приводим entry_time к naive datetime если он aware (убираем timezone для совместимости)
+                # КРИТИЧНО: Правильно конвертируем entry_time в локальное время
                 if entry_time.tzinfo is not None:
-                    entry_time_naive = entry_time.replace(tzinfo=None)
+                    # КОНВЕРТИРУЕМ в локальный timezone ПЕРЕД удалением timezone info
+                    entry_time_naive = entry_time.astimezone().replace(tzinfo=None)
                 else:
                     entry_time_naive = entry_time
 

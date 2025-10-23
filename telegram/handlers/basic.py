@@ -250,6 +250,10 @@ async def cmd_trade_details(message: Message, state: FSMContext):
         # ШАГ 3: Получаем РЕАЛЬНЫЕ позиции со ВСЕХ аккаунтов на бирже
         exchange_positions = {}  # {(symbol, bot_priority): position_data}
 
+        # Определяем режим торговли (demo/live)
+        exchange_config = system_config.get_exchange_config("bybit")
+        use_demo = exchange_config.demo if exchange_config else False
+
         for key_data in api_keys_list:
             priority = key_data['priority']
             try:
@@ -257,7 +261,7 @@ async def cmd_trade_details(message: Message, state: FSMContext):
                     api_key=key_data['api_key'],
                     api_secret=key_data['secret_key'],
                     user_id=user_id,
-                    demo=system_config.demo_mode
+                    demo=use_demo
                 ) as api:
                     positions = await api.get_positions()
 
