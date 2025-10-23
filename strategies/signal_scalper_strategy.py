@@ -756,18 +756,49 @@ class SignalScalperStrategy(BaseStrategy):
             log_info(self.user_id, f"[ОТКРЫТИЕ] Обрабатываем ордер открытия: {event.order_id}", "SignalScalper")
             self.position_active = True
             self.active_direction = "LONG" if event.side == "Buy" else "SHORT"
-            self.entry_price = event.price
             self.entry_time = datetime.now()  # Сохраняем время открытия позиции
             self.position_size = event.qty
             self.peak_profit_usd = Decimal('0')
             self.hold_signal_counter = 0
 
+            # КРИТИЧНО: Получаем РЕАЛЬНУЮ среднюю цену входа с биржи (avgPrice)
+            # WebSocket может дать неточную цену, поэтому ВСЕГДА запрашиваем с биржи!
+            real_entry_price = event.price  # Fallback на цену из WebSocket
+            try:
+                await asyncio.sleep(0.5)  # Даём бирже время обработать ордер
+                positions = await self.api.get_positions(symbol=self.symbol)
+                if positions and len(positions) > 0:
+                    real_avg_price = self._convert_to_decimal(positions[0].get("avgPrice", 0))
+                    if real_avg_price > 0:
+                        real_entry_price = real_avg_price
+                        # Рассчитываем проскальзывание для логирования
+                        slippage = ((real_entry_price - event.price) / event.price) * Decimal('100')
+                        log_info(self.user_id,
+                                f"✅ РЕАЛЬНАЯ цена входа с биржи: {real_entry_price:.4f} "
+                                f"(WebSocket: {event.price:.4f}, проскальзывание: {float(slippage):.3f}%)",
+                                "SignalScalper")
+                    else:
+                        log_warning(self.user_id,
+                                   f"⚠️ avgPrice=0 с биржи, используем цену WebSocket: {event.price:.4f}",
+                                   "SignalScalper")
+                else:
+                    log_warning(self.user_id,
+                               f"⚠️ Позиция не найдена на бирже, используем цену WebSocket: {event.price:.4f}",
+                               "SignalScalper")
+            except Exception as e:
+                log_error(self.user_id,
+                         f"❌ Ошибка получения avgPrice с биржи: {e}, используем цену WebSocket: {event.price:.4f}",
+                         "SignalScalper")
+
+            # Сохраняем РЕАЛЬНУЮ цену входа для всех расчетов
+            self.entry_price = real_entry_price
+
             # КРИТИЧЕСКИ ВАЖНО: Подписываемся на события цены для усреднения и трейлинга
             await self.event_bus.subscribe(EventType.PRICE_UPDATE, self.handle_price_update, user_id=self.user_id)
 
-            # Передаем сохраненную цену сигнала в уведомление
+            # Передаем сохраненную цену сигнала в уведомление (для сравнения)
             signal_price = getattr(self, 'signal_price', None)
-            await self._send_trade_open_notification(event.side, event.price, event.qty, self.intended_order_amount, signal_price)
+            await self._send_trade_open_notification(event.side, real_entry_price, event.qty, self.intended_order_amount, signal_price)
 
             # Инициализируем переменные НОВОЙ системы усреднения (одиночное удвоение)
             self.averaging_executed = False  # Флаг: было ли выполнено усреднение
