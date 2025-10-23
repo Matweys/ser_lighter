@@ -225,6 +225,9 @@ async def cmd_trade_details(message: Message, state: FSMContext):
         # ШАГ 1: Получаем ВСЕ открытые позиции из БД (OPEN без CLOSE)
         db_positions = await db_manager.get_all_open_positions(user_id)
 
+        # 🔍 DEBUG: Логируем количество найденных позиций
+        log_info(user_id, f"[trade_details] Найдено открытых позиций в БД: {len(db_positions)}", module_name='basic_handlers')
+
         if not db_positions:
             await message.answer(
                 "ℹ️ <b>Нет открытых позиций в БД</b>\n\n"
@@ -252,33 +255,57 @@ async def cmd_trade_details(message: Message, state: FSMContext):
             try:
                 async with BybitAPI(
                     api_key=key_data['api_key'],
-                    secret_key=key_data['secret_key'],
-                    demo_mode=system_config.demo_mode
+                    api_secret=key_data['secret_key'],
+                    user_id=user_id,
+                    demo=system_config.demo_mode
                 ) as api:
                     positions = await api.get_positions()
 
+                    # 🔍 DEBUG: Логируем позиции на бирже
                     if positions:
+                        log_info(user_id, f"[trade_details] Бот{priority}: найдено {len(positions)} позиций на бирже", module_name='basic_handlers')
                         for pos in positions:
                             size = float(pos.get('size', 0))
+                            symbol = pos.get('symbol', '')
+                            log_info(user_id, f"[trade_details] Бот{priority}: {symbol}, size={size}", module_name='basic_handlers')
                             if size != 0:  # Только активные позиции
-                                symbol = pos.get('symbol', '')
                                 key = (symbol, priority)
                                 exchange_positions[key] = pos
+                    else:
+                        log_info(user_id, f"[trade_details] Бот{priority}: НЕТ позиций на бирже", module_name='basic_handlers')
             except Exception as e:
                 log_error(user_id, f"Ошибка получения позиций для Bot{priority}: {e}", module_name='basic_handlers')
+
+        # 🔍 DEBUG: Логируем общее количество активных позиций на бирже
+        log_info(user_id, f"[trade_details] Всего активных позиций на бирже: {len(exchange_positions)}", module_name='basic_handlers')
 
         # ШАГ 4: Сопоставляем DB позиции с реальными позициями на бирже
         # Показываем ТОЛЬКО если позиция есть И в БД И на бирже!
         verified_positions = []
 
+        # 🔍 DEBUG: Логируем ключи для диагностики сопоставления
+        db_keys = [(db_pos["symbol"], db_pos["bot_priority"]) for db_pos in db_positions]
+        exchange_keys = list(exchange_positions.keys())
+        log_info(user_id, f"[trade_details] 🔑 Ключи из БД: {db_keys}", module_name='basic_handlers')
+        log_info(user_id, f"[trade_details] 🔑 Ключи с биржи: {exchange_keys}", module_name='basic_handlers')
+
         for db_pos in db_positions:
             symbol = db_pos["symbol"]
             bot_priority = db_pos["bot_priority"]
+            strategy_type = db_pos.get("strategy_type", "unknown")
             key = (symbol, bot_priority)
+
+            # 🔍 DEBUG: Логируем каждую попытку сопоставления
+            log_info(user_id,
+                    f"[trade_details] Проверка позиции: {key} (стратегия: {strategy_type})",
+                    module_name='basic_handlers')
 
             # КРИТИЧНО: Проверяем что позиция РЕАЛЬНО открыта на бирже!
             if key in exchange_positions:
                 # Позиция есть в БД И на бирже - показываем!
+                log_info(user_id,
+                        f"[trade_details] ✅ СОВПАДЕНИЕ: {key} найдена на бирже!",
+                        module_name='basic_handlers')
                 verified_positions.append({
                     "db_position": db_pos,
                     "exchange_position": exchange_positions[key]
@@ -286,7 +313,7 @@ async def cmd_trade_details(message: Message, state: FSMContext):
             else:
                 # Позиция в БД но НЕТ на бирже - пропускаем!
                 log_warning(user_id,
-                    f"⚠️ Позиция {symbol} Bot{bot_priority} есть в БД но закрыта на бирже! Не показываем.",
+                    f"[trade_details] ❌ НЕТ СОВПАДЕНИЯ: Позиция {symbol} Bot{bot_priority} (стратегия: {strategy_type}) есть в БД но ОТСУТСТВУЕТ на бирже! Не показываем.",
                     module_name='basic_handlers')
 
         if not verified_positions:

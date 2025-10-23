@@ -1201,6 +1201,13 @@ class UserSession:
                     log_info(self.user_id, f"ℹ️ Позиции нет на бирже, восстанавливаю Бот 1", module_name=__name__)
 
                 # Восстанавливаем состояние ПРАВИЛЬНОГО бота
+                # ЗАЩИТА: Проверяем что bot_with_position определён (не должно случиться, но для безопасности)
+                if bot_with_position is None:
+                    log_error(self.user_id,
+                             f"❌ КРИТИЧЕСКАЯ ОШИБКА: bot_with_position остался None после анализа позиций для {symbol}!",
+                             module_name=__name__)
+                    bot_with_position = 1  # Fallback на Бот 1
+
                 log_info(self.user_id, f"🔄 Восстанавливаю состояние Бота {bot_with_position} для {symbol}", module_name=__name__)
                 success = await bot_strategies[bot_with_position - 1].recover_after_restart(saved_state)
 

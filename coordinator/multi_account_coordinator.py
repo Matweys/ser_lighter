@@ -49,6 +49,10 @@ class MultiAccountCoordinator:
         self.bots: Dict[int, BotData] = {}
         self.active_bots = set()  # Множество ID активных ботов
         self.running = False
+        self._watchlist_removal_logged = False  # Флаг для однократного логирования удаления из watchlist
+        self._lock = asyncio.Lock()  # Блокировка для предотвращения race conditions при активации/деактивации
+        self._stop_event = asyncio.Event()  # Event для сигнализации остановки
+        self._monitor_task: Optional[asyncio.Task] = None  # Ссылка на задачу мониторинга
 
         # Создаём BotData для каждой стратегии
         if len(bot_strategies) != 3:
@@ -84,6 +88,7 @@ class MultiAccountCoordinator:
             return
 
         self.running = True
+        self._stop_event.clear()  # Сбрасываем event при запуске
         log_info(self.user_id, f"🟢 Запуск Coordinator для {self.symbol}", "Coordinator")
 
         # Активируем бота с указанным приоритетом (по дефолту Бот 1)
@@ -92,26 +97,60 @@ class MultiAccountCoordinator:
                 "Coordinator")
         await self._activate_bot(initial_bot_priority)
 
-        # Запускаем фоновый мониторинг
-        asyncio.create_task(self._monitor_loop())
+        # Запускаем фоновый мониторинг и сохраняем ссылку на задачу
+        self._monitor_task = asyncio.create_task(self._monitor_loop())
 
     async def stop(self):
-        """Остановка координатора"""
+        """
+        Умная остановка координатора с Event-based сигнализацией.
+
+        Логика:
+        1. Устанавливаем флаг running=False
+        2. Ждём установки _stop_event (сигнал от _monitor_loop о завершении)
+        3. Если event не установился за 7 секунд → таймаут (принудительная остановка)
+        4. Деактивируем всех ботов
+        5. Очищаем память
+        """
         if not self.running:
             return
 
-        # КРИТИЧНО: Сначала останавливаем флаг, затем даём время на остановку цикла
+        # ШАГ 1: Останавливаем флаг мониторинга
         self.running = False
         log_info(self.user_id, f"🔴 Остановка Coordinator для {self.symbol}", "Coordinator")
 
-        # ВАЖНО: Ждём завершения текущей итерации цикла мониторинга (макс 5 сек + запас)
-        await asyncio.sleep(6)
+        # ШАГ 2: Ждём завершения цикла мониторинга
+        # Цикл мониторинга установит _stop_event когда полностью завершится
+        # Таймаут: 7 секунд (интервал мониторинга 5 сек + запас 2 сек)
+        try:
+            await asyncio.wait_for(self._stop_event.wait(), timeout=7.0)
+            log_info(self.user_id,
+                    f"✅ Цикл мониторинга для {self.symbol} корректно завершился",
+                    "Coordinator")
+        except asyncio.TimeoutError:
+            log_warning(self.user_id,
+                       f"⚠️ Таймаут ожидания завершения цикла мониторинга для {self.symbol} (7 сек). "
+                       f"Принудительная остановка.",
+                       "Coordinator")
+            # Если таймаут, пытаемся отменить задачу мониторинга
+            if self._monitor_task and not self._monitor_task.done():
+                self._monitor_task.cancel()
+                try:
+                    await self._monitor_task
+                except asyncio.CancelledError:
+                    pass
 
-        # Теперь останавливаем все активные боты
+        # ШАГ 3: Деактивируем всех активных ботов
         for priority in list(self.active_bots):
             await self._deactivate_bot(priority)
 
-        log_info(self.user_id, f"✅ Coordinator для {self.symbol} полностью остановлен", "Coordinator")
+        # ШАГ 4: Очищаем память
+        # Очищаем словарь ботов и множество активных ботов для предотвращения утечек памяти
+        self.bots.clear()
+        self.active_bots.clear()
+        self._monitor_task = None
+        self._watchlist_removal_logged = False  # Сбрасываем флаг
+
+        log_info(self.user_id, f"✅ Coordinator для {self.symbol} полностью остановлен и очищен", "Coordinator")
 
     async def _monitor_loop(self):
         """
@@ -153,6 +192,9 @@ class MultiAccountCoordinator:
                 log_error(self.user_id, f"Ошибка в monitor_loop для {self.symbol}: {e}", "Coordinator")
 
         log_info(self.user_id, f"✅ Цикл мониторинга для {self.symbol} полностью остановлен", "Coordinator")
+
+        # Устанавливаем event для сигнализации о завершении
+        self._stop_event.set()
 
     async def _update_statuses(self):
         """
@@ -213,10 +255,16 @@ class MultiAccountCoordinator:
             if self.symbol not in watchlist:
                 # Символ удален из watchlist - не активируем новых ботов
                 # Боты в позициях продолжат работу до закрытия сделки
-                log_info(self.user_id,
-                        f"⏸️ Символ {self.symbol} удален из watchlist → НЕ активирую новых ботов (текущие позиции продолжают работу)",
-                        "Coordinator")
+                # Логируем только один раз
+                if not self._watchlist_removal_logged:
+                    log_info(self.user_id,
+                            f"⏸️ Символ {self.symbol} удален из watchlist → НЕ активирую новых ботов (текущие позиции продолжают работу)",
+                            "Coordinator")
+                    self._watchlist_removal_logged = True
                 return
+            else:
+                # Символ снова добавлен в watchlist - сбрасываем флаг
+                self._watchlist_removal_logged = False
         except Exception as e:
             log_error(self.user_id, f"Ошибка проверки watchlist: {e}", "Coordinator")
             # В случае ошибки не блокируем активацию (fail-safe)
@@ -326,24 +374,25 @@ class MultiAccountCoordinator:
 
         После активации бот НАЧИНАЕТ обрабатывать события (свечи, цены).
 
-        ВАЖНО: Вызывается ТОЛЬКО из методов с @coordinator_locked, не требует собственной блокировки.
+        ВАЖНО: Защищено блокировкой для предотвращения race conditions.
         """
-        if priority in self.active_bots:
-            return  # Уже активен
+        async with self._lock:
+            if priority in self.active_bots:
+                return  # Уже активен
 
-        log_info(self.user_id,
-                f"🟢 АКТИВАЦИЯ БОТА {priority} для {self.symbol}",
-                "Coordinator")
+            log_info(self.user_id,
+                    f"🟢 АКТИВАЦИЯ БОТА {priority} для {self.symbol}",
+                    "Coordinator")
 
-        strategy = self.bots[priority].strategy
-        success = await strategy.start()
+            strategy = self.bots[priority].strategy
+            success = await strategy.start()
 
-        if success:
-            self.active_bots.add(priority)
-        else:
-            log_error(self.user_id,
-                     f"❌ Не удалось активировать Бота {priority} для {self.symbol}",
-                     "Coordinator")
+            if success:
+                self.active_bots.add(priority)
+            else:
+                log_error(self.user_id,
+                         f"❌ Не удалось активировать Бота {priority} для {self.symbol}",
+                         "Coordinator")
 
     async def _deactivate_bot(self, priority: int):
         """
@@ -351,28 +400,29 @@ class MultiAccountCoordinator:
 
         После деактивации бот ПЕРЕСТАЁТ обрабатывать события.
 
-        ВАЖНО: Вызывается ТОЛЬКО из методов с @coordinator_locked, не требует собственной блокировки.
+        ВАЖНО: Защищено блокировкой для предотвращения race conditions.
         """
-        if priority not in self.active_bots:
-            return  # Уже неактивен
+        async with self._lock:
+            if priority not in self.active_bots:
+                return  # Уже неактивен
 
-        bot_data = self.bots[priority]
+            bot_data = self.bots[priority]
 
-        # ЗАЩИТА: НЕ деактивируем если в позиции
-        if bot_data.status != 'free':
-            log_warning(self.user_id,
-                       f"⚠️ Попытка деактивации Бота {priority} ({self.symbol}), но он в позиции! Пропускаю.",
-                       "Coordinator")
-            return
+            # ЗАЩИТА: НЕ деактивируем если в позиции
+            if bot_data.status != 'free':
+                log_warning(self.user_id,
+                           f"⚠️ Попытка деактивации Бота {priority} ({self.symbol}), но он в позиции! Пропускаю.",
+                           "Coordinator")
+                return
 
-        log_info(self.user_id,
-                f"🔴 ДЕАКТИВАЦИЯ БОТА {priority} для {self.symbol}",
-                "Coordinator")
+            log_info(self.user_id,
+                    f"🔴 ДЕАКТИВАЦИЯ БОТА {priority} для {self.symbol}",
+                    "Coordinator")
 
-        strategy = bot_data.strategy
-        await strategy.stop("Coordinator rotation")
+            strategy = bot_data.strategy
+            await strategy.stop("Coordinator rotation")
 
-        self.active_bots.discard(priority)
+            self.active_bots.discard(priority)
 
     def _calculate_pnl_percent(self, strategy: SignalScalperStrategy) -> Decimal:
         """
@@ -415,12 +465,20 @@ class MultiAccountCoordinator:
             # Получаем последнюю известную цену из стратегии
             last_price = getattr(strategy, '_last_known_price', None)
 
-            if last_price and last_price > 0:
-                current_price = Decimal(str(last_price))
-            else:
-                # Fallback на entry_price если нет текущей цены
-                current_price = entry_price
-                log_warning(self.user_id, f"⚠️ _last_known_price не установлена ({last_price}), используем entry_price={entry_price} для расчета PnL%", "Coordinator")
+            if not last_price or last_price <= 0:
+                # КРИТИЧЕСКАЯ ОШИБКА: Нет текущей цены для расчёта PnL
+                # Это значит стратегия не получает обновления цен!
+                log_error(self.user_id,
+                         f"❌ КРИТИЧЕСКАЯ ОШИБКА: _last_known_price не установлена для {self.symbol}! "
+                         f"Невозможно рассчитать PnL% для определения застревания. "
+                         f"Проблема: стратегия не получает обновления цен через WebSocket. "
+                         f"Возвращаю -100% для безопасной активации следующего бота.",
+                         "Coordinator")
+                # Возвращаем максимальный убыток для безопасности
+                # Это заставит координатор активировать следующего бота
+                return Decimal('-100')
+
+            current_price = Decimal(str(last_price))
 
             # Расчет PnL
             if strategy.active_direction == "LONG":

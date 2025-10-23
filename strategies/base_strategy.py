@@ -1518,7 +1518,13 @@ class BaseStrategy(ABC):
             # Рассчитываем длительность сделки если доступно entry_time
             duration_line = ""
             if entry_time:
-                duration_seconds = int((datetime.now() - entry_time).total_seconds())
+                # Приводим entry_time к naive datetime если он aware (убираем timezone для совместимости)
+                if entry_time.tzinfo is not None:
+                    entry_time_naive = entry_time.replace(tzinfo=None)
+                else:
+                    entry_time_naive = entry_time
+
+                duration_seconds = int((datetime.now() - entry_time_naive).total_seconds())
                 duration_formatted = self._format_duration_russian(duration_seconds)
                 duration_line = f"▫️ {hbold('Время сделки:')} {hcode(duration_formatted)}\n"
 

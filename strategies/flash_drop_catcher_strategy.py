@@ -78,6 +78,11 @@ class FlashDropCatcherStrategy(BaseStrategy):
         self.position_size: Decimal = Decimal('0')
         self.active_direction = "LONG"
 
+        # Информация о сигнале (для уведомлений)
+        self.signal_drop_percent: Decimal = Decimal('0')
+        self.signal_volume_ratio: Decimal = Decimal('0')
+        self.signal_volatility_pct: Decimal = Decimal('0')
+
         # Trailing stop параметры (из signal_scalper)
         self.highest_pnl = Decimal('0')
         self.current_trailing_level = 0
@@ -123,6 +128,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
         self.MAX_CONCURRENT_POSITIONS = int(self.get_config_value("max_concurrent_positions", 2))
         self.HARD_STOP_LOSS_USDT = self._convert_to_decimal(self.get_config_value("hard_stop_loss_usdt", -500.0))  # ИСПРАВЛЕНО: -15.0 → -500.0
         self.WEBSOCKET_CHUNK_SIZE = int(self.get_config_value("websocket_chunk_size", 150))
+        self.ENABLE_HEARTBEAT = bool(self.get_config_value("enable_heartbeat_notifications", True))  # Heartbeat уведомления
 
         log_info(self.user_id,
                 f"📋 Параметры FlashDropCatcher: интервал={self.TIMEFRAME_INTERVAL}m, история={self.HISTORY_BARS}, "
@@ -229,6 +235,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
     async def _get_liquidity_filter(self) -> List[str]:
         """
         Фильтрует символы по ликвидности (дневной объем).
+        Исключает Pre-Market символы для демо режима.
         ОРИГИНАЛЬНАЯ ЛОГИКА ИЗ СКАНЕРА.
         """
         log_info(self.user_id, "🔍 Применение фильтра ликвидности...", "FlashDropCatcher")
@@ -240,6 +247,10 @@ class FlashDropCatcherStrategy(BaseStrategy):
             if not tickers:
                 log_error(self.user_id, "Не удалось получить тикеры для фильтра ликвидности", "FlashDropCatcher")
                 return []
+
+            # Получаем информацию о символах для проверки Pre-Market статуса
+            instruments_info = await self.api.get_instruments_info()
+
             liquid_symbols = []
 
             for ticker in tickers:
@@ -249,6 +260,16 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 if not symbol.endswith("USDT"):
                     continue
 
+                # Фильтр Pre-Market символов (нельзя торговать в демо режиме)
+                if instruments_info and symbol in instruments_info:
+                    symbol_info = instruments_info[symbol]
+                    # Проверяем статус - Pre-Market символы имеют статус отличный от "Trading"
+                    # или содержат contractType = "PreMarket"
+                    contract_type = symbol_info.get("contractType", "")
+                    if contract_type == "PreMarket":
+                        log_debug(self.user_id, f"Пропуск Pre-Market символа: {symbol}", "FlashDropCatcher")
+                        continue
+
                 # Дневной объем в USD (turnover24h)
                 daily_volume = self._convert_to_decimal(ticker.get("turnover24h", 0))
 
@@ -256,7 +277,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
                     liquid_symbols.append(symbol)
 
             log_info(self.user_id,
-                    f"✅ Отфильтровано {len(liquid_symbols)} ликвидных символов (мин. объем: ${float(self.MIN_DAILY_VOLUME_USD):,.0f})",
+                    f"✅ Отфильтровано {len(liquid_symbols)} ликвидных символов (мин. объем: ${float(self.MIN_DAILY_VOLUME_USD):,.0f}, исключены Pre-Market)",
                     "FlashDropCatcher")
 
             return sorted(liquid_symbols)
@@ -629,8 +650,11 @@ class FlashDropCatcherStrategy(BaseStrategy):
                            "FlashDropCatcher")
                 return
 
-            # Проверяем, что это наш символ (если стратегия работает для конкретного символа)
+            # Проверка 3: Проверяем, что это наш символ (если стратегия работает для конкретного символа)
             if self.symbol != "ALL" and symbol != self.symbol:
+                log_debug(self.user_id,
+                         f"⏩ Пропускаем сигнал {symbol} - стратегия настроена только для {self.symbol}",
+                         "FlashDropCatcher")
                 return
 
             # Генерируем детальное сообщение сигнала
@@ -652,15 +676,20 @@ class FlashDropCatcherStrategy(BaseStrategy):
             # Обновляем символ для этой сделки
             self.symbol = symbol
 
-            # Открываем LONG позицию
-            await self._open_long_position(price)
+            # Открываем LONG позицию (передаём информацию о сигнале)
+            await self._open_long_position(price, drop_percent, volume_ratio, volatility_pct)
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки сигнала падения: {e}", "FlashDropCatcher")
 
-    async def _open_long_position(self, entry_price: Decimal):
+    async def _open_long_position(self, entry_price: Decimal, drop_percent: Decimal, volume_ratio: Decimal, volatility_pct: Decimal):
         """Открывает LONG позицию по текущей цене"""
         try:
+            # Сохраняем информацию о сигнале для уведомления
+            self.signal_drop_percent = drop_percent
+            self.signal_volume_ratio = volume_ratio
+            self.signal_volatility_pct = volatility_pct
+
             # Получаем параметры из конфигурации
             order_amount = self._convert_to_decimal(self.get_config_value("order_amount", 200.0))
             leverage = int(self.get_config_value("leverage", 2))
@@ -714,16 +743,34 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
                 # Уведомление
                 if self.bot:
-                    await self.bot.send_message(
-                        self.user_id,
-                        f"{hbold('✅ ПОЗИЦИЯ ОТКРЫТА')}\n\n"
-                        f"Символ: {hcode(self.symbol)}\n"
-                        f"Направление: {hcode('LONG')}\n"
-                        f"Цена входа: {hcode(f'{entry_price:.8f}')}\n"
-                        f"Размер: {hcode(f'{position_size:.6f}')}\n"
-                        f"Плечо: {hcode(f'{leverage}x')}\n"
-                        f"Сумма: {hcode(f'${order_amount:.2f}')}"
-                    )
+                    try:
+                        # Время входа
+                        entry_time_str = self.entry_time.strftime("%H:%M:%S") if self.entry_time else "N/A"
+
+                        # Формируем текст уведомления
+                        notification_text = (
+                            f"📈 {hbold('ОТКРЫТА НОВАЯ СДЕЛКА')} 📈\n\n"
+                            f"▫️ {hbold('Стратегия:')} {hcode('Flash Drop Catcher')}\n"
+                            f"▫️ {hbold('Символ:')} {hcode(self.symbol)}\n"
+                            f"▫️ {hbold('Направление:')} {hcode('LONG 🟢')}\n"
+                            f"▫️ {hbold('Время входа:')} {hcode(entry_time_str)}\n"
+                            f"▫️ {hbold('Цена входа:')} {hcode(f'{entry_price:.8f}')}\n"
+                            f"▫️ {hbold('Объем:')} {hcode(f'{position_size:.6f}')}\n"
+                            f"▫️ {hbold('Плечо:')} {hcode(f'{leverage}x')}\n"
+                            f"▫️ {hbold('Стоимость позиции:')} {hcode(f'{order_amount:.2f} USDT')}\n\n"
+                            f"🎯 {hbold('ДЕТАЛИ СИГНАЛА:')}\n"
+                            f"▫️ Падение: {hcode(f'{float(self.signal_drop_percent):.2f}%')}\n"
+                            f"▫️ Всплеск объёма: {hcode(f'{float(self.signal_volume_ratio):.2f}x среднего')}\n"
+                            f"▫️ Волатильность: {hcode(f'{float(self.signal_volatility_pct):.3f}%')}\n\n"
+                            f"🛑 {hbold('STOP LOSS:')}\n"
+                            f"▫️ Hard SL: {hcode(f'{float(self.HARD_STOP_LOSS_USDT):.2f} USDT')}\n"
+                            f"▫️ Trailing Stop: Активен (откат 20% от максимума)"
+                        )
+
+                        await self.bot.send_message(self.user_id, notification_text)
+                        log_info(self.user_id, "Уведомление об открытии позиции отправлено", "FlashDropCatcher")
+                    except Exception as notification_error:
+                        log_error(self.user_id, f"❌ Ошибка отправки уведомления об открытии: {notification_error}", "FlashDropCatcher")
             else:
                 log_error(self.user_id, "Не удалось открыть позицию", "FlashDropCatcher")
 
@@ -861,13 +908,13 @@ class FlashDropCatcherStrategy(BaseStrategy):
                             "FlashDropCatcher")
                     self.last_trailing_notification_level = new_level
 
-        # Проверяем откат для закрытия (25% от максимума)
+        # Проверяем откат для закрытия (20% от максимума)
         if self.current_trailing_level > 0:
-            pullback_threshold = self.highest_pnl * Decimal('0.75')
+            pullback_threshold = self.highest_pnl * Decimal('0.8')
 
             if current_pnl <= pullback_threshold:
                 log_warning(self.user_id,
-                           f"💰 TRAILING STOP! Откат 25% от максимума. Max={self.highest_pnl:.2f}$, Current={current_pnl:.2f}$",
+                           f"💰 TRAILING STOP! Откат 20% от максимума. Max={self.highest_pnl:.2f}$, Current={current_pnl:.2f}$",
                            "FlashDropCatcher")
                 await self._close_position("trailing_stop_profit")
 
@@ -1117,8 +1164,8 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 # КРИТИЧНО: Перезагружаем конфигурацию перед проверкой настройки heartbeat
                 await self._force_config_reload()
 
-                # Проверяем, включены ли heartbeat уведомления в Telegram
-                enable_heartbeat = self.get_config_value("enable_heartbeat_notifications", True)
+                # Проверяем, включены ли heartbeat уведомления в Telegram (используем загруженное значение)
+                enable_heartbeat = self.ENABLE_HEARTBEAT
 
                 # Формируем сообщение о статусе
                 elapsed_time = datetime.now() - self.last_heartbeat_time
