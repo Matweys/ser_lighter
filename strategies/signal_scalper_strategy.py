@@ -132,7 +132,7 @@ class SignalScalperStrategy(BaseStrategy):
                 user_id=self.user_id,
                 symbol=self.symbol,
                 lookback=50,
-                threshold=0.0008  # 0.05% порог для всплеска (снижен для большего количества сигналов)
+                threshold=0.0008  # 0.08% порог для всплеска
             )
             # Настраиваем временные окна для анализа (по умолчанию: 3, 5, 10 минут)
             # Можно изменить на 3, 7, 15 для более долгосрочного анализа
@@ -1299,7 +1299,7 @@ class SignalScalperStrategy(BaseStrategy):
 
         # После убыточной сделки требуем больше подтверждений
         if self.last_trade_was_loss:
-            required = max(required, 2)  # После убытка требуем минимум 2 подтверждения /временно сменил на 1
+            required = max(required, 3)  # После убытка требуем минимум 3 подтверждения
 
         # НОВАЯ ЛОГИКА: После реверса требуем специальное количество подтверждений
         if self.after_reversal_mode:
