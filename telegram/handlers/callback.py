@@ -18,7 +18,8 @@ from ..keyboards.inline import (
     get_symbol_selection_keyboard,
     get_settings_keyboard,
     get_strategy_settings_keyboard,
-    get_back_keyboard
+    get_back_keyboard,
+    get_parameter_description
 )
 from .states import UserStates
 from cache.redis_manager import redis_manager
@@ -450,8 +451,11 @@ async def callback_set_strategy_parameter(callback: CallbackQuery, state: FSMCon
             menu_message_id=callback.message.message_id
         )
 
+        # Получаем описание параметра (или дефолтный текст)
+        description_text = get_parameter_description(strategy_type, param_key)
+
         await callback.message.edit_text(
-            f"✏️ Введите новое значение для <b>{param_key}</b>:",
+            description_text,
             parse_mode="HTML",
             reply_markup=get_back_keyboard(f"reconfigure_{strategy_type}")
         )

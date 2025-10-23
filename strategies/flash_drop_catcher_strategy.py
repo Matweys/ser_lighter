@@ -95,7 +95,10 @@ class FlashDropCatcherStrategy(BaseStrategy):
         # === HEARTBEAT МОНИТОРИНГ ===
         self.last_heartbeat_time = datetime.now()
         self.processed_candles_count = 0  # Счётчик обработанных свечей
-        self.detected_drops_count = 0  # Счётчик обнаруженных падений
+        self.detected_drops_count = 0  # Счётчик обнаруженных падений (прошли все фильтры)
+        self.rejected_due_to_position_exists = 0  # Отклонено: уже есть позиция на символ
+        self.rejected_due_to_max_positions = 0  # Отклонено: достигнут лимит позиций
+        self.trades_opened = 0  # Успешно открыто сделок
 
         log_info(self.user_id,
                 f"🚀 FlashDropCatcher инициализирована для {self.symbol}",
@@ -109,16 +112,16 @@ class FlashDropCatcherStrategy(BaseStrategy):
         """Загрузка конфигурации из Redis и установка параметров"""
         await super()._load_strategy_config()
 
-        # Загружаем параметры из конфигурации
+        # Загружаем параметры из конфигурации (ВАЖНО: дефолты должны совпадать с default_configs.py!)
         self.TIMEFRAME_INTERVAL = str(self.get_config_value("timeframe_interval", "15"))
-        self.HISTORY_BARS = int(self.get_config_value("candle_history_size", 7))
-        self.BASE_DROP_PCT = self._convert_to_decimal(self.get_config_value("base_drop_percent", 5.0)) / Decimal('100')
-        self.MIN_DROP_PCT = self._convert_to_decimal(self.get_config_value("min_drop_percent", 3.0)) / Decimal('100')
-        self.MAX_DROP_PCT = self._convert_to_decimal(self.get_config_value("max_drop_percent", 15.0)) / Decimal('100')
-        self.VOLUME_SPIKE_MIN = self._convert_to_decimal(self.get_config_value("volume_spike_min", 3.0))
+        self.HISTORY_BARS = int(self.get_config_value("candle_history_size", 12))  # ИСПРАВЛЕНО: 7 → 12
+        self.BASE_DROP_PCT = self._convert_to_decimal(self.get_config_value("base_drop_percent", 4.0)) / Decimal('100')  # ИСПРАВЛЕНО: 5.0 → 4.0
+        self.MIN_DROP_PCT = self._convert_to_decimal(self.get_config_value("min_drop_percent", 2.5)) / Decimal('100')  # ИСПРАВЛЕНО: 3.0 → 2.5
+        self.MAX_DROP_PCT = self._convert_to_decimal(self.get_config_value("max_drop_percent", 10.0)) / Decimal('100')  # ИСПРАВЛЕНО: 15.0 → 10.0
+        self.VOLUME_SPIKE_MIN = self._convert_to_decimal(self.get_config_value("volume_spike_min", 2.5))  # ИСПРАВЛЕНО: 3.0 → 2.5
         self.MIN_DAILY_VOLUME_USD = self._convert_to_decimal(self.get_config_value("min_daily_volume_usd", 1000000.0))
         self.MAX_CONCURRENT_POSITIONS = int(self.get_config_value("max_concurrent_positions", 2))
-        self.HARD_STOP_LOSS_USDT = self._convert_to_decimal(self.get_config_value("hard_stop_loss_usdt", -15.0))
+        self.HARD_STOP_LOSS_USDT = self._convert_to_decimal(self.get_config_value("hard_stop_loss_usdt", -500.0))  # ИСПРАВЛЕНО: -15.0 → -500.0
         self.WEBSOCKET_CHUNK_SIZE = int(self.get_config_value("websocket_chunk_size", 150))
 
         log_info(self.user_id,
@@ -304,9 +307,9 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 # Динамический порог: чем выше волатильность, тем выше требуемое падение
                 # Для низковолатильных монет (BTC, ETH) - меньше порог
                 # Для высоковолатильных (мемкоины) - больше порог
-                # ОРИГИНАЛЬНАЯ ФОРМУЛА: BASE_DROP_PCT + (volatility * 10)
-                dynamic_threshold = self.BASE_DROP_PCT + (volatility * Decimal('10'))
-                # Ограничиваем 3%-15%
+                # ОПТИМИЗИРОВАННАЯ ФОРМУЛА: BASE_DROP_PCT + (volatility * 4) - ВАРИАНТ 1 (Сбалансированный)
+                dynamic_threshold = self.BASE_DROP_PCT + (volatility * Decimal('4'))
+                # Ограничиваем min-max (НЕ блокирует сильные падения, только ограничивает расчет порога!)
                 dynamic_threshold = max(self.MIN_DROP_PCT, min(dynamic_threshold, self.MAX_DROP_PCT))
 
                 avg_volume = sum(volumes) / len(volumes) if volumes else Decimal('0')
@@ -507,8 +510,8 @@ class FlashDropCatcherStrategy(BaseStrategy):
                     if len(closes_list) >= self.HISTORY_BARS:
                         data_obj['volatility'] = self._calculate_volatility(closes_list)
 
-                        # ОРИГИНАЛЬНАЯ ФОРМУЛА: BASE_DROP_PCT + (volatility * 10)
-                        data_obj['dynamic_threshold'] = self.BASE_DROP_PCT + (data_obj['volatility'] * Decimal('10'))
+                        # ОПТИМИЗИРОВАННАЯ ФОРМУЛА: BASE_DROP_PCT + (volatility * 4) - ВАРИАНТ 1 (Сбалансированный)
+                        data_obj['dynamic_threshold'] = self.BASE_DROP_PCT + (data_obj['volatility'] * Decimal('4'))
                         data_obj['dynamic_threshold'] = max(self.MIN_DROP_PCT, min(data_obj['dynamic_threshold'], self.MAX_DROP_PCT))
 
                     # Проверяем падение с НОВЫМИ ФИЛЬТРАМИ
@@ -612,6 +615,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
                         open_positions_count += 1
                         # Проверяем, есть ли уже позиция на этот символ
                         if pos["symbol"] == symbol:
+                            self.rejected_due_to_position_exists += 1
                             log_warning(self.user_id,
                                        f"⚠️ Пропускаем сигнал {symbol} - уже есть открытая позиция!",
                                        "FlashDropCatcher")
@@ -619,6 +623,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
             # Проверка 2: Достигнут ли лимит одновременных позиций
             if open_positions_count >= self.MAX_CONCURRENT_POSITIONS:
+                self.rejected_due_to_max_positions += 1
                 log_warning(self.user_id,
                            f"⚠️ Пропускаем сигнал {symbol} - достигнут лимит позиций ({open_positions_count}/{self.MAX_CONCURRENT_POSITIONS})",
                            "FlashDropCatcher")
@@ -690,6 +695,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
             # place_order() возвращает order_id (строку), а не словарь
             if order_result:
+                self.trades_opened += 1  # Увеличиваем счётчик успешно открытых сделок
                 self.position_active = True
                 self.entry_price = entry_price
                 self.entry_time = datetime.now()  # Сохраняем время открытия позиции
@@ -1098,7 +1104,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
         💓 HEARTBEAT МОНИТОРИНГ - Периодические уведомления в Telegram каждые 30 минут
         Показывает что стратегия активна и работает правильно
         """
-        heartbeat_interval = 1800  # 30 минут в секундах
+        heartbeat_interval = 3600  # 60 минут в секундах
 
         while self.is_running:
             try:
@@ -1107,6 +1113,9 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
                 if not self.is_running:
                     break
+
+                # КРИТИЧНО: Перезагружаем конфигурацию перед проверкой настройки heartbeat
+                await self._force_config_reload()
 
                 # Проверяем, включены ли heartbeat уведомления в Telegram
                 enable_heartbeat = self.get_config_value("enable_heartbeat_notifications", True)
@@ -1121,20 +1130,33 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 # Статистика за период (защита от деления на 0)
                 candles_per_minute = self.processed_candles_count / max(elapsed_minutes, 1) if elapsed_minutes > 0 else 0
 
+                # Формируем детализацию по падениям
+                drops_detail = ""
+                if self.detected_drops_count > 0:
+                    drops_detail += f"\n🎯 {hbold('Обнаружено падений:')} {self.detected_drops_count}"
+
+                    # Показываем причины отклонения, если были
+                    if self.rejected_due_to_position_exists > 0 or self.rejected_due_to_max_positions > 0:
+                        drops_detail += f"\n   ├─ ❌ Отклонено (уже есть позиция): {self.rejected_due_to_position_exists}"
+                        drops_detail += f"\n   ├─ ❌ Отклонено (лимит позиций): {self.rejected_due_to_max_positions}"
+                        drops_detail += f"\n   └─ ✅ Открыто сделок: {self.trades_opened}"
+                    else:
+                        drops_detail += f"\n   └─ ✅ Открыто сделок: {self.trades_opened}"
+                else:
+                    drops_detail += f"\n🎯 {hbold('Обнаружено падений:')} 0 (ожидаем качественные сигналы)"
+
                 # Формируем текст сообщения
                 message_text = (
                     f"{'='*40}\n"
                     f"💓 {hbold('HEARTBEAT - FLASH DROP CATCHER АКТИВНА')}\n"
                     f"{'='*40}\n\n"
-                    f"⏱️  {hbold('Время работы:')} {elapsed_minutes} минут\n"
-                    f"📊 {hbold('Отслеживается символов:')} {len(self._liquid_symbols)}\n"
-                    f"🕯️  {hbold('Обработано свечей:')} {self.processed_candles_count} ({candles_per_minute:.1f}/мин)\n"
-                    f"🎯 {hbold('Обнаружено падений:')} {self.detected_drops_count}\n"
+                    f"📊 {hbold('Отслеживается символов:')} {len(self._liquid_symbols)}"
+                    f"{drops_detail}\n"
                     f"📌 {hbold('Статус:')} {position_status}\n\n"
-                    f"⚙️  {hbold('Настройки:')}\n"
-                    f"  ▫️ Интервал свечей: {hcode(f'{self.TIMEFRAME_INTERVAL}m')}\n"
-                    f"  ▫️ Порог падения: {hcode(f'{float(self.BASE_DROP_PCT)*100:.1f}%-{float(self.MAX_DROP_PCT)*100:.1f}%')}\n"
-                    f"  ▫️ Множитель объёма: {hcode(f'{self.VOLUME_SPIKE_MIN}x')}\n"
+                    f"⚙️  {hbold('Текущие настройки:')}\n"
+                    f"  ▫️ Интервал анализа: {hcode(f'{self.TIMEFRAME_INTERVAL}m')}\n"
+                    f"  ▫️ Базовый порог: {hcode(f'{float(self.BASE_DROP_PCT)*100:.1f}%')} (для BTC/ETH: {hcode(f'{float(self.MIN_DROP_PCT)*100:.1f}%')}, макс: {hcode(f'{float(self.MAX_DROP_PCT)*100:.1f}%')})\n"
+                    f"  ▫️ Мин. всплеск объёма: {hcode(f'{self.VOLUME_SPIKE_MIN}x')}\n"
                     f"{'='*40}"
                 )
 
@@ -1161,6 +1183,9 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 self.last_heartbeat_time = datetime.now()
                 self.processed_candles_count = 0
                 self.detected_drops_count = 0
+                self.rejected_due_to_position_exists = 0
+                self.rejected_due_to_max_positions = 0
+                self.trades_opened = 0
 
             except asyncio.CancelledError:
                 log_info(self.user_id, "Heartbeat мониторинг остановлен", "FlashDropCatcher")
