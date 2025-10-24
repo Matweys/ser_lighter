@@ -409,6 +409,11 @@ class UserSession:
                 # Запускаем координатор (он сам запустит Бот 1)
                 await coordinator.start()
 
+                # КРИТИЧНО: Устанавливаем ссылку на координатор в каждой стратегии
+                # Это необходимо для проверки can_bot_trade() перед открытием позиций
+                for bot_strategy in bot_strategies:
+                    bot_strategy.coordinator = coordinator
+
                 # Сохраняем координатор
                 self.coordinators[symbol] = coordinator
 
@@ -1267,6 +1272,11 @@ class UserSession:
                 # Запускаем координатор с указанием правильного бота
                 log_info(self.user_id, f"🎯 Передаю в координатор bot_with_position={bot_with_position}", module_name=__name__)
                 await coordinator.start(initial_bot_priority=bot_with_position)
+
+                # КРИТИЧНО: Устанавливаем ссылку на координатор в каждой стратегии
+                # Это необходимо для проверки can_bot_trade() перед открытием позиций
+                for bot_strategy in bot_strategies:
+                    bot_strategy.coordinator = coordinator
 
                 # Сохраняем координатор
                 self.coordinators[symbol] = coordinator

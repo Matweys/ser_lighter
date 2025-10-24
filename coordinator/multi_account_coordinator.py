@@ -424,6 +424,58 @@ class MultiAccountCoordinator:
 
             self.active_bots.discard(priority)
 
+    async def can_bot_trade(self, priority: int) -> tuple[bool, str]:
+        """
+        Проверяет, может ли бот с данным приоритетом открывать НОВУЮ позицию.
+
+        КРИТИЧНО: Вызывается ПЕРЕД КАЖДЫМ открытием позиции!
+
+        Логика:
+        - Бот 1 всегда может торговать
+        - Бот 2 может торговать только если Бот 1 застрял (PnL < порога)
+        - Бот 3 может торговать только если Боты 1 И 2 застряли
+
+        Args:
+            priority: Приоритет бота (1, 2 или 3)
+
+        Returns:
+            tuple[bool, str]: (можно ли торговать, причина если нельзя)
+        """
+        # Бот 1 всегда может торговать
+        if priority == 1:
+            return True, ""
+
+        # Для ботов 2 и 3 проверяем состояние более приоритетных ботов
+        # КРИТИЧНО: Обновляем статусы ПЕРЕД проверкой (получаем актуальный PnL)
+        await self._update_statuses()
+
+        # Проверяем ВСЕ более приоритетные боты
+        for higher_priority in range(1, priority):
+            higher_bot = self.bots[higher_priority]
+
+            # Если более приоритетный бот свободен → текущий бот НЕ должен торговать
+            if higher_bot.status == 'free':
+                reason = f"Бот {higher_priority} свободен (нет позиции) → Бот {priority} НЕ должен открывать новые позиции"
+                log_warning(self.user_id,
+                           f"⛔ {reason}",
+                           "Coordinator")
+                return False, reason
+
+            # Если более приоритетный бот НЕ застрял (active) → текущий бот НЕ должен торговать
+            if higher_bot.status == 'active':
+                pnl_percent = self._calculate_pnl_percent(higher_bot.strategy)
+                reason = f"Бот {higher_priority} НЕ застрял (PnL={pnl_percent:.1f}%, статус={higher_bot.status}) → Бот {priority} НЕ должен открывать новые позиции"
+                log_warning(self.user_id,
+                           f"⛔ {reason}",
+                           "Coordinator")
+                return False, reason
+
+        # Все более приоритетные боты застряли → можно торговать
+        log_info(self.user_id,
+                f"✅ Бот {priority} может торговать: все более приоритетные боты застряли",
+                "Coordinator")
+        return True, ""
+
     def _calculate_pnl_percent(self, strategy: SignalScalperStrategy) -> Decimal:
         """
         Рассчитывает PnL в процентах от маржи.

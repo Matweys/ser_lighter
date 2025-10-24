@@ -46,6 +46,9 @@ class SignalScalperStrategy(BaseStrategy):
         self.close_reason: Optional[str] = None  # Причина закрытия позиции для передачи в _handle_order_filled
         self._last_known_price: Optional[Decimal] = None  # Последняя известная цена для расчета PnL в координаторе
 
+        # Multi-Account координатор (для проверки условий торговли)
+        self.coordinator: Optional["MultiAccountCoordinator"] = None  # Устанавливается извне после создания
+
         # Стоп-лосс управление
         self.stop_loss_order_id: Optional[str] = None
         self.stop_loss_price: Optional[Decimal] = None
@@ -53,7 +56,7 @@ class SignalScalperStrategy(BaseStrategy):
         # Система подтверждения сигналов и кулдауна
         self.last_signal: Optional[str] = None  # Последний полученный сигнал
         self.signal_confirmation_count = 0  # Счетчик одинаковых сигналов подряд
-        self.required_confirmations = 3  # Требуемое количество подтверждений
+        self.required_confirmations = 2  # Требуемое количество подтверждений
         self.last_trade_close_time: Optional[float] = None  # Время закрытия последней сделки
         self.cooldown_seconds = 60  # Кулдаун в секундах (1 минута)
         self.last_trade_was_loss = False  # Была ли последняя сделка убыточной
@@ -90,7 +93,7 @@ class SignalScalperStrategy(BaseStrategy):
         # Легко удалить: удалите этот блок и связанные методы
         # ============================================================
         self.stagnation_detector_enabled = False  # Включен ли детектор
-        self.stagnation_check_interval = 30  # Время наблюдения в секундах (1 минута)
+        self.stagnation_check_interval = 180  # Время наблюдения в секундах (1 минута)
         self.stagnation_ranges = []  # Список диапазонов {"min": -15.0, "max": -20.0}
         self.stagnation_averaging_multiplier = Decimal('1.0')  # Множитель усреднения
         self.stagnation_averaging_leverage = 1  # Плечо для усреднения (x1)
@@ -500,6 +503,16 @@ class SignalScalperStrategy(BaseStrategy):
                       f"⚠️ Позиция уже активна ({self.active_direction}). Новый сигнал {direction} ИГНОРИРУЕТСЯ.",
                       "SignalScalper")
             return
+
+        # КРИТИЧНО: Проверка координатора Multi-Account ПЕРЕД открытием позиции
+        # Бот 2 и Бот 3 могут торговать только если более приоритетные боты застряли
+        if self.coordinator:
+            can_trade, reason = await self.coordinator.can_bot_trade(self.account_priority)
+            if not can_trade:
+                log_warning(self.user_id,
+                           f"⛔ [КООРДИНАТОР БЛОКИРОВКА] Бот {self.account_priority} НЕ может открыть позицию: {reason}",
+                           "SignalScalper")
+                return
 
         self.is_waiting_for_trade = True
 
@@ -1333,7 +1346,7 @@ class SignalScalperStrategy(BaseStrategy):
 
         # После убыточной сделки требуем больше подтверждений
         if self.last_trade_was_loss:
-            required = max(required, 3)  # После убытка требуем минимум 3 подтверждения
+            required = max(required, 2)  # После убытка требуем минимум 3 подтверждения
 
         # НОВАЯ ЛОГИКА: После реверса требуем специальное количество подтверждений
         if self.after_reversal_mode:

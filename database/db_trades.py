@@ -1600,9 +1600,85 @@ class _DatabaseManager:
                 return order_dict
             return None
 
+    async def has_pending_close_order(self, user_id: int, symbol: str, bot_priority: int = 1) -> bool:
+        """
+        ПРАВИЛЬНЫЙ МЕТОД для WebSocket: Проверяет наличие ЛЮБОГО CLOSE ордера (активного или недавно исполненного).
+
+        Используется чтобы отличить:
+        - Наше закрытие: бот создал CLOSE ордер → WebSocket видит size=0 → всё ок
+        - Ручное закрытие: пользователь закрыл на бирже → WebSocket видит size=0 → тревога!
+
+        Args:
+            user_id: ID пользователя
+            symbol: Символ торговли
+            bot_priority: Приоритет бота (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
+
+        Returns:
+            bool: True если есть наш CLOSE ордер (PENDING или недавно FILLED < 30 сек)
+        """
+        try:
+            query = """
+            SELECT 1
+            FROM orders
+            WHERE user_id = $1
+              AND symbol = $2
+              AND bot_priority = $3
+              AND order_purpose = 'CLOSE'
+              AND (
+                  status IN ('PENDING', 'NEW', 'PARTIALLY_FILLED')
+                  OR (status = 'FILLED' AND filled_at >= NOW() - INTERVAL '30 seconds')
+              )
+            LIMIT 1
+            """
+
+            result = await self._execute_query(query, (user_id, symbol, bot_priority), fetch_one=True)
+            return result is not None
+
         except Exception as e:
-            log_error(user_id, f"Ошибка получения OPEN ордера для {symbol} Bot_{bot_priority}: {e}", module_name='database')
-            return None
+            log_error(user_id, f"Ошибка проверки CLOSE ордера для {symbol} Bot_{bot_priority}: {e}", module_name='database')
+            return False
+
+    async def has_unclosed_position(self, user_id: int, symbol: str, bot_priority: int = 1) -> bool:
+        """
+        Проверяет наличие незакрытой позиции: есть OPEN FILLED, но нет CLOSE FILLED.
+
+        Используется для детекции ручного закрытия пользователем.
+
+        Args:
+            user_id: ID пользователя
+            symbol: Символ торговли
+            bot_priority: Приоритет бота (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
+
+        Returns:
+            bool: True если позиция открыта но не закрыта
+        """
+        try:
+            query = """
+            SELECT 1
+            FROM orders
+            WHERE user_id = $1
+              AND symbol = $2
+              AND bot_priority = $3
+              AND order_purpose = 'OPEN'
+              AND status = 'FILLED'
+              AND NOT EXISTS (
+                  SELECT 1 FROM orders AS close_orders
+                  WHERE close_orders.user_id = orders.user_id
+                    AND close_orders.symbol = orders.symbol
+                    AND close_orders.bot_priority = orders.bot_priority
+                    AND close_orders.order_purpose = 'CLOSE'
+                    AND close_orders.status = 'FILLED'
+                    AND close_orders.created_at > orders.filled_at
+              )
+            LIMIT 1
+            """
+
+            result = await self._execute_query(query, (user_id, symbol, bot_priority), fetch_one=True)
+            return result is not None
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка проверки незакрытой позиции для {symbol} Bot_{bot_priority}: {e}", module_name='database')
+            return False
 
     async def get_all_open_positions(self, user_id: int) -> List[Dict[str, Any]]:
         """

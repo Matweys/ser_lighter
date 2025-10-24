@@ -676,27 +676,49 @@ class DataFeedHandler:
 
                 # КРИТИЧНО: Проверяем ручное закрытие позиции (size=0)
                 if size == Decimal('0'):
-                    # Позиция закрыта! Проверяем БД для ЭТОГО account_priority
-                    open_order = await db_manager.get_open_order_for_position(
+                    # Позиция закрыта! Проверяем: это МЫ или ПОЛЬЗОВАТЕЛЬ?
+
+                    # Шаг 1: Проверяем наличие НАШИХ CLOSE ордеров
+                    has_our_close = await db_manager.has_pending_close_order(
                         self.user_id,
                         symbol,
-                        bot_priority=self.account_priority  # Проверяем только СВОЙ приоритет!
+                        bot_priority=self.account_priority
                     )
 
-                    if open_order:
-                        log_warning(self.user_id,
-                                   f"⚠️ ОБНАРУЖЕНО РУЧНОЕ ЗАКРЫТИЕ через WebSocket (Bot_{self.account_priority}): "
-                                   f"Позиция {symbol} закрыта (size=0), но в БД есть открытый ордер!",
-                                   module_name=__name__)
-
-                        # Публикуем событие ручного закрытия с указанием bot_priority
-                        closed_event = PositionClosedEvent(
-                            user_id=self.user_id,
-                            symbol=symbol,
-                            bot_priority=self.account_priority,  # КРИТИЧНО: Указываем какой бот!
-                            closed_manually=True  # Флаг ручного закрытия
+                    if has_our_close:
+                        # Это ОЖИДАЕМОЕ ЗАКРЫТИЕ - мы сами создали CLOSE ордер
+                        log_debug(self.user_id,
+                                 f"✅ [ОЖИДАЕМОЕ ЗАКРЫТИЕ] Позиция {symbol} закрыта нашим CLOSE ордером (Bot_{self.account_priority})",
+                                 module_name=__name__)
+                        # НЕ публикуем событие ручного закрытия - это наш ордер!
+                    else:
+                        # Шаг 2: Нет наших CLOSE ордеров, проверяем есть ли незакрытая позиция
+                        has_unclosed = await db_manager.has_unclosed_position(
+                            self.user_id,
+                            symbol,
+                            bot_priority=self.account_priority
                         )
-                        await self.event_bus.publish(closed_event)
+
+                        if has_unclosed:
+                            # РУЧНОЕ ЗАКРЫТИЕ - есть OPEN без CLOSE, пользователь закрыл на бирже!
+                            log_warning(self.user_id,
+                                       f"⚠️ ОБНАРУЖЕНО РУЧНОЕ ЗАКРЫТИЕ через WebSocket (Bot_{self.account_priority}): "
+                                       f"Позиция {symbol} закрыта (size=0), есть незакрытый OPEN ордер в БД!",
+                                       module_name=__name__)
+
+                            # Публикуем событие ручного закрытия
+                            closed_event = PositionClosedEvent(
+                                user_id=self.user_id,
+                                symbol=symbol,
+                                bot_priority=self.account_priority,
+                                closed_manually=True
+                            )
+                            await self.event_bus.publish(closed_event)
+                        else:
+                            # Нет ни CLOSE ни незакрытого OPEN - позиция уже обработана
+                            log_debug(self.user_id,
+                                     f"ℹ️ Позиция {symbol} закрыта (size=0), позиция уже полностью обработана в БД (Bot_{self.account_priority})",
+                                     module_name=__name__)
 
                 # Публикуем обычное событие обновления позиции (для управления подписками)
                 position_event = PositionUpdateEvent(

@@ -720,8 +720,8 @@ class FlashDropCatcherStrategy(BaseStrategy):
                     f"📈 Открываем LONG: {self.symbol}, размер: {position_size}, плечо: {leverage}x",
                     "FlashDropCatcher")
 
-            order_result = await self.api.place_order(
-                symbol=self.symbol,
+            # ИСПРАВЛЕНИЕ: Используем _place_order из базового класса для сохранения в БД!
+            order_result = await self._place_order(
                 side="Buy",
                 order_type="Market",
                 qty=Decimal(str(position_size))
@@ -982,9 +982,8 @@ class FlashDropCatcherStrategy(BaseStrategy):
         try:
             log_info(self.user_id, f"🔄 Закрытие позиции: {self.symbol}, причина: {reason}", "FlashDropCatcher")
 
-            # Закрываем позицию на бирже
-            close_result = await self.api.place_order(
-                symbol=self.symbol,
+            # ИСПРАВЛЕНИЕ: Используем _place_order из базового класса для сохранения в БД!
+            close_result = await self._place_order(
                 side="Sell",  # Закрываем LONG через Sell
                 order_type="Market",
                 qty=Decimal(str(self.position_size)),
@@ -1062,6 +1061,10 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 self.highest_pnl = Decimal('0')
                 self.current_trailing_level = 0
                 self.last_trailing_notification_level = -1
+
+                # ИСПРАВЛЕНИЕ: Сбрасываем symbol в "ALL" чтобы стратегия могла входить в новые сделки!
+                self.symbol = "ALL"
+                self.active_direction = None
 
                 log_info(self.user_id, f"✅ Позиция закрыта. PnL: ${final_pnl:.2f}", "FlashDropCatcher")
 

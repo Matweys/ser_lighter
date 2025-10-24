@@ -282,12 +282,15 @@ class BaseStrategy(ABC):
             log_error(self.user_id, f"Критическая ошибка при установке плеча для {self.symbol}: {e}",
                       module_name=__name__)
 
-    async def _await_order_fill(self, order_id: str, side: str, qty: Decimal, max_retries: int = 15,
-                                delay: float = 1.5) -> bool:
+    async def _await_order_fill(self, order_id: str, side: str, qty: Decimal, max_retries: int = 10,
+                                delay: float = 0.3) -> bool:
         """
         Ожидает исполнения ордера, опрашивая API. При успехе, СОЗДАЕТ событие
         и НАПРЯМУЮ вызывает обработчик _handle_order_filled.
         Является единственным источником правды об исполнении ордера.
+
+        ОПТИМИЗИРОВАНО: delay=0.3s (было 1.5s), max_retries=10 (было 15).
+        Sleep перенесен в конец цикла для мгновенной первой проверки.
         """
         log_info(self.user_id,
                  f"Ожидание исполнения ордера {order_id} через API-polling (до {int(max_retries * delay)} сек)...",
@@ -304,7 +307,7 @@ class BaseStrategy(ABC):
                     log_info(self.user_id, f"[БЫСТРЫЙ ВЫХОД] Стратегия больше не ждёт ордер {order_id}, прекращаем API-polling", module_name=__name__)
                     return True
 
-                await asyncio.sleep(delay)
+                # ОПТИМИЗАЦИЯ: Сначала проверяем статус, потом спим (было наоборот)
                 order_status = await self.api.get_order_status(order_id)
 
                 if order_status:
@@ -344,8 +347,15 @@ class BaseStrategy(ABC):
                                   module_name=__name__)
                         return False
 
+                # ОПТИМИЗАЦИЯ: Sleep перенесен в конец цикла - не спим если это последняя попытка
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(delay)
+
             except Exception as e:
                 log_error(self.user_id, f"Ошибка при ожидании исполнения ордера {order_id}: {e}", module_name=__name__)
+                # Спим даже при ошибке, чтобы не спамить запросы
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(delay)
 
         log_error(self.user_id, f"Таймаут ожидания исполнения ордера {order_id}. Отменяю ордер для безопасности.",
                   module_name=__name__)
