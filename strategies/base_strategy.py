@@ -297,17 +297,27 @@ class BaseStrategy(ABC):
                  module_name=__name__)
         for attempt in range(max_retries):
             try:
-                # БЫСТРАЯ ПРОВЕРКА: Если ордер уже обработан через WebSocket - выходим немедленно
-                if hasattr(self, 'processed_orders') and order_id in self.processed_orders:
-                    log_info(self.user_id, f"[БЫСТРЫЙ ВЫХОД] Ордер {order_id} уже обработан WebSocket'ом, прекращаем API-polling", module_name=__name__)
+                # КРИТИЧЕСКАЯ ПРОВЕРКА #1: Проверяем статус ордера в БД (САМАЯ БЫСТРАЯ проверка!)
+                # Если WebSocket уже обработал ордер, он будет помечен как FILLED в БД
+                from database.db_trades import db_manager
+                db_order = await db_manager.get_order_by_exchange_id(order_id)
+                if db_order and db_order.get('status') == 'FILLED':
+                    log_info(self.user_id,
+                            f"[БЫСТРЫЙ ВЫХОД] Ордер {order_id} уже FILLED в БД (обработан WebSocket'ом), прекращаем API-polling",
+                            module_name=__name__)
                     return True
 
-                # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: Если стратегия больше не ждёт ордер (is_waiting_for_trade=False)
+                # БЫСТРАЯ ПРОВЕРКА #2: Если ордер уже обработан через processed_orders
+                if hasattr(self, 'processed_orders') and order_id in self.processed_orders:
+                    log_info(self.user_id, f"[БЫСТРЫЙ ВЫХОД] Ордер {order_id} в processed_orders, прекращаем API-polling", module_name=__name__)
+                    return True
+
+                # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА #3: Если стратегия больше не ждёт ордер (is_waiting_for_trade=False)
                 if hasattr(self, 'is_waiting_for_trade') and not self.is_waiting_for_trade:
                     log_info(self.user_id, f"[БЫСТРЫЙ ВЫХОД] Стратегия больше не ждёт ордер {order_id}, прекращаем API-polling", module_name=__name__)
                     return True
 
-                # ОПТИМИЗАЦИЯ: Сначала проверяем статус, потом спим (было наоборот)
+                # ПРОВЕРКА API: Проверяем статус через API (может быть медленнее из-за задержки биржи)
                 order_status = await self.api.get_order_status(order_id)
 
                 if order_status:

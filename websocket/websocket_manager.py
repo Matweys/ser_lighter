@@ -418,7 +418,7 @@ class DataFeedHandler:
         try:
             if position_size > 0:
                 # Позиция активна (открыта или увеличена), подписываемся на данные
-                log_info(self.user_id,
+                log_debug(self.user_id,
                          f"Позиция по {symbol} активна (размер: {position_size}), подписываюсь на обновления цены.",
                          module_name=__name__)
                 await self.global_ws_manager.subscribe_symbol(self.user_id, symbol)

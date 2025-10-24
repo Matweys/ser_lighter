@@ -975,22 +975,41 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
                     if closed_pnl_data:
                         # Используем ТОЧНЫЕ данные от биржи
-                        final_pnl = closed_pnl_data['closedPnl']  # Уже с учетом ВСЕХ комиссий!
-                        exit_price = closed_pnl_data.get('avgExitPrice', Decimal('0'))
+                        final_pnl = closed_pnl_data['closedPnl']  # Чистый PnL (с вычетом комиссии)
+                        entry_price_from_exchange = closed_pnl_data.get('avgEntryPrice', Decimal('0'))
+                        closed_size = closed_pnl_data.get('closedSize', Decimal('0'))
 
-                        # Получаем комиссию из closedPnl данных
-                        # closedPnl уже учитывает комиссии, поэтому извлекаем их отдельно
-                        gross_pnl = (exit_price - closed_pnl_data.get('avgEntryPrice', Decimal('0'))) * closed_pnl_data.get('closedSize', Decimal('0'))
-                        commission = gross_pnl - final_pnl  # Разница = комиссия
+                        # КРИТИЧНО: НЕ используем avgExitPrice из API - он может быть неточным!
+                        # Вычисляем РЕАЛЬНУЮ цену выхода из чистого PnL
+                        #
+                        # Формула для LONG (FlashDropCatcher всегда LONG):
+                        #   net_pnl = (exit_price - entry_price) * size - commission
+                        #   exit_price = entry_price + (net_pnl + commission) / size
 
-                        log_info(self.user_id,
-                                f"✅ [BYBIT PNL] Получен ТОЧНЫЙ PnL от биржи: "
-                                f"closedPnl={final_pnl:.4f} USDT, "
-                                f"avgEntryPrice={closed_pnl_data['avgEntryPrice']:.4f}, "
-                                f"avgExitPrice={exit_price:.4f}, "
-                                f"closedSize={closed_pnl_data['closedSize']}, "
-                                f"commission={commission:.4f}",
-                                "FlashDropCatcher")
+                        if closed_size > 0 and entry_price_from_exchange > 0:
+                            # Используем РЕАЛЬНУЮ комиссию из конфигурации
+                            from core.settings_config import EXCHANGE_FEES
+                            from core.enums import ExchangeType
+                            taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')  # 0.1% -> 0.001
+
+                            # Общая комиссия = вход (taker) + выход (taker) = 0.1% + 0.1% = 0.2%
+                            position_value = entry_price_from_exchange * closed_size
+                            estimated_commission = position_value * taker_fee_rate * Decimal('2')  # Вход + Выход
+
+                            # Вычисляем цену выхода с учетом комиссии (для LONG)
+                            # exit_price = entry_price + (net_pnl + commission) / size
+                            exit_price = entry_price_from_exchange + (final_pnl + estimated_commission) / closed_size
+                            commission = estimated_commission
+
+                            log_info(self.user_id,
+                                    f"💰 Расчет закрытия: Вход=${entry_price_from_exchange:.4f}, PnL=${final_pnl:.4f}, "
+                                    f"Размер={closed_size}, Комиссия≈${commission:.4f} → Выход=${exit_price:.4f}",
+                                    "FlashDropCatcher")
+                        else:
+                            log_warning(self.user_id,
+                                       f"⚠️ Не удалось вычислить цену выхода: size={closed_size}, entry={entry_price_from_exchange}",
+                                       "FlashDropCatcher")
+                            exit_price = Decimal('0')
                     else:
                         log_warning(self.user_id, f"⚠️ [BYBIT PNL] Не удалось получить closedPnL от биржи, используем unrealisedPnl", "FlashDropCatcher")
                         # ФОЛБЭК: Используем unrealisedPnl из позиции
@@ -1296,10 +1315,36 @@ class FlashDropCatcherStrategy(BaseStrategy):
             try:
                 closed_pnl_data = await self.api.get_closed_pnl(self.symbol, limit=1)
                 if closed_pnl_data:
-                    final_pnl = closed_pnl_data['closedPnl']
-                    exit_price = closed_pnl_data.get('avgExitPrice', Decimal('0'))
-                    gross_pnl = (exit_price - closed_pnl_data.get('avgEntryPrice', Decimal('0'))) * closed_pnl_data.get('closedSize', Decimal('0'))
-                    commission = gross_pnl - final_pnl
+                    final_pnl = closed_pnl_data['closedPnl']  # Чистый PnL (с вычетом комиссии)
+                    entry_price_from_exchange = closed_pnl_data.get('avgEntryPrice', Decimal('0'))
+                    closed_size = closed_pnl_data.get('closedSize', Decimal('0'))
+
+                    # КРИТИЧНО: НЕ используем avgExitPrice из API - он может быть неточным!
+                    # Вычисляем РЕАЛЬНУЮ цену выхода из чистого PnL (формула для LONG)
+
+                    if closed_size > 0 and entry_price_from_exchange > 0:
+                        # Используем РЕАЛЬНУЮ комиссию из конфигурации
+                        from core.settings_config import EXCHANGE_FEES
+                        from core.enums import ExchangeType
+                        taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')  # 0.1% -> 0.001
+
+                        # Общая комиссия = вход (taker) + выход (taker) = 0.1% + 0.1% = 0.2%
+                        position_value = entry_price_from_exchange * closed_size
+                        estimated_commission = position_value * taker_fee_rate * Decimal('2')  # Вход + Выход
+
+                        # Вычисляем цену выхода с учетом комиссии (для LONG)
+                        # exit_price = entry_price + (net_pnl + commission) / size
+                        exit_price = entry_price_from_exchange + (final_pnl + estimated_commission) / closed_size
+                        commission = estimated_commission
+
+                        log_info(self.user_id,
+                                f"💰 Расчет закрытия: Вход=${entry_price_from_exchange:.4f}, PnL=${final_pnl:.4f}, "
+                                f"Размер={closed_size}, Комиссия≈${commission:.4f} → Выход=${exit_price:.4f}",
+                                "FlashDropCatcher")
+                    else:
+                        log_warning(self.user_id,
+                                   f"⚠️ Не удалось вычислить цену выхода: size={closed_size}, entry={entry_price_from_exchange}",
+                                   "FlashDropCatcher")
             except Exception as api_error:
                 log_error(self.user_id, f"❌ Ошибка получения closedPnL: {api_error}", "FlashDropCatcher")
 

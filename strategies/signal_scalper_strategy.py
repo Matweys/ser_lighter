@@ -1942,19 +1942,63 @@ class SignalScalperStrategy(BaseStrategy):
                    "SignalScalper")
 
         try:
-            # Получаем ТОЧНЫЙ PnL от биржи
+            # Получаем ТОЧНЫЙ PnL от биржи и вычисляем РЕАЛЬНУЮ цену выхода
             final_pnl = Decimal('0')
             exit_price = Decimal('0')
             commission = Decimal('0')
+            closed_size = Decimal('0')
 
             try:
                 closed_pnl_data = await self.api.get_closed_pnl(self.symbol, limit=1)
                 if closed_pnl_data:
-                    final_pnl = closed_pnl_data['closedPnl']
-                    exit_price = closed_pnl_data.get('avgExitPrice', Decimal('0'))
+                    final_pnl = closed_pnl_data['closedPnl']  # Чистый PnL (с вычетом комиссии)
                     entry_price_from_exchange = closed_pnl_data.get('avgEntryPrice', Decimal('0'))
-                    gross_pnl = (exit_price - entry_price_from_exchange) * closed_pnl_data.get('closedSize', Decimal('0')) if self.active_direction == "LONG" else (entry_price_from_exchange - exit_price) * closed_pnl_data.get('closedSize', Decimal('0'))
-                    commission = gross_pnl - final_pnl
+                    closed_size = closed_pnl_data.get('closedSize', Decimal('0'))
+
+                    # КРИТИЧНО: НЕ используем avgExitPrice из API - он может быть неточным!
+                    # Вычисляем РЕАЛЬНУЮ цену выхода из чистого PnL
+                    #
+                    # Формула для LONG:
+                    #   net_pnl = (exit_price - entry_price) * size - commission
+                    #   exit_price = entry_price + (net_pnl + commission) / size
+                    #
+                    # Формула для SHORT:
+                    #   net_pnl = (entry_price - exit_price) * size - commission
+                    #   exit_price = entry_price - (net_pnl + commission) / size
+                    #
+                    # НО У НАС НЕТ ТОЧНОЙ КОМИССИИ! Используем приблизительную (0.055% * 2 = 0.11%)
+                    # commission_rate = Decimal('0.00055') * 2  # Maker + Taker
+                    # Лучше используем формулу БЕЗ комиссии, т.к. closedPnL уже чистый
+
+                    if closed_size > 0 and entry_price_from_exchange > 0:
+                        # Используем РЕАЛЬНУЮ комиссию из конфигурации
+                        from core.settings_config import EXCHANGE_FEES
+                        from core.enums import ExchangeType
+                        taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')  # 0.1% -> 0.001
+
+                        # Общая комиссия = вход (taker) + выход (taker) = 0.1% + 0.1% = 0.2%
+                        position_value = entry_price_from_exchange * closed_size
+                        estimated_commission = position_value * taker_fee_rate * Decimal('2')  # Вход + Выход
+
+                        # Вычисляем цену выхода с учетом комиссии
+                        if self.active_direction == "LONG":
+                            # exit_price = entry_price + (net_pnl + commission) / size
+                            exit_price = entry_price_from_exchange + (final_pnl + estimated_commission) / closed_size
+                        else:  # SHORT
+                            # exit_price = entry_price - (net_pnl + commission) / size
+                            exit_price = entry_price_from_exchange - (final_pnl + estimated_commission) / closed_size
+
+                        commission = estimated_commission
+
+                        log_info(self.user_id,
+                                f"💰 Расчет закрытия: Вход=${entry_price_from_exchange:.4f}, PnL=${final_pnl:.4f}, "
+                                f"Размер={closed_size}, Комиссия≈${commission:.4f} → Выход=${exit_price:.4f}",
+                                "SignalScalper")
+                    else:
+                        log_warning(self.user_id,
+                                   f"⚠️ Не удалось вычислить цену выхода: size={closed_size}, entry={entry_price_from_exchange}",
+                                   "SignalScalper")
+
             except Exception as api_error:
                 log_error(self.user_id, f"❌ Ошибка получения closedPnL: {api_error}", "SignalScalper")
 

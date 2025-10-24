@@ -2049,6 +2049,8 @@ class _DatabaseManager:
             current_time = datetime.now(moscow_tz)
 
             # Обновляем метаданные OPEN ордера
+            # ИСПРАВЛЕНО: Используем CAST для явного приведения типов, чтобы избежать ошибки
+            # "could not determine data type of parameter $3" когда передается None
             query = """
             UPDATE orders
             SET
@@ -2059,11 +2061,11 @@ class _DatabaseManager:
                     COALESCE(metadata, '{}'::jsonb),
                     '{close_info}',
                     jsonb_build_object(
-                        'close_price', $3,
-                        'close_size', $4,
-                        'realized_pnl', $5,
-                        'close_reason', $6,
-                        'closed_at', $7
+                        'close_price', CAST($3 AS DOUBLE PRECISION),
+                        'close_size', CAST($4 AS DOUBLE PRECISION),
+                        'realized_pnl', CAST($5 AS DOUBLE PRECISION),
+                        'close_reason', $6::TEXT,
+                        'closed_at', $7::TEXT
                     )
                 )
             WHERE order_id = $1
