@@ -135,7 +135,7 @@ class SignalScalperStrategy(BaseStrategy):
                 user_id=self.user_id,
                 symbol=self.symbol,
                 lookback=50,
-                threshold=0.0008  # 0.08% порог для всплеска
+                threshold=0.0005  # 0.05% порог для всплеска
             )
             # Настраиваем временные окна для анализа (по умолчанию: 3, 5, 10 минут)
             # Можно изменить на 3, 7, 15 для более долгосрочного анализа
