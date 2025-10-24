@@ -91,9 +91,6 @@ class FlashDropCatcherStrategy(BaseStrategy):
         # Hard stop loss при -15$ (из конфига)
         self.HARD_STOP_LOSS_USDT = Decimal('-15.0')
 
-        # Мониторинг позиции
-        self._position_monitor_task: Optional[asyncio.Task] = None
-
         # Список отфильтрованных ликвидных символов
         self._liquid_symbols: List[str] = []
 
@@ -146,9 +143,8 @@ class FlashDropCatcherStrategy(BaseStrategy):
         # Загружаем конфигурацию
         await self._load_config()
 
-        # КРИТИЧНО: НЕ подписываемся напрямую на PRICE_UPDATE!
-        # BaseStrategy уже подписан через handle_event → _handle_price_update_wrapper → _handle_price_update
-        # Дублирующая подписка вызывает конфликты и лишние вызовы
+        # КРИТИЧНО: Подписываемся на обновления цены для мониторинга активной позиции
+        await self.event_bus.subscribe(EventType.PRICE_UPDATE, self.handle_price_update, user_id=self.user_id)
 
         # КРИТИЧНО: Подписываемся на ручное закрытие позиции
         from core.events import PositionClosedEvent
@@ -186,14 +182,6 @@ class FlashDropCatcherStrategy(BaseStrategy):
             self._heartbeat_task.cancel()
             try:
                 await self._heartbeat_task
-            except asyncio.CancelledError:
-                pass
-
-        # Останавливаем мониторинг позиции
-        if self._position_monitor_task and not self._position_monitor_task.done():
-            self._position_monitor_task.cancel()
-            try:
-                await self._position_monitor_task
             except asyncio.CancelledError:
                 pass
 
@@ -778,9 +766,6 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 self.current_trailing_level = 0
                 self.last_trailing_notification_level = -1
 
-                # Запускаем мониторинг позиции
-                self._position_monitor_task = asyncio.create_task(self._monitor_position())
-
                 log_info(self.user_id, f"✅ LONG позиция открыта по РЕАЛЬНОЙ цене {self.entry_price:.8f}", "FlashDropCatcher")
 
                 # Уведомление
@@ -819,19 +804,6 @@ class FlashDropCatcherStrategy(BaseStrategy):
         except Exception as e:
             log_error(self.user_id, f"Ошибка открытия LONG позиции: {e}", "FlashDropCatcher")
 
-    async def _monitor_position(self):
-        """Мониторит активную позицию для выхода по trailing stop или stop loss"""
-        try:
-            log_info(self.user_id, "🎯 Запущен мониторинг позиции", "FlashDropCatcher")
-
-            while self.is_running and self.position_active:
-                await asyncio.sleep(1)  # Проверка каждую секунду
-
-        except asyncio.CancelledError:
-            log_info(self.user_id, "Мониторинг позиции отменен", "FlashDropCatcher")
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка мониторинга позиции: {e}", "FlashDropCatcher")
-
     async def _handle_price_update(self, event: PriceUpdateEvent):
         """Внутренний метод обработки обновления цены (вызывается из BaseStrategy)"""
         await self.handle_price_update(event)
@@ -851,7 +823,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
             # Рассчитываем текущий PnL
             current_pnl = await self._calculate_current_pnl(current_price)
 
-            # Проверка 1: Hard stop loss при -15$
+            # Проверка 1: Hard stop loss при -500$
             if current_pnl <= self.HARD_STOP_LOSS_USDT:
                 log_warning(self.user_id,
                            f"🛑 HARD STOP LOSS! PnL={current_pnl:.2f}$ достиг {self.HARD_STOP_LOSS_USDT}$",

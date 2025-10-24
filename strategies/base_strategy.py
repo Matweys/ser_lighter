@@ -789,16 +789,70 @@ class BaseStrategy(ABC):
                            reduce_only: bool = False) -> Optional[str]:
         """
         Универсальное размещение ордера через API. Возвращает orderId или None.
+
+        КРИТИЧНО: Сохраняет ордер в БД ПЕРЕД отправкой на биржу (предотвращает race condition с WebSocket)
         """
         try:
             if not self.api:
                 log_error(self.user_id, "API клиент не инициализирован в стратегии.", module_name=__name__)
                 return None
 
+            from database.db_trades import db_manager
+            import time
+            import random
+
+            # Генерируем уникальный client_order_id для раннего сохранения
+            timestamp_ms = int(time.time() * 1000)
+            random_suffix = random.randint(1000, 9999)
+            client_order_id = f"bot{self.account_priority}_{self.symbol}_{timestamp_ms}_{random_suffix}"
+
+            # Определяем order_purpose ДО размещения
+            if reduce_only:
+                order_purpose = 'CLOSE'
+            else:
+                has_active_position = getattr(self, 'position_active', False)
+                if has_active_position:
+                    order_purpose = 'AVERAGING'
+                else:
+                    order_purpose = 'OPEN'
+
+            # Получаем параметры
+            leverage = int(self.get_config_value("leverage", 1))
+            trade_id = getattr(self, 'active_trade_db_id', None)
+
+            # ШАГ 1: СОХРАНЯЕМ В БД ПЕРЕД отправкой на биржу (order_id пока неизвестен)
+            try:
+                db_id = await db_manager.save_order_full(
+                    user_id=self.user_id,
+                    symbol=self.symbol,
+                    side=side,
+                    order_type=order_type,
+                    quantity=qty,
+                    price=price or Decimal('0'),
+                    order_id="PENDING",  # Временное значение, обновим после размещения
+                    strategy_type=self.strategy_type.value,
+                    order_purpose=order_purpose,
+                    leverage=leverage,
+                    trade_id=trade_id,
+                    client_order_id=client_order_id,
+                    bot_priority=getattr(self, 'account_priority', 1),
+                    metadata={
+                        "stop_loss": str(stop_loss) if stop_loss else None,
+                        "take_profit": str(take_profit) if take_profit else None,
+                        "reduce_only": reduce_only,
+                        "created_by": "base_strategy_place_order"
+                    }
+                )
+                log_info(self.user_id, f"📝 Ордер сохранён в БД ПЕРЕД отправкой (DB_ID={db_id}, client={client_order_id})", module_name=__name__)
+            except Exception as db_error:
+                log_error(self.user_id, f"КРИТИЧЕСКАЯ ОШИБКА: не удалось сохранить ордер в БД перед отправкой: {db_error}", module_name=__name__)
+                return None
+
             # ДИАГНОСТИКА: Логируем API ключ для проверки правильности распределения
             api_key_masked = f"{self.api.api_key[:4]}...{self.api.api_key[-4:]}" if len(self.api.api_key) > 8 else "***"
             log_info(self.user_id, f"[Bot #{self.account_priority}] Размещение ордера {side} {qty} {self.symbol} | API: {api_key_masked}", module_name=__name__)
 
+            # ШАГ 2: ОТПРАВЛЯЕМ на биржу
             order_id = await self.api.place_order(
                 symbol=self.symbol, side=side, order_type=order_type, qty=qty, price=price,
                 stop_loss=stop_loss, take_profit=take_profit, reduce_only=reduce_only
@@ -807,51 +861,15 @@ class BaseStrategy(ABC):
             if order_id:
                 self.active_orders[order_id] = {"order_id": order_id, "status": "New"}
 
-                # КРИТИЧЕСКИ ВАЖНО: Сохраняем ордер в БД с ПОЛНОЙ информацией через новый метод
+                # ШАГ 3: ОБНОВЛЯЕМ order_id и status в БД (меняем "PENDING" на настоящий ID и status на 'NEW')
                 try:
-                    from database.db_trades import db_manager
-
-                    # Определяем order_purpose
-                    if reduce_only:
-                        order_purpose = 'CLOSE'
-                    else:
-                        # Проверяем, является ли это усреднением (есть активная позиция в том же направлении)
-                        has_active_position = getattr(self, 'position_active', False)
-                        if has_active_position:
-                            order_purpose = 'AVERAGING'
-                        else:
-                            order_purpose = 'OPEN'
-
-                    # Получаем leverage из конфигурации
-                    leverage = int(self.get_config_value("leverage", 1))
-
-                    # Получаем trade_id если есть активная сделка
-                    trade_id = getattr(self, 'active_trade_db_id', None)
-
-                    # Используем новый полный метод сохранения
-                    await db_manager.save_order_full(
-                        user_id=self.user_id,
-                        symbol=self.symbol,
-                        side=side,
-                        order_type=order_type,
-                        quantity=qty,
-                        price=price or Decimal('0'),
-                        order_id=order_id,
-                        strategy_type=self.strategy_type.value,
-                        order_purpose=order_purpose,
-                        leverage=int(leverage) if leverage else 1,  # ИСПРАВЛЕНО: Конвертируем в int для БД (БД ожидает INTEGER)
-                        trade_id=trade_id,
-                        bot_priority=getattr(self, 'account_priority', 1),  # Передаём приоритет бота для Multi-Account режима
-                        metadata={
-                            "stop_loss": str(stop_loss) if stop_loss else None,
-                            "take_profit": str(take_profit) if take_profit else None,
-                            "reduce_only": reduce_only,
-                            "created_by": "base_strategy_place_order"
-                        }
+                    await db_manager._execute_query(
+                        "UPDATE orders SET order_id = $1, status = 'NEW', updated_at = NOW() WHERE client_order_id = $2",
+                        (order_id, client_order_id)
                     )
-                    log_debug(self.user_id, f"Ордер {order_id} сохранён в БД с purpose={order_purpose}, leverage={leverage}", module_name=__name__)
-                except Exception as db_error:
-                    log_error(self.user_id, f"Ошибка сохранения ордера в БД: {db_error}", module_name=__name__)
+                    log_info(self.user_id, f"✅ Ордер обновлён в БД: order_id={order_id} status=NEW (client={client_order_id})", module_name=__name__)
+                except Exception as update_error:
+                    log_error(self.user_id, f"Ошибка обновления order_id в БД: {update_error}", module_name=__name__)
 
                 # Сохраняем состояние после размещения ордера
                 await self.save_strategy_state({"last_action": "order_placed", "order_id": order_id})
@@ -859,8 +877,15 @@ class BaseStrategy(ABC):
                          module_name=__name__)
                 return order_id
             else:
-                log_error(self.user_id, f"Не удалось разместить ордер для {self.symbol} (API не вернул ID).",
-                          module_name=__name__)
+                # Биржа не вернула ID - удаляем запись из БД
+                log_error(self.user_id, f"Не удалось разместить ордер для {self.symbol} (API не вернул ID). Удаляю из БД.", module_name=__name__)
+                try:
+                    await db_manager._execute_query(
+                        "DELETE FROM orders WHERE client_order_id = $1",
+                        (client_order_id,)
+                    )
+                except:
+                    pass
                 return None
 
         except Exception as e:

@@ -1525,15 +1525,19 @@ class _DatabaseManager:
 
     async def get_order_by_exchange_id(self, order_id: str) -> Optional[Dict[str, Any]]:
         """
-        Получает ордер по ID с биржи
+        Получает ордер по ID с биржи (с fallback для только что созданных ордеров)
 
         Args:
             order_id: ID ордера на бирже
 
         Returns:
             Optional[Dict]: Данные ордера или None
+
+        КРИТИЧНО: Поддерживает поиск ордеров которые только что были созданы с order_id="PENDING"
+        и еще не обновлены настоящим ID с биржи (race condition fix)
         """
         try:
+            # Основной поиск по order_id
             query = """
             SELECT id, user_id, symbol, side, order_type, quantity, price,
                    filled_quantity, average_price, status, order_id,
@@ -1549,6 +1553,37 @@ class _DatabaseManager:
                 if order_dict.get('metadata'):
                     order_dict['metadata'] = json.loads(order_dict['metadata'])
                 return order_dict
+
+            # FALLBACK: Если не нашли по order_id, ищем недавно созданные PENDING ордера
+            # (для случая когда WebSocket событие приходит быстрее чем обновляется order_id)
+            query_pending = """
+            SELECT id, user_id, symbol, side, order_type, quantity, price,
+                   filled_quantity, average_price, status, order_id,
+                   client_order_id, strategy_type, bot_priority, metadata, created_at, updated_at
+            FROM orders
+            WHERE order_id = 'PENDING'
+              AND created_at > NOW() - INTERVAL '10 seconds'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+
+            result_pending = await self._execute_query(query_pending, fetch_one=True)
+
+            if result_pending:
+                order_dict = dict(result_pending)
+                if order_dict.get('metadata'):
+                    order_dict['metadata'] = json.loads(order_dict['metadata'])
+
+                # КРИТИЧНО: Сразу обновляем order_id в БД
+                update_query = "UPDATE orders SET order_id = $1, updated_at = NOW() WHERE id = $2"
+                await self._execute_query(update_query, (order_id, order_dict['id']))
+
+                log_info(order_dict.get('user_id', 0),
+                        f"✅ [FALLBACK] Ордер найден как PENDING и обновлен: {order_id}",
+                        module_name='database')
+
+                return order_dict
+
             return None
 
         except Exception as e:
@@ -1991,63 +2026,69 @@ class _DatabaseManager:
             log_error(user_id, f"Ошибка подсчета активных ордеров: {e}", module_name='database')
             return 0
 
-    async def get_active_positions_from_orders(self, user_id: int, strategy_type: str = None) -> List[Dict[str, Any]]:
+    async def close_order(self, order_id: str, close_price: float = None,
+                         close_size: float = None, realized_pnl: float = None,
+                         close_reason: str = "manual_close") -> bool:
         """
-        Получает список активных позиций через таблицу ORDERS (не positions!)
+        Закрывает ордер в БД (для ручного закрытия пользователем).
 
-        Позиция считается активной, если есть OPEN ордер и НЕТ соответствующего CLOSE ордера
+        Обновляет статус OPEN ордера и сохраняет информацию о закрытии.
 
         Args:
-            user_id: ID пользователя
-            strategy_type: Тип стратегии (опционально)
+            order_id: ID ордера на бирже (OPEN ордер)
+            close_price: Цена закрытия
+            close_size: Размер закрытия
+            realized_pnl: Реализованный PnL
+            close_reason: Причина закрытия
 
         Returns:
-            List[Dict]: Список активных позиций с символами
+            bool: True если успешно обновлено
         """
         try:
-            conditions = ["user_id = $1"]
-            params = [user_id]
+            moscow_tz = timezone(timedelta(hours=3))
+            current_time = datetime.now(moscow_tz)
 
-            if strategy_type:
-                conditions.append("strategy_type = $2")
-                params.append(strategy_type)
-
-            # Ищем OPEN ордера, для которых НЕТ CLOSE ордеров
-            query = f"""
-            SELECT DISTINCT ON (symbol, strategy_type)
-                symbol,
-                strategy_type,
-                side,
-                quantity,
-                average_price,
-                leverage,
-                filled_at,
-                trade_id
-            FROM orders
-            WHERE {' AND '.join(conditions)}
-                AND order_purpose = 'OPEN'
-                AND status = 'FILLED'
-                AND is_active = FALSE
-                AND NOT EXISTS (
-                    SELECT 1 FROM orders AS close_orders
-                    WHERE close_orders.user_id = orders.user_id
-                        AND close_orders.symbol = orders.symbol
-                        AND close_orders.strategy_type = orders.strategy_type
-                        AND close_orders.order_purpose = 'CLOSE'
-                        AND close_orders.status = 'FILLED'
-                        AND close_orders.trade_id = orders.trade_id
+            # Обновляем метаданные OPEN ордера
+            query = """
+            UPDATE orders
+            SET
+                is_active = FALSE,
+                status = 'CLOSED',
+                updated_at = $2,
+                metadata = jsonb_set(
+                    COALESCE(metadata, '{}'::jsonb),
+                    '{close_info}',
+                    jsonb_build_object(
+                        'close_price', $3,
+                        'close_size', $4,
+                        'realized_pnl', $5,
+                        'close_reason', $6,
+                        'closed_at', $7
+                    )
                 )
-            ORDER BY symbol, strategy_type, filled_at DESC
+            WHERE order_id = $1
+            RETURNING user_id, symbol
             """
 
-            results = await self._execute_query(query, tuple(params), fetch_all=True)
+            result = await self._execute_query(
+                query,
+                (order_id, current_time, close_price, close_size, realized_pnl,
+                 close_reason, current_time.isoformat()),
+                fetch_one=True
+            )
 
-            log_info(user_id, f"📊 Найдено {len(results)} активных позиций в БД", module_name='database')
-            return results
+            if result:
+                log_info(result['user_id'],
+                        f"✅ Ордер {order_id} закрыт в БД: PnL={realized_pnl:.2f}$ (причина: {close_reason})",
+                        module_name='database')
+                return True
+            else:
+                log_warning(0, f"⚠️ Ордер {order_id} не найден в БД для закрытия", module_name='database')
+                return False
 
         except Exception as e:
-            log_error(user_id, f"Ошибка получения активных позиций: {e}", module_name='database')
-            return []
+            log_error(0, f"Ошибка закрытия ордера {order_id}: {e}", module_name='database')
+            return False
 
 # Глобальный экземпляр менеджера базы данных
 db_manager = _DatabaseManager()
