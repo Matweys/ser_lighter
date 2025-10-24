@@ -1600,6 +1600,10 @@ class _DatabaseManager:
                 return order_dict
             return None
 
+        except Exception as e:
+            log_error(user_id, f"Ошибка получения OPEN ордера для {symbol} Bot_{bot_priority}: {e}", module_name='database')
+            return None
+
     async def has_pending_close_order(self, user_id: int, symbol: str, bot_priority: int = 1) -> bool:
         """
         ПРАВИЛЬНЫЙ МЕТОД для WebSocket: Проверяет наличие ЛЮБОГО CLOSE ордера (активного или недавно исполненного).
