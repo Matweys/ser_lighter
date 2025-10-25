@@ -1744,40 +1744,63 @@ class _DatabaseManager:
         }
         """
         try:
-            # Шаг 1: Находим все уникальные комбинации (symbol, strategy_type, bot_priority),
-            # для которых есть OPEN ордер, но НЕТ CLOSE ордера
+            # Шаг 1: Находим все открытые позиции
+            #
+            # КРИТИЧНО: Открытая позиция = последний ордер для (symbol, strategy_type, bot_priority) является OPEN FILLED
+            # Не используем DISTINCT, потому что может быть несколько циклов OPEN→CLOSE!
+            #
+            # Пример:
+            # 1. OPEN #1 → CLOSE #2 (закрытая позиция)
+            # 2. OPEN #3 → нет CLOSE (открытая позиция!)
+            # DISTINCT увидит что есть И OPEN И CLOSE для бота → неправильно считает позицию закрытой!
+            #
+            # ПРАВИЛЬНАЯ ЛОГИКА: Для каждого OPEN ордера проверяем есть ли CLOSE после него
             query_positions = """
-            WITH open_positions AS (
-                SELECT DISTINCT
+            WITH latest_orders AS (
+                SELECT
                     symbol,
                     strategy_type,
-                    bot_priority
+                    bot_priority,
+                    order_purpose,
+                    status,
+                    filled_at,
+                    created_at,
+                    id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY symbol, strategy_type, bot_priority, order_purpose
+                        ORDER BY
+                            COALESCE(filled_at, created_at) DESC,
+                            id DESC
+                    ) as rn
                 FROM orders
                 WHERE user_id = $1
-                  AND order_purpose = 'OPEN'
-                  AND status = 'FILLED'
+                  AND order_purpose IN ('OPEN', 'CLOSE')
+                  AND status IN ('FILLED', 'NEW')
             ),
-            closed_positions AS (
-                SELECT DISTINCT
-                    symbol,
-                    strategy_type,
-                    bot_priority
-                FROM orders
-                WHERE user_id = $1
-                  AND order_purpose = 'CLOSE'
-                  AND status = 'FILLED'
+            open_orders AS (
+                SELECT symbol, strategy_type, bot_priority, filled_at, created_at, id
+                FROM latest_orders
+                WHERE order_purpose = 'OPEN' AND rn = 1
+            ),
+            close_orders AS (
+                SELECT symbol, strategy_type, bot_priority, filled_at, created_at, id
+                FROM latest_orders
+                WHERE order_purpose = 'CLOSE' AND rn = 1
             )
             SELECT
-                op.symbol,
-                op.strategy_type,
-                op.bot_priority
-            FROM open_positions op
-            LEFT JOIN closed_positions cp
-                ON op.symbol = cp.symbol
-                AND op.strategy_type = cp.strategy_type
-                AND op.bot_priority = cp.bot_priority
-            WHERE cp.symbol IS NULL  -- Нет соответствующего CLOSE ордера
-            ORDER BY op.symbol, op.bot_priority
+                o.symbol,
+                o.strategy_type,
+                o.bot_priority
+            FROM open_orders o
+            LEFT JOIN close_orders c
+                ON o.symbol = c.symbol
+                AND o.strategy_type = c.strategy_type
+                AND o.bot_priority = c.bot_priority
+            WHERE
+                -- Нет CLOSE вообще, или CLOSE был РАНЬШЕ последнего OPEN
+                c.symbol IS NULL
+                OR COALESCE(c.filled_at, c.created_at) < COALESCE(o.filled_at, o.created_at)
+            ORDER BY o.symbol, o.bot_priority
             """
 
             position_keys = await self._execute_query(query_positions, (user_id,), fetch_all=True)
