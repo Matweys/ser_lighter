@@ -484,6 +484,44 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
                 else:
                     self.strategy.position_size = exchange_size
 
+            # ✅ КРИТИЧНО: Восстанавливаем initial_margin_usd для координатора
+            # Это поле НЕОБХОДИМО для расчета PnL% и активации следующего бота!
+            if not hasattr(self.strategy, 'initial_margin_usd') or self.strategy.initial_margin_usd == 0:
+                leverage = self.strategy._convert_to_decimal(self.strategy.get_config_value("leverage", 1.0))
+                entry_price = self.strategy.entry_price if self.strategy.entry_price > 0 else self.strategy.average_entry_price
+                position_size = self.strategy.total_position_size if self.strategy.total_position_size > 0 else self.strategy.position_size
+
+                if entry_price > 0 and position_size > 0:
+                    position_value = entry_price * position_size
+                    self.strategy.initial_margin_usd = position_value / leverage
+                    log_info(
+                        self.user_id,
+                        f"💰 Восстановлена начальная маржа: ${self.strategy.initial_margin_usd:.2f} "
+                        f"(position_value=${position_value:.2f}, leverage={leverage})",
+                        "SignalScalperRecovery"
+                    )
+
+            # ✅ КРИТИЧНО: Восстанавливаем _last_known_price для координатора
+            # Координатор использует это поле для расчета текущего PnL%!
+            if not hasattr(self.strategy, '_last_known_price') or not self.strategy._last_known_price:
+                current_price = await self._get_current_market_price()
+                if current_price:
+                    self.strategy._last_known_price = current_price
+                    log_info(
+                        self.user_id,
+                        f"📊 Восстановлена последняя цена для расчета PnL: ${current_price:.4f}",
+                        "SignalScalperRecovery"
+                    )
+                else:
+                    # Fallback: используем entry_price если не удалось получить текущую
+                    entry_price = self.strategy.entry_price if self.strategy.entry_price > 0 else self.strategy.average_entry_price
+                    self.strategy._last_known_price = entry_price
+                    log_warning(
+                        self.user_id,
+                        f"⚠️ Не удалось получить текущую цену, используем entry_price=${entry_price:.4f}",
+                        "SignalScalperRecovery"
+                    )
+
             return True
 
         except Exception as e:

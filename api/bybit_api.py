@@ -371,9 +371,11 @@ class BybitAPI:
 
         for attempt in range(max_retries):
             try:
-                log_info(self.user_id,
-                        f"[GET_POSITIONS] Попытка {attempt + 1}/{max_retries} получения позиций...",
-                        module_name=__name__)
+                # Логируем только при повторных попытках (не спамим при успешном первом вызове)
+                if attempt > 0:
+                    log_info(self.user_id,
+                            f"[GET_POSITIONS] Попытка {attempt + 1}/{max_retries} получения позиций...",
+                            module_name=__name__)
 
                 result = await self._make_request("GET", "/v5/position/list", params)
 
@@ -392,9 +394,11 @@ class BybitAPI:
                                 "breakEvenPrice": to_decimal(position.get("breakEvenPrice", "0")),
                             })
 
-                    log_info(self.user_id,
-                            f"✅ [GET_POSITIONS] Успешно получены позиции на попытке {attempt + 1}: {len(positions)} активных",
-                            module_name=__name__)
+                    # Логируем успех только при повторных попытках (не спамим при каждом вызове API-монитора)
+                    if attempt > 0:
+                        log_info(self.user_id,
+                                f"✅ [GET_POSITIONS] Успешно получены позиции на попытке {attempt + 1}: {len(positions)} активных",
+                                module_name=__name__)
                     return positions
                 else:
                     if attempt < max_retries - 1:
