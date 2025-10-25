@@ -6,7 +6,7 @@ import asyncio
 import aiohttp
 from typing import Dict, Any, Optional, List
 from decimal import Decimal, getcontext
-from core.logger import log_info, log_error, log_warning
+from core.logger import log_info, log_error, log_warning, log_debug
 from core.functions import to_decimal
 from urllib.parse import urlencode
 from core.functions import format_number
@@ -547,7 +547,13 @@ class BybitAPI:
                         "side": closed_position.get("side"),
                         "leverage": closed_position.get("leverage", "1"),
                         "createdTime": closed_position.get("createdTime"),
-                        "updatedTime": closed_position.get("updatedTime")
+                        "updatedTime": closed_position.get("updatedTime"),
+                        # РЕАЛЬНЫЕ данные от биржи для 100% точного расчета
+                        "cumEntryValue": to_decimal(closed_position.get("cumEntryValue", "0")),
+                        "cumExitValue": to_decimal(closed_position.get("cumExitValue", "0")),
+                        "fillCount": closed_position.get("fillCount", "0"),
+                        "openFee": to_decimal(closed_position.get("openFee", "0")),  # Комиссия на вход
+                        "closeFee": to_decimal(closed_position.get("closeFee", "0"))  # Комиссия на выход
                     }
 
                     log_info(self.user_id,

@@ -60,6 +60,13 @@ class SpikeDetector:
         # Добавляем цену в историю
         self.price_history.append(close_price)
 
+        # ДИАГНОСТИКА: Логируем каждую 5-ю свечу для контроля
+        if len(self.price_history) % 5 == 0:
+            recent_spikes = self.get_recent_spikes(seconds=600)
+            log_info(self.user_id,
+                    f"📊 SpikeDetector: {len(self.price_history)} свечей накоплено, {len(recent_spikes)} всплесков за 10мин",
+                    "SpikeDetector")
+
         # Проверяем всплеск (нужно минимум 2 свечи)
         if len(self.price_history) >= 2:
             self._detect_spike(timestamp)

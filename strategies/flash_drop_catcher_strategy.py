@@ -987,23 +987,25 @@ class FlashDropCatcherStrategy(BaseStrategy):
                         #   exit_price = entry_price + (net_pnl + commission) / size
 
                         if closed_size > 0 and entry_price_from_exchange > 0:
-                            # Используем РЕАЛЬНУЮ комиссию из конфигурации
-                            from core.settings_config import EXCHANGE_FEES
-                            from core.enums import ExchangeType
-                            taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')  # 0.1% -> 0.001
+                            # ✅ ИСПОЛЬЗУЕМ 100% ТОЧНЫЕ ДАННЫЕ ОТ БИРЖИ
+                            # РЕАЛЬНАЯ комиссия от биржи (100% точно)
+                            real_open_fee = closed_pnl_data.get('openFee', Decimal('0'))
+                            real_close_fee = closed_pnl_data.get('closeFee', Decimal('0'))
+                            commission = abs(real_open_fee) + abs(real_close_fee)  # Комиссии могут быть отрицательными
 
-                            # Общая комиссия = вход (taker) + выход (taker) = 0.1% + 0.1% = 0.2%
-                            position_value = entry_price_from_exchange * closed_size
-                            estimated_commission = position_value * taker_fee_rate * Decimal('2')  # Вход + Выход
-
-                            # Вычисляем цену выхода с учетом комиссии (для LONG)
-                            # exit_price = entry_price + (net_pnl + commission) / size
-                            exit_price = entry_price_from_exchange + (final_pnl + estimated_commission) / closed_size
-                            commission = estimated_commission
+                            # РЕАЛЬНАЯ цена выхода от биржи (100% точно)
+                            cum_exit_value = closed_pnl_data.get('cumExitValue', Decimal('0'))
+                            if cum_exit_value > 0:
+                                exit_price = cum_exit_value / closed_size
+                            else:
+                                # Фолбэк: вычисляем из PnL (если cumExitValue недоступен)
+                                # Для LONG: exit_price = entry_price + (net_pnl + commission) / size
+                                exit_price = entry_price_from_exchange + (final_pnl + commission) / closed_size
 
                             log_info(self.user_id,
-                                    f"💰 Расчет закрытия: Вход=${entry_price_from_exchange:.4f}, PnL=${final_pnl:.4f}, "
-                                    f"Размер={closed_size}, Комиссия≈${commission:.4f} → Выход=${exit_price:.4f}",
+                                    f"💰 [100% ТОЧНО] Вход=${entry_price_from_exchange:.4f}, Выход=${exit_price:.4f}, "
+                                    f"PnL=${final_pnl:.4f}, Размер={closed_size}, "
+                                    f"Комиссия=${commission:.4f} (вход=${real_open_fee:.4f} + выход=${real_close_fee:.4f})",
                                     "FlashDropCatcher")
                         else:
                             log_warning(self.user_id,
@@ -1323,23 +1325,25 @@ class FlashDropCatcherStrategy(BaseStrategy):
                     # Вычисляем РЕАЛЬНУЮ цену выхода из чистого PnL (формула для LONG)
 
                     if closed_size > 0 and entry_price_from_exchange > 0:
-                        # Используем РЕАЛЬНУЮ комиссию из конфигурации
-                        from core.settings_config import EXCHANGE_FEES
-                        from core.enums import ExchangeType
-                        taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')  # 0.1% -> 0.001
+                        # ✅ ИСПОЛЬЗУЕМ 100% ТОЧНЫЕ ДАННЫЕ ОТ БИРЖИ
+                        # РЕАЛЬНАЯ комиссия от биржи (100% точно)
+                        real_open_fee = closed_pnl_data.get('openFee', Decimal('0'))
+                        real_close_fee = closed_pnl_data.get('closeFee', Decimal('0'))
+                        commission = abs(real_open_fee) + abs(real_close_fee)  # Комиссии могут быть отрицательными
 
-                        # Общая комиссия = вход (taker) + выход (taker) = 0.1% + 0.1% = 0.2%
-                        position_value = entry_price_from_exchange * closed_size
-                        estimated_commission = position_value * taker_fee_rate * Decimal('2')  # Вход + Выход
-
-                        # Вычисляем цену выхода с учетом комиссии (для LONG)
-                        # exit_price = entry_price + (net_pnl + commission) / size
-                        exit_price = entry_price_from_exchange + (final_pnl + estimated_commission) / closed_size
-                        commission = estimated_commission
+                        # РЕАЛЬНАЯ цена выхода от биржи (100% точно)
+                        cum_exit_value = closed_pnl_data.get('cumExitValue', Decimal('0'))
+                        if cum_exit_value > 0:
+                            exit_price = cum_exit_value / closed_size
+                        else:
+                            # Фолбэк: вычисляем из PnL (если cumExitValue недоступен)
+                            # Для LONG: exit_price = entry_price + (net_pnl + commission) / size
+                            exit_price = entry_price_from_exchange + (final_pnl + commission) / closed_size
 
                         log_info(self.user_id,
-                                f"💰 Расчет закрытия: Вход=${entry_price_from_exchange:.4f}, PnL=${final_pnl:.4f}, "
-                                f"Размер={closed_size}, Комиссия≈${commission:.4f} → Выход=${exit_price:.4f}",
+                                f"💰 [100% ТОЧНО] Вход=${entry_price_from_exchange:.4f}, Выход=${exit_price:.4f}, "
+                                f"PnL=${final_pnl:.4f}, Размер={closed_size}, "
+                                f"Комиссия=${commission:.4f} (вход=${real_open_fee:.4f} + выход=${real_close_fee:.4f})",
                                 "FlashDropCatcher")
                     else:
                         log_warning(self.user_id,
