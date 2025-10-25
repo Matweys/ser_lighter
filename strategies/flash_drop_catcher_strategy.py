@@ -666,16 +666,15 @@ class FlashDropCatcherStrategy(BaseStrategy):
                     f"Открываем LONG позицию..."
                 )
 
-            # Обновляем символ для этой сделки
-            self.symbol = symbol
+            # ❌ НЕ меняем self.symbol здесь! Изменение ТОЛЬКО после успешного открытия ордера в _open_long_position
 
-            # Открываем LONG позицию (передаём информацию о сигнале)
-            await self._open_long_position(price, drop_percent, volume_ratio, volatility_pct)
+            # Открываем LONG позицию (передаём информацию о сигнале + symbol)
+            await self._open_long_position(symbol, price, drop_percent, volume_ratio, volatility_pct)
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки сигнала падения: {e}", "FlashDropCatcher")
 
-    async def _open_long_position(self, entry_price: Decimal, drop_percent: Decimal, volume_ratio: Decimal, volatility_pct: Decimal):
+    async def _open_long_position(self, symbol: str, entry_price: Decimal, drop_percent: Decimal, volume_ratio: Decimal, volatility_pct: Decimal):
         """Открывает LONG позицию по текущей цене"""
         try:
             # Сохраняем информацию о сигнале для уведомления
@@ -683,17 +682,20 @@ class FlashDropCatcherStrategy(BaseStrategy):
             self.signal_volume_ratio = volume_ratio
             self.signal_volatility_pct = volatility_pct
 
+            # ✅ ВАЖНО: НЕ меняем self.symbol до успешного открытия ордера!
+            # Изменение будет ПОСЛЕ успешного размещения ордера
+
             # Получаем параметры из конфигурации
             order_amount = self._convert_to_decimal(self.get_config_value("order_amount", 200.0))
             leverage = int(self.get_config_value("leverage", 2))
 
-            # Устанавливаем плечо
-            await self.api.set_leverage(symbol=self.symbol, leverage=leverage)
+            # Устанавливаем плечо (используем параметр symbol, НЕ self.symbol!)
+            await self.api.set_leverage(symbol=symbol, leverage=leverage)
 
             # Получаем информацию о символе для правильного размера позиции
-            instrument_info = await self.api.get_instruments_info(symbol=self.symbol)
+            instrument_info = await self.api.get_instruments_info(symbol=symbol)
             if not instrument_info:
-                log_error(self.user_id, "Не удалось получить информацию о символе", "FlashDropCatcher")
+                log_error(self.user_id, f"Не удалось получить информацию о символе {symbol}", "FlashDropCatcher")
                 return
 
             # get_instruments_info возвращает словарь {symbol: info} для одного символа
@@ -703,9 +705,9 @@ class FlashDropCatcherStrategy(BaseStrategy):
             position_size = (order_amount * leverage) / entry_price
             position_size = (position_size // qty_step) * qty_step
 
-            # Открываем LONG позицию
+            # Открываем LONG позицию (логируем symbol, НЕ self.symbol!)
             log_info(self.user_id,
-                    f"📈 Открываем LONG: {self.symbol}, размер: {position_size}, плечо: {leverage}x",
+                    f"📈 Открываем LONG: {symbol}, размер: {position_size}, плечо: {leverage}x",
                     "FlashDropCatcher")
 
             # ИСПРАВЛЕНИЕ: Используем _place_order из базового класса для сохранения в БД!
@@ -717,18 +719,23 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
             # place_order() возвращает order_id (строку), а не словарь
             if order_result:
+                # ✅ КРИТИЧНО: ТЕПЕРЬ меняем self.symbol ПОСЛЕ успешного открытия ордера!
+                self.symbol = symbol
+
                 self.trades_opened += 1  # Увеличиваем счётчик успешно открытых сделок
                 self.position_active = True
                 self.entry_time = datetime.now()  # Сохраняем время открытия позиции
                 self.position_size = position_size
                 self.active_direction = "LONG"
 
+                log_info(self.user_id, f"✅ self.symbol изменён на {self.symbol} после успешного открытия ордера", "FlashDropCatcher")
+
                 # КРИТИЧНО: Получаем РЕАЛЬНУЮ цену исполнения с биржи (не используем цену сигнала!)
                 try:
                     # Даём бирже время обработать ордер
                     await asyncio.sleep(0.5)
 
-                    # Получаем реальную позицию с биржи
+                    # Получаем реальную позицию с биржи (теперь можем использовать self.symbol)
                     positions = await self.api.get_positions(symbol=self.symbol)
                     if positions and isinstance(positions, list) and len(positions) > 0:
                         # avgPrice - это РЕАЛЬНАЯ средняя цена исполнения ордера
@@ -964,56 +971,69 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
             # place_order() возвращает order_id (строку), а не словарь
             if close_result:
-                # ТОЧНЫЙ РАСЧЕТ PnL: Берём РЕАЛЬНЫЕ данные от биржи (closedPnL)
+                # ✅ ПРАВИЛЬНЫЙ РАСЧЕТ PnL: используем ТОЧНЫЕ данные по order_id из БД и WebSocket
+                # Источники истины:
+                # 1. OPEN ордер из БД (по order_id) → entry_price, entry_qty, entry_commission
+                # 2. CLOSE ордер из БД (по order_id - это close_result) → exit_price, exit_qty, exit_commission
+                # В flash_drop_catcher НЕТ усреднений, поэтому просто: total_fees = open_commission + close_commission
+
+                from database.db_trades import db_manager
+
                 final_pnl = Decimal('0')
                 exit_price = Decimal('0')
                 commission = Decimal('0')
 
                 try:
-                    log_info(self.user_id, f"[BYBIT API] Запрашиваю реальный closedPnL от биржи для {self.symbol}...", "FlashDropCatcher")
-                    closed_pnl_data = await self.api.get_closed_pnl(self.symbol, limit=1)
+                    # Получаем данные OPEN ордера из БД (по order_id!)
+                    open_order = await db_manager.get_open_order_for_position(self.user_id, self.symbol, self.account_priority)
 
-                    if closed_pnl_data:
-                        # Используем ТОЧНЫЕ данные от биржи
-                        final_pnl = closed_pnl_data['closedPnl']  # Чистый PnL (с вычетом комиссии)
-                        entry_price_from_exchange = closed_pnl_data.get('avgEntryPrice', Decimal('0'))
-                        closed_size = closed_pnl_data.get('closedSize', Decimal('0'))
+                    if open_order:
+                        # ✅ ИСТОЧНИК ИСТИНЫ #1: OPEN ордер из БД
+                        entry_price_for_pnl = Decimal(str(open_order.get('average_price', '0')))
+                        position_size_for_pnl = self.position_size
+                        open_commission = Decimal(str(open_order.get('commission', '0')))
 
-                        # КРИТИЧНО: НЕ используем avgExitPrice из API - он может быть неточным!
-                        # Вычисляем РЕАЛЬНУЮ цену выхода из чистого PnL
-                        #
-                        # Формула для LONG (FlashDropCatcher всегда LONG):
-                        #   net_pnl = (exit_price - entry_price) * size - commission
-                        #   exit_price = entry_price + (net_pnl + commission) / size
+                        log_info(self.user_id,
+                                f"[БД→ORDER_ID] Используем OPEN ордер {open_order['order_id']}: "
+                                f"entry_price={entry_price_for_pnl:.4f}, size={position_size_for_pnl}, fee={open_commission:.4f}",
+                                "FlashDropCatcher")
 
-                        if closed_size > 0 and entry_price_from_exchange > 0:
-                            # ✅ ИСПОЛЬЗУЕМ 100% ТОЧНЫЕ ДАННЫЕ ОТ БИРЖИ
-                            # РЕАЛЬНАЯ комиссия от биржи (100% точно)
-                            real_open_fee = closed_pnl_data.get('openFee', Decimal('0'))
-                            real_close_fee = closed_pnl_data.get('closeFee', Decimal('0'))
-                            commission = abs(real_open_fee) + abs(real_close_fee)  # Комиссии могут быть отрицательными
+                        # ✅ ИСТОЧНИК ИСТИНЫ #2: CLOSE ордер из БД (по order_id!)
+                        # close_result - это order_id закрывающего ордера
+                        # Ждём немного, чтобы ордер точно попал в БД
+                        await asyncio.sleep(0.5)
+                        close_order = await db_manager.get_order_by_id(close_result)
 
-                            # РЕАЛЬНАЯ цена выхода от биржи (100% точно)
-                            cum_exit_value = closed_pnl_data.get('cumExitValue', Decimal('0'))
-                            if cum_exit_value > 0:
-                                exit_price = cum_exit_value / closed_size
-                            else:
-                                # Фолбэк: вычисляем из PnL (если cumExitValue недоступен)
-                                # Для LONG: exit_price = entry_price + (net_pnl + commission) / size
-                                exit_price = entry_price_from_exchange + (final_pnl + commission) / closed_size
+                        if close_order:
+                            exit_price = Decimal(str(close_order.get('average_price', '0')))
+                            close_commission = Decimal(str(close_order.get('commission', '0')))
 
                             log_info(self.user_id,
-                                    f"💰 [100% ТОЧНО] Вход=${entry_price_from_exchange:.4f}, Выход=${exit_price:.4f}, "
-                                    f"PnL=${final_pnl:.4f}, Размер={closed_size}, "
-                                    f"Комиссия=${commission:.4f} (вход=${real_open_fee:.4f} + выход=${real_close_fee:.4f})",
+                                    f"[БД→ORDER_ID] Используем CLOSE ордер {close_result}: "
+                                    f"exit_price={exit_price:.4f}, fee={close_commission:.4f}",
                                     "FlashDropCatcher")
                         else:
+                            # Fallback: используем последнюю известную цену
+                            exit_price = self._last_known_price if hasattr(self, '_last_known_price') and self._last_known_price else entry_price_for_pnl
+                            close_commission = Decimal('0')
                             log_warning(self.user_id,
-                                       f"⚠️ Не удалось вычислить цену выхода: size={closed_size}, entry={entry_price_from_exchange}",
+                                       f"⚠️ [FALLBACK] CLOSE ордер {close_result} не найден в БД, используем _last_known_price={exit_price:.4f}",
                                        "FlashDropCatcher")
-                            exit_price = Decimal('0')
+
+                        # Расчёт PnL (LONG позиция)
+                        pnl_gross = (exit_price - entry_price_for_pnl) * position_size_for_pnl
+
+                        # ФИНАЛЬНЫЙ PnL: Вычитаем комиссии (открытие + закрытие)
+                        commission = open_commission + close_commission
+                        final_pnl = pnl_gross - commission
+
+                        log_info(self.user_id,
+                                f"💰 [PNL РАСЧЁТ] entry={entry_price_for_pnl:.4f}, exit={exit_price:.4f}, "
+                                f"size={position_size_for_pnl}, direction=LONG | "
+                                f"PnL_gross={pnl_gross:.4f}, fees={commission:.4f} (open={open_commission:.4f}+close={close_commission:.4f}), PnL_net={final_pnl:.4f}",
+                                "FlashDropCatcher")
                     else:
-                        log_warning(self.user_id, f"⚠️ [BYBIT PNL] Не удалось получить closedPnL от биржи, используем unrealisedPnl", "FlashDropCatcher")
+                        log_warning(self.user_id, f"⚠️ [FALLBACK] OPEN ордер не найден в БД, используем данные из памяти", "FlashDropCatcher")
                         # ФОЛБЭК: Используем unrealisedPnl из позиции
                         positions = await self.api.get_positions(symbol=self.symbol)
                         if positions and isinstance(positions, list):
@@ -1309,55 +1329,50 @@ class FlashDropCatcherStrategy(BaseStrategy):
                    "FlashDropCatcher")
 
         try:
-            # Получаем ТОЧНЫЙ PnL от биржи
+            # ✅ ПРАВИЛЬНЫЙ РАСЧЕТ PnL: используем ТОЧНЫЕ данные по order_id из БД
+            # Источники истины:
+            # 1. OPEN ордер из БД (по order_id) → entry_price, entry_qty, entry_commission
+            # 2. Последняя известная цена из WebSocket/память → exit_price (приблизительно)
+            # В flash_drop_catcher НЕТ усреднений, поэтому просто: total_fees = open_commission
+
+            from database.db_trades import db_manager
+
             final_pnl = Decimal('0')
             exit_price = Decimal('0')
             commission = Decimal('0')
 
-            try:
-                closed_pnl_data = await self.api.get_closed_pnl(self.symbol, limit=1)
-                if closed_pnl_data:
-                    final_pnl = closed_pnl_data['closedPnl']  # Чистый PnL (с вычетом комиссии)
-                    entry_price_from_exchange = closed_pnl_data.get('avgEntryPrice', Decimal('0'))
-                    closed_size = closed_pnl_data.get('closedSize', Decimal('0'))
-
-                    # КРИТИЧНО: НЕ используем avgExitPrice из API - он может быть неточным!
-                    # Вычисляем РЕАЛЬНУЮ цену выхода из чистого PnL (формула для LONG)
-
-                    if closed_size > 0 and entry_price_from_exchange > 0:
-                        # ✅ ИСПОЛЬЗУЕМ 100% ТОЧНЫЕ ДАННЫЕ ОТ БИРЖИ
-                        # РЕАЛЬНАЯ комиссия от биржи (100% точно)
-                        real_open_fee = closed_pnl_data.get('openFee', Decimal('0'))
-                        real_close_fee = closed_pnl_data.get('closeFee', Decimal('0'))
-                        commission = abs(real_open_fee) + abs(real_close_fee)  # Комиссии могут быть отрицательными
-
-                        # РЕАЛЬНАЯ цена выхода от биржи (100% точно)
-                        cum_exit_value = closed_pnl_data.get('cumExitValue', Decimal('0'))
-                        if cum_exit_value > 0:
-                            exit_price = cum_exit_value / closed_size
-                        else:
-                            # Фолбэк: вычисляем из PnL (если cumExitValue недоступен)
-                            # Для LONG: exit_price = entry_price + (net_pnl + commission) / size
-                            exit_price = entry_price_from_exchange + (final_pnl + commission) / closed_size
-
-                        log_info(self.user_id,
-                                f"💰 [100% ТОЧНО] Вход=${entry_price_from_exchange:.4f}, Выход=${exit_price:.4f}, "
-                                f"PnL=${final_pnl:.4f}, Размер={closed_size}, "
-                                f"Комиссия=${commission:.4f} (вход=${real_open_fee:.4f} + выход=${real_close_fee:.4f})",
-                                "FlashDropCatcher")
-                    else:
-                        log_warning(self.user_id,
-                                   f"⚠️ Не удалось вычислить цену выхода: size={closed_size}, entry={entry_price_from_exchange}",
-                                   "FlashDropCatcher")
-            except Exception as api_error:
-                log_error(self.user_id, f"❌ Ошибка получения closedPnL: {api_error}", "FlashDropCatcher")
-
-            # Получаем данные из БД
+            # Получаем данные OPEN ордера из БД
             from database.db_trades import db_manager
             open_order = await db_manager.get_open_order_for_position(self.user_id, self.symbol, self.account_priority)
             if open_order:
                 saved_entry_time = open_order.get('filled_at')
                 saved_entry_price = open_order.get('average_price')
+
+                # ✅ ИСТОЧНИК ИСТИНЫ #1: OPEN ордер из БД
+                entry_price_for_pnl = Decimal(str(saved_entry_price))
+                position_size_for_pnl = self.position_size
+                open_commission = Decimal(str(open_order.get('commission', '0')))
+
+                log_info(self.user_id,
+                        f"[БД→ORDER_ID] Используем OPEN ордер {open_order['order_id']}: "
+                        f"entry_price={entry_price_for_pnl:.4f}, size={position_size_for_pnl}, fee={open_commission:.4f}",
+                        "FlashDropCatcher")
+
+                # ✅ ИСТОЧНИК ИСТИНЫ #2: Последняя известная цена из WebSocket
+                exit_price = self._last_known_price if hasattr(self, '_last_known_price') and self._last_known_price else entry_price_for_pnl
+
+                # Расчёт PnL (LONG позиция)
+                pnl_gross = (exit_price - entry_price_for_pnl) * position_size_for_pnl
+
+                # ФИНАЛЬНЫЙ PnL: Вычитаем комиссию открытия (комиссия закрытия неизвестна при ручном закрытии)
+                commission = open_commission
+                final_pnl = pnl_gross - commission
+
+                log_info(self.user_id,
+                        f"💰 [PNL РАСЧЁТ РУЧНОЕ] entry={entry_price_for_pnl:.4f}, exit≈{exit_price:.4f}, "
+                        f"size={position_size_for_pnl}, direction=LONG | "
+                        f"PnL_gross={pnl_gross:.4f}, fees≈{commission:.4f}, PnL_net≈{final_pnl:.4f}",
+                        "FlashDropCatcher")
 
                 # Обновляем БД - закрываем ордер
                 try:
