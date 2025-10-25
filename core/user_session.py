@@ -417,8 +417,15 @@ class UserSession:
                 # Сохраняем координатор
                 self.coordinators[symbol] = coordinator
 
-                # КРИТИЧНО: Добавляем в active_strategies для отображения в /autotrade_status
-                # Используем первую стратегию как представителя координатора
+                # ✅ КРИТИЧНО: Добавляем ВСЕ 3 стратегии в active_strategies для маршрутизации событий
+                # В multi-account режиме каждая стратегия должна получать свои события (OrderFilledEvent и т.д.)!
+                for priority, bot_strategy in enumerate(bot_strategies, start=1):
+                    bot_strategy_id = f"{strategy_type}_{symbol}_bot{priority}"
+                    self.active_strategies[bot_strategy_id] = bot_strategy
+                    log_info(self.user_id, f"✅ Стратегия {bot_strategy_id} добавлена в active_strategies для маршрутизации событий", module_name=__name__)
+
+                # СОВМЕСТИМОСТЬ: Также добавляем Bot 1 под стандартным ID для /autotrade_status
+                # Это позволяет команде /autotrade_status показывать только одну запись на символ
                 strategy_id = f"{strategy_type}_{symbol}"
                 self.active_strategies[strategy_id] = bot_strategies[0]
 
@@ -946,7 +953,8 @@ class UserSession:
                 await self.meta_strategist.on_settings_changed(event)
 
             # Обновляем watchlist в DataFeedHandler
-            if self.data_feed_handler:
+            # ✅ КРИТИЧНО: Проверяем оба режима - обычный И multi-account!
+            if self.data_feed_handler or self.data_feed_handlers:
                 new_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
                 new_watchlist = set(new_config.get("watchlist_symbols", []))
 
@@ -1197,55 +1205,37 @@ class UserSession:
                                 f"ℹ️ Бот {priority} ({symbol}): активных ордеров не найдено",
                                 module_name=__name__)
 
-                # КРИТИЧНО: Определяем КАКОЙ бот реально в позиции на бирже
-                # Проверяем реальную позицию на бирже через API
-                api_client = self.api_clients[0]  # Используем PRIMARY для проверки
-                positions = await api_client.get_positions(symbol=symbol)
+                # КРИТИЧНО: Определяем КАКОЙ бот реально в позиции
+                # ✅ ИСПОЛЬЗУЕМ get_all_open_positions - он находит FILLED OPEN ордера!
+                all_open_positions = await db_manager.get_all_open_positions(user_id=self.user_id)
 
-                has_real_position = False
-                if positions:
-                    for position in positions:
-                        from decimal import Decimal
-                        position_size = Decimal(str(position.get('size', 0)))
-                        if position_size > 0:
-                            has_real_position = True
-                            log_info(self.user_id,
-                                    f"🔍 Найдена реальная позиция на бирже {symbol}: размер={position_size}",
-                                    module_name=__name__)
-                            break
+                # Фильтруем позиции для текущего символа
+                symbol_positions = [
+                    pos for pos in all_open_positions
+                    if pos['symbol'] == symbol and pos.get('strategy_type') == strategy_type.value
+                ]
 
-                # Если есть позиция на бирже, определяем какой бот её открыл
-                if has_real_position:
-                    # Проверяем какой бот имеет OPENING ордер в БД
-                    for priority in [1, 2, 3]:
-                        bot_orders = await db_manager.get_active_orders_by_bot_priority(
-                            user_id=self.user_id,
-                            symbol=symbol,
-                            bot_priority=priority,
-                            strategy_type=strategy_type.value
-                        )
-
-                        for order in bot_orders:
-                            if order.get('order_purpose') == 'OPENING':
-                                bot_with_position = priority
-                                log_info(self.user_id,
-                                        f"🎯 Определен бот с позицией: Бот {priority} (найден OPENING ордер)",
-                                        module_name=__name__)
-                                break
-
-                        if bot_with_position:
-                            break
-
-                    # Если не нашли по ордерам, восстанавливаем Бота 1 (дефолт)
-                    if not bot_with_position:
-                        bot_with_position = 1
+                if symbol_positions:
+                    # ✅ Есть открытая позиция в БД - определяем какой бот
+                    # В норме должна быть только 1 позиция (только 1 бот активен одновременно)
+                    if len(symbol_positions) > 1:
                         log_warning(self.user_id,
-                                   f"⚠️ Не удалось определить бота с позицией по ордерам, использую Бот 1",
+                                   f"⚠️ Найдено {len(symbol_positions)} открытых позиций для {symbol}! "
+                                   f"Ожидается только 1. Использую первую.",
                                    module_name=__name__)
+
+                    # Берем bot_priority из первой позиции
+                    bot_with_position = symbol_positions[0]['bot_priority']
+                    log_info(self.user_id,
+                            f"🎯 Определен бот с позицией: Бот {bot_with_position} "
+                            f"(найдена открытая позиция в БД для {symbol})",
+                            module_name=__name__)
                 else:
-                    # Нет позиции - восстанавливаем Бота 1
+                    # Нет открытой позиции в БД - восстанавливаем Бота 1 (дефолт)
                     bot_with_position = 1
-                    log_info(self.user_id, f"ℹ️ Позиции нет на бирже, восстанавливаю Бот 1", module_name=__name__)
+                    log_info(self.user_id,
+                            f"ℹ️ Открытая позиция для {symbol} не найдена в БД, восстанавливаю Бот 1",
+                            module_name=__name__)
 
                 # Восстанавливаем состояние ПРАВИЛЬНОГО бота
                 # ЗАЩИТА: Проверяем что bot_with_position определён (не должно случиться, но для безопасности)
@@ -1281,7 +1271,14 @@ class UserSession:
                 # Сохраняем координатор
                 self.coordinators[symbol] = coordinator
 
-                # КРИТИЧНО: Добавляем в active_strategies для отображения в /autotrade_status
+                # ✅ КРИТИЧНО: Добавляем ВСЕ 3 стратегии в active_strategies для маршрутизации событий
+                # В multi-account режиме каждая стратегия должна получать свои события (OrderFilledEvent и т.д.)!
+                for priority, bot_strategy in enumerate(bot_strategies, start=1):
+                    bot_strategy_id = f"{strategy_type.value}_{symbol}_bot{priority}"
+                    self.active_strategies[bot_strategy_id] = bot_strategy
+                    log_info(self.user_id, f"✅ Стратегия {bot_strategy_id} добавлена в active_strategies для маршрутизации событий (восстановление)", module_name=__name__)
+
+                # СОВМЕСТИМОСТЬ: Также добавляем Bot 1 под стандартным ID для /autotrade_status
                 # Используем первую стратегию как представителя координатора
                 self.active_strategies[strategy_id] = bot_strategies[0]
 
@@ -1791,19 +1788,44 @@ class UserSession:
             # === ОБРАБОТКА УДАЛЕННЫХ СИМВОЛОВ ===
             strategies_to_stop_immediately = []
             strategies_to_mark_for_deferred_stop = []
+            coordinators_to_mark_for_deferred_stop = []
 
             for symbol in removed:
-                for strategy_id, analysis in active_strategies_analysis.items():
-                    if analysis['symbol'] == symbol:
-                        if analysis['has_active_position']:
-                            # У символа есть активная позиция - помечаем для отложенной остановки
-                            strategies_to_mark_for_deferred_stop.append((strategy_id, symbol, analysis))
-                            log_info(self.user_id, f"🔄 Символ {symbol} помечен для отложенной остановки (есть активная позиция)", module_name=__name__)
-                        else:
-                            # Нет активной позиции - можем остановить сразу
-                            strategies_to_stop_immediately.append((strategy_id, symbol))
-                            log_info(self.user_id, f"⏹️ Символ {symbol} будет остановлен немедленно (нет активной позиции)", module_name=__name__)
+                # ✅ КРИТИЧНО: Проверяем, это multi-account режим (координатор) или обычный режим
+                if symbol in self.coordinators:
+                    # MULTI-ACCOUNT РЕЖИМ: У символа есть координатор с 3 ботами
+                    log_info(self.user_id,
+                            f"🔀 Символ {symbol} использует Multi-Account Coordinator → помечаю координатор для отложенной остановки",
+                            module_name=__name__)
+                    coordinators_to_mark_for_deferred_stop.append(symbol)
+                else:
+                    # ОБЫЧНЫЙ РЕЖИМ: Проверяем единственную стратегию для символа
+                    for strategy_id, analysis in active_strategies_analysis.items():
+                        if analysis['symbol'] == symbol:
+                            if analysis['has_active_position']:
+                                # У символа есть активная позиция - помечаем для отложенной остановки
+                                strategies_to_mark_for_deferred_stop.append((strategy_id, symbol, analysis))
+                                log_info(self.user_id, f"🔄 Символ {symbol} помечен для отложенной остановки (есть активная позиция)", module_name=__name__)
+                            else:
+                                # Нет активной позиции - можем остановить сразу
+                                strategies_to_stop_immediately.append((strategy_id, symbol))
+                                log_info(self.user_id, f"⏹️ Символ {symbol} будет остановлен немедленно (нет активной позиции)", module_name=__name__)
 
+            # === ОСТАНАВЛИВАЕМ КООРДИНАТОРЫ (MULTI-ACCOUNT) ===
+            # КРИТИЧНО: Координатор сам проверит состояние ВСЕХ 3 ботов и примет решение
+            for symbol in coordinators_to_mark_for_deferred_stop:
+                coordinator = self.coordinators[symbol]
+                success = await coordinator.mark_for_deferred_stop(reason=f"symbol_{symbol}_removed_from_watchlist")
+                if success:
+                    log_info(self.user_id,
+                            f"✅ Coordinator для {symbol} помечен для отложенной остановки. "
+                            f"Боты с позициями продолжат работу до закрытия.",
+                            module_name=__name__)
+                    # НЕ уменьшаем current_trading_count, т.к. координатор остановится автоматически
+                else:
+                    log_error(self.user_id, f"❌ Не удалось пометить Coordinator для {symbol} для остановки", module_name=__name__)
+
+            # === ОСТАНАВЛИВАЕМ ОБЫЧНЫЕ СТРАТЕГИИ (БЕЗ КООРДИНАТОРА) ===
             # Останавливаем стратегии без активных позиций
             for strategy_id, symbol in strategies_to_stop_immediately:
                 await self.stop_strategy(strategy_id, reason=f"symbol_{symbol}_removed_from_watchlist")

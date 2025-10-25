@@ -670,36 +670,44 @@ class BotApplication:
                 return
 
             # ===================================================================
-            # КЛЮЧЕВАЯ ЧАСТЬ: Получаем активные ордера БОТА из БД
+            # КЛЮЧЕВАЯ ЧАСТЬ: Получаем ОТКРЫТЫЕ ПОЗИЦИИ из БД
+            # КРИТИЧНО: Позиция открыта = есть FILLED OPEN ордер без FILLED CLOSE ордера
             # ===================================================================
-            active_orders_from_db = []
+            open_positions = []
             has_active_orders = False
 
             try:
-                active_orders_from_db = await db_manager.get_active_orders_by_user(
-                    user_id=user_id,
-                    symbol=None,  # Все символы
-                    strategy_type=None  # Все стратегии
-                )
+                # ✅ ИСПОЛЬЗУЕМ get_all_open_positions вместо get_active_orders_by_user
+                # Это правильно находит позиции с FILLED OPEN ордером!
+                open_positions = await db_manager.get_all_open_positions(user_id=user_id)
 
-                if active_orders_from_db:
+                if open_positions:
                     has_active_orders = True
-                    log_info(user_id, f"🎯 Найдено {len(active_orders_from_db)} активных ордеров бота в БД", "BotApplication")
+                    log_info(user_id, f"🎯 Найдено {len(open_positions)} открытых позиций в БД", "BotApplication")
 
-                    # Группируем ордера по символам
-                    orders_by_symbol = {}
-                    for order in active_orders_from_db:
-                        symbol = order['symbol']
-                        if symbol not in orders_by_symbol:
-                            orders_by_symbol[symbol] = []
-                        orders_by_symbol[symbol].append(order)
+                    # Группируем позиции по символам
+                    positions_by_symbol = {}
+                    for position in open_positions:
+                        symbol = position['symbol']
+                        bot_priority = position['bot_priority']
+                        strategy_type = position['strategy_type']
 
-                    log_info(user_id, f"📊 Активные ордера по символам: {list(orders_by_symbol.keys())}", "BotApplication")
+                        if symbol not in positions_by_symbol:
+                            positions_by_symbol[symbol] = []
+                        positions_by_symbol[symbol].append({
+                            'symbol': symbol,
+                            'bot_priority': bot_priority,
+                            'strategy_type': strategy_type
+                        })
+
+                    log_info(user_id,
+                            f"📊 Открытые позиции: {[(s, len(p)) for s, p in positions_by_symbol.items()]}",
+                            "BotApplication")
                 else:
-                    log_info(user_id, "✅ Активных ордеров бота не найдено", "BotApplication")
+                    log_info(user_id, "✅ Открытых позиций не найдено", "BotApplication")
 
             except Exception as e:
-                log_error(user_id, f"Ошибка проверки активных ордеров в БД: {e}", "BotApplication")
+                log_error(user_id, f"Ошибка проверки открытых позиций в БД: {e}", "BotApplication")
 
             # ===================================================================
             # Определяем: нужно ли восстанавливать стратегии
@@ -730,17 +738,17 @@ class BotApplication:
             # Уведомляем об активных ордерах
             # ===================================================================
             if has_active_orders:
-                orders_text = "\n".join([
-                    f"📊 {order['symbol']}: {order.get('side', 'N/A')} - ID:{order['order_id']}"
-                    for order in active_orders_from_db[:5]
+                positions_text = "\n".join([
+                    f"📊 {pos['symbol']}: Bot {pos['bot_priority']} - {pos['strategy_type']}"
+                    for pos in open_positions[:5]
                 ])
-                if len(active_orders_from_db) > 5:
-                    orders_text += f"\n...и ещё {len(active_orders_from_db) - 5} ордеров"
+                if len(open_positions) > 5:
+                    positions_text += f"\n...и ещё {len(open_positions) - 5} позиций"
 
                 order_alert = (
-                    f"🚨 <b>ОБНАРУЖЕНЫ АКТИВНЫЕ ОРДЕРА БОТА</b>\n\n"
-                    f"{orders_text}\n\n"
-                    f"🔄 Запускаю восстановление стратегий для управления ордерами..."
+                    f"🚨 <b>ОБНАРУЖЕНЫ ОТКРЫТЫЕ ПОЗИЦИИ</b>\n\n"
+                    f"{positions_text}\n\n"
+                    f"🔄 Запускаю восстановление стратегий для управления позициями..."
                 )
                 await self.bot.send_message(
                     chat_id=user_id,
@@ -777,11 +785,11 @@ class BotApplication:
                 log_info(user_id, "Сохранённых стратегий в Redis не найдено", "BotApplication")
 
                 if has_active_orders:
-                    # Есть активные ордера - восстанавливаем для их символов
-                    log_info(user_id, f"Восстанавливаю стратегии для символов с активными ордерами", "BotApplication")
+                    # Есть открытые позиции - восстанавливаем для их символов
+                    log_info(user_id, f"Восстанавливаю стратегии для символов с открытыми позициями", "BotApplication")
 
-                    symbols_with_orders = set(order['symbol'] for order in active_orders_from_db)
-                    log_info(user_id, f"Символы с ордерами: {symbols_with_orders}", "BotApplication")
+                    symbols_with_orders = set(pos['symbol'] for pos in open_positions)
+                    log_info(user_id, f"Символы с позициями: {symbols_with_orders}", "BotApplication")
 
                     for symbol in symbols_with_orders:
                         try:

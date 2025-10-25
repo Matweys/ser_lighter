@@ -66,6 +66,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
         # WebSocket задача
         self._scanner_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None  # Задача для heartbeat мониторинга
+        self._config_reload_task: Optional[asyncio.Task] = None  # Задача для периодической перезагрузки конфигурации
         self._ws_url = "wss://stream.bybit.com/v5/public/linear"
 
         # === ПАРАМЕТРЫ ТОРГОВЛИ ===
@@ -110,8 +111,13 @@ class FlashDropCatcherStrategy(BaseStrategy):
         """Возвращает тип стратегии"""
         return StrategyType.FLASH_DROP_CATCHER
 
-    async def _load_config(self):
-        """Загрузка конфигурации из Redis и установка параметров"""
+    async def _load_strategy_config(self):
+        """
+        Загрузка конфигурации из Redis и установка параметров.
+
+        ✅ КРИТИЧНО: Метод назван _load_strategy_config() (не _load_config()!)
+        чтобы ПЕРЕОПРЕДЕЛИТЬ базовый метод и обновляться при _force_config_reload().
+        """
         await super()._load_strategy_config()
 
         # Загружаем параметры из конфигурации (ВАЖНО: дефолты должны совпадать с default_configs.py!)
@@ -129,7 +135,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
         log_info(self.user_id,
                 f"📋 Параметры FlashDropCatcher: интервал={self.TIMEFRAME_INTERVAL}m, история={self.HISTORY_BARS}, "
-                f"базовый порог={float(self.BASE_DROP_PCT)*100:.1f}%, объем={self.VOLUME_SPIKE_MIN}x",
+                f"базовый порог={float(self.BASE_DROP_PCT)*100:.1f}%, макс={float(self.MAX_DROP_PCT)*100:.1f}%, объем={self.VOLUME_SPIKE_MIN}x",
                 "FlashDropCatcher")
 
     async def start(self):
@@ -141,7 +147,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
         self.is_running = True
 
         # Загружаем конфигурацию
-        await self._load_config()
+        await self._load_strategy_config()
 
         # КРИТИЧНО: Подписываемся на обновления цены для мониторинга активной позиции
         await self.event_bus.subscribe(EventType.PRICE_UPDATE, self.handle_price_update, user_id=self.user_id)
@@ -155,6 +161,10 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
         # Запускаем heartbeat мониторинг
         self._heartbeat_task = asyncio.create_task(self._run_heartbeat_monitor())
+
+        # ✅ КРИТИЧНО: Запускаем периодическую перезагрузку конфигурации (каждые 5 минут)
+        # Это гарантирует что настройки обновляются даже если нет сигналов!
+        self._config_reload_task = asyncio.create_task(self._run_config_reload_monitor())
 
         log_info(self.user_id,
                 f"✅ FlashDropCatcher запущена! Сканирование всех символов на падения...",
@@ -182,6 +192,14 @@ class FlashDropCatcherStrategy(BaseStrategy):
             self._heartbeat_task.cancel()
             try:
                 await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+
+        # Останавливаем периодическую перезагрузку конфигурации
+        if self._config_reload_task and not self._config_reload_task.done():
+            self._config_reload_task.cancel()
+            try:
+                await self._config_reload_task
             except asyncio.CancelledError:
                 pass
 
@@ -617,6 +635,10 @@ class FlashDropCatcherStrategy(BaseStrategy):
         Обрабатывает сигнал резкого падения с проверкой лимитов.
         """
         try:
+            # ✅ КРИТИЧНО: Перезагружаем конфигурацию ПЕРЕД входом в сделку
+            # Это гарантирует, что используются АКТУАЛЬНЫЕ настройки из Redis
+            await self._force_config_reload()
+
             # Проверка 1: Подсчитываем количество открытых позиций на бирже
             all_positions = await self.api.get_positions()
             open_positions_count = 0
@@ -676,14 +698,14 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
     async def _open_long_position(self, symbol: str, entry_price: Decimal, drop_percent: Decimal, volume_ratio: Decimal, volatility_pct: Decimal):
         """Открывает LONG позицию по текущей цене"""
+        # ✅ КРИТИЧНО: Сохраняем старое значение self.symbol ДО try блока для восстановления при ошибке
+        old_symbol = self.symbol
+
         try:
             # Сохраняем информацию о сигнале для уведомления
             self.signal_drop_percent = drop_percent
             self.signal_volume_ratio = volume_ratio
             self.signal_volatility_pct = volatility_pct
-
-            # ✅ ВАЖНО: НЕ меняем self.symbol до успешного открытия ордера!
-            # Изменение будет ПОСЛЕ успешного размещения ордера
 
             # Получаем параметры из конфигурации
             order_amount = self._convert_to_decimal(self.get_config_value("order_amount", 200.0))
@@ -710,6 +732,14 @@ class FlashDropCatcherStrategy(BaseStrategy):
                     f"📈 Открываем LONG: {symbol}, размер: {position_size}, плечо: {leverage}x",
                     "FlashDropCatcher")
 
+            # ✅ КРИТИЧНО: Меняем self.symbol ПЕРЕД вызовом _place_order()!
+            # Метод _place_order() использует self.symbol внутри себя для:
+            # 1. client_order_id генерации (строка 817 в base_strategy.py)
+            # 2. Сохранения в БД (строка 837)
+            # 3. Вызова API (строка 867)
+            self.symbol = symbol
+            log_info(self.user_id, f"✅ self.symbol временно изменён с '{old_symbol}' на '{self.symbol}' перед вызовом _place_order()", "FlashDropCatcher")
+
             # ИСПРАВЛЕНИЕ: Используем _place_order из базового класса для сохранения в БД!
             order_result = await self._place_order(
                 side="Buy",
@@ -719,16 +749,14 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
             # place_order() возвращает order_id (строку), а не словарь
             if order_result:
-                # ✅ КРИТИЧНО: ТЕПЕРЬ меняем self.symbol ПОСЛЕ успешного открытия ордера!
-                self.symbol = symbol
-
+                # ✅ Ордер успешно размещен, symbol остается измененным
                 self.trades_opened += 1  # Увеличиваем счётчик успешно открытых сделок
                 self.position_active = True
                 self.entry_time = datetime.now()  # Сохраняем время открытия позиции
                 self.position_size = position_size
                 self.active_direction = "LONG"
 
-                log_info(self.user_id, f"✅ self.symbol изменён на {self.symbol} после успешного открытия ордера", "FlashDropCatcher")
+                log_info(self.user_id, f"✅ Ордер успешно размещен, self.symbol остается {self.symbol}", "FlashDropCatcher")
 
                 # КРИТИЧНО: Получаем РЕАЛЬНУЮ цену исполнения с биржи (не используем цену сигнала!)
                 try:
@@ -806,10 +834,17 @@ class FlashDropCatcherStrategy(BaseStrategy):
                     except Exception as notification_error:
                         log_error(self.user_id, f"❌ Ошибка отправки уведомления об открытии: {notification_error}", "FlashDropCatcher")
             else:
-                log_error(self.user_id, "Не удалось открыть позицию", "FlashDropCatcher")
+                # ❌ Ордер НЕ размещен - восстанавливаем старый символ
+                self.symbol = old_symbol
+                log_error(self.user_id, f"❌ Не удалось открыть позицию для {symbol}, self.symbol восстановлен обратно в '{old_symbol}'", "FlashDropCatcher")
 
         except Exception as e:
-            log_error(self.user_id, f"Ошибка открытия LONG позиции: {e}", "FlashDropCatcher")
+            # ❌ Исключение при размещении ордера - восстанавливаем старый символ
+            if hasattr(self, 'symbol') and self.symbol != old_symbol:
+                self.symbol = old_symbol
+                log_error(self.user_id, f"❌ Исключение при открытии позиции: {e}, self.symbol восстановлен обратно в '{old_symbol}'", "FlashDropCatcher")
+            else:
+                log_error(self.user_id, f"Ошибка открытия LONG позиции: {e}", "FlashDropCatcher")
 
     async def _handle_price_update(self, event: PriceUpdateEvent):
         """Внутренний метод обработки обновления цены (вызывается из BaseStrategy)"""
@@ -1238,7 +1273,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
                 # Статистика за период (защита от деления на 0)
                 candles_per_minute = self.processed_candles_count / max(elapsed_minutes, 1) if elapsed_minutes > 0 else 0
-
+                
                 # Формируем детализацию по падениям
                 drops_detail = ""
                 if self.detected_drops_count > 0:
@@ -1307,6 +1342,48 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 break
             except Exception as e:
                 log_error(self.user_id, f"Ошибка heartbeat мониторинга: {e}", "FlashDropCatcher")
+                # Продолжаем работу даже при ошибке
+                await asyncio.sleep(60)
+
+    async def _run_config_reload_monitor(self):
+        """
+        ⚙️ ПЕРИОДИЧЕСКАЯ ПЕРЕЗАГРУЗКА КОНФИГУРАЦИИ - каждые 5 минут
+
+        ✅ КРИТИЧНО: Это гарантирует что настройки обновляются даже если нет сигналов!
+        Настройки вроде MAX_DROP_PCT, BASE_DROP_PCT, MIN_DROP_PCT влияют на ПОИСК сигналов,
+        поэтому должны обновляться регулярно, а не только перед входом в сделку.
+        """
+        config_reload_interval = 300  # 5 минут в секундах
+
+        while self.is_running:
+            try:
+                # КРИТИЧНО: Sleep в НАЧАЛЕ цикла, чтобы первая перезагрузка произошла через 5 минут после запуска
+                await asyncio.sleep(config_reload_interval)
+
+                if not self.is_running:
+                    break
+
+                # Перезагружаем конфигурацию
+                log_info(self.user_id,
+                        "⚙️ Периодическая перезагрузка ВСЕХ настроек конфигурации (каждые 5 мин)",
+                        "FlashDropCatcher")
+
+                await self._force_config_reload()
+
+                log_info(self.user_id,
+                        f"✅ ВСЕ настройки обновлены из Redis:\n"
+                        f"  • Интервал: {self.TIMEFRAME_INTERVAL}m, История свечей: {self.HISTORY_BARS}\n"
+                        f"  • Пороги падения: BASE={float(self.BASE_DROP_PCT)*100:.1f}%, MIN={float(self.MIN_DROP_PCT)*100:.1f}%, MAX={float(self.MAX_DROP_PCT)*100:.1f}%\n"
+                        f"  • Объем: {self.VOLUME_SPIKE_MIN}x, Мин.дневной объем: ${float(self.MIN_DAILY_VOLUME_USD):,.0f}\n"
+                        f"  • Макс.позиций: {self.MAX_CONCURRENT_POSITIONS}, Hard SL: {float(self.HARD_STOP_LOSS_USDT):.0f} USDT\n"
+                        f"  • Order amount: {float(self.get_config_value('order_amount', 200.0)):.0f} USDT, Плечо: {self.get_config_value('leverage', 2)}x",
+                        "FlashDropCatcher")
+
+            except asyncio.CancelledError:
+                log_info(self.user_id, "Мониторинг перезагрузки конфигурации остановлен", "FlashDropCatcher")
+                break
+            except Exception as e:
+                log_error(self.user_id, f"Ошибка перезагрузки конфигурации: {e}", "FlashDropCatcher")
                 # Продолжаем работу даже при ошибке
                 await asyncio.sleep(60)
 

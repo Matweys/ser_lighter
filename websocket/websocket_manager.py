@@ -639,6 +639,24 @@ class DataFeedHandler:
                              f"WebSocket: Ордер {order_id} исполнен. Создаю OrderFilledEvent.",
                              "DataFeedHandler")
 
+                    # ✅ КРИТИЧНО: Обновляем статус в БД ПЕРЕД публикацией события
+                    # Это позволяет API-polling немедленно обнаружить исполненный ордер
+                    try:
+                        await db_manager.update_order_status(
+                            order_id=order_id,
+                            status="FILLED",
+                            filled_quantity=to_decimal(order_data.get("cumExecQty", "0")),
+                            average_price=to_decimal(order_data.get("avgPrice", "0")),
+                            commission=to_decimal(order_data.get("cumExecFee", "0"))
+                        )
+                        log_debug(self.user_id,
+                                 f"✅ WebSocket: Статус ордера {order_id} обновлён в БД: FILLED",
+                                 "DataFeedHandler")
+                    except Exception as db_error:
+                        log_error(self.user_id,
+                                 f"❌ Ошибка обновления статуса ордера {order_id} в БД: {db_error}",
+                                 "DataFeedHandler")
+
                     filled_event = OrderFilledEvent(
                         user_id=self.user_id,
                         order_id=order_id,
