@@ -1550,7 +1550,7 @@ class _DatabaseManager:
                 query = """
                 SELECT id, user_id, symbol, side, order_type, quantity, price,
                        filled_quantity, average_price, status, order_id,
-                       client_order_id, strategy_type, bot_priority, metadata, created_at, updated_at, commission
+                       client_order_id, strategy_type, bot_priority, order_purpose, metadata, created_at, updated_at, commission
                 FROM orders
                 WHERE order_id = $1 AND user_id = $2
                 """
@@ -1559,7 +1559,7 @@ class _DatabaseManager:
                 query = """
                 SELECT id, user_id, symbol, side, order_type, quantity, price,
                        filled_quantity, average_price, status, order_id,
-                       client_order_id, strategy_type, bot_priority, metadata, created_at, updated_at, commission
+                       client_order_id, strategy_type, bot_priority, order_purpose, metadata, created_at, updated_at, commission
                 FROM orders
                 WHERE order_id = $1
                 """
@@ -1576,7 +1576,7 @@ class _DatabaseManager:
             query_pending = """
             SELECT id, user_id, symbol, side, order_type, quantity, price,
                    filled_quantity, average_price, status, order_id,
-                   client_order_id, strategy_type, bot_priority, metadata, created_at, updated_at
+                   client_order_id, strategy_type, bot_priority, order_purpose, metadata, created_at, updated_at, commission
             FROM orders
             WHERE order_id = 'PENDING'
               AND created_at > NOW() - INTERVAL '10 seconds'

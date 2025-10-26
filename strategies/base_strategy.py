@@ -1816,34 +1816,108 @@ class BaseStrategy(ABC):
 
                     # Проверяем статус ордера через историю биржи
                     order_status = await self.api.get_order_status(order_id)
+
+                    # КРИТИЧНО: Проверка границ и валидности данных
+                    if not order_status or not isinstance(order_status, dict):
+                        log_warning(self.user_id, f"⚠️ Не удалось получить статус ордера {order_id} с биржи", "BaseStrategy")
+                        orders_to_remove.append(order_id)
+                        continue
+
                     if order_status:
                         status = order_status.get("orderStatus", "Unknown")
                         if status == "Filled":
-                            # Ордер исполнен - создаём событие об исполнении
+                            # Ордер исполнен - проверяем его назначение (order_purpose)
                             log_info(self.user_id, f"📈 Ордер {order_id} был исполнен во время перезагрузки", "BaseStrategy")
 
-                            # КРИТИЧЕСКИ ВАЖНО: Обновляем статус ордера в БД
-                            try:
-                                await db_manager.update_order_status(
-                                    order_id=order_id,
-                                    status="FILLED",
-                                    filled_quantity=Decimal(str(order_status.get("cumExecQty", "0"))),
-                                    average_price=Decimal(str(order_status.get("avgPrice", "0")))
-                                )
-                                log_debug(self.user_id, f"Статус ордера {order_id} обновлён в БД: FILLED", "BaseStrategy")
-                            except Exception as db_error:
-                                log_error(self.user_id, f"Ошибка обновления статуса ордера {order_id} в БД: {db_error}", "BaseStrategy")
+                            order_purpose = db_order.get('order_purpose') if db_order else None
 
-                            filled_event = OrderFilledEvent(
-                                user_id=self.user_id,
-                                order_id=order_id,
-                                symbol=self.symbol,
-                                side=order_data.get("side", "Buy"),
-                                qty=Decimal(str(order_status.get("cumExecQty", "0"))),
-                                price=Decimal(str(order_status.get("avgPrice", "0"))),
-                                fee=Decimal(str(order_status.get("cumExecFee", "0")))
-                            )
-                            await self._handle_order_filled(filled_event)
+                            # КРИТИЧНО: Обрабатываем CLOSE ордера отдельно от OPEN/AVERAGING
+                            if order_purpose == 'CLOSE':
+                                # Это CLOSE ордер - НЕ создаём новую сделку, а обновляем существующую
+                                log_info(self.user_id, f"🔄 Восстановление CLOSE ордера {order_id} - обновляем существующую сделку", "BaseStrategy")
+
+                                try:
+                                    # Получаем данные исполнения
+                                    filled_qty = Decimal(str(order_status.get("cumExecQty", "0")))
+                                    avg_price = Decimal(str(order_status.get("avgPrice", "0")))
+                                    commission = Decimal(str(order_status.get("cumExecFee", "0")))
+
+                                    # Обновляем ордер в БД с данными о закрытии
+                                    await db_manager.update_order_on_fill(
+                                        order_id=order_id,
+                                        filled_quantity=filled_qty,
+                                        average_price=avg_price,
+                                        commission=commission,
+                                        profit=None  # PnL будет рассчитан при обновлении сделки
+                                    )
+
+                                    # Получаем trade_id из БД чтобы обновить правильную сделку
+                                    trade_id = db_order.get('trade_id') if db_order else None
+
+                                    if trade_id:
+                                        # Рассчитываем PnL на основе entry_price из БД
+                                        from database.db_trades import db_manager
+                                        trade_info = await db_manager.get_active_trade(self.user_id, self.symbol)
+
+                                        if trade_info:
+                                            entry_price = trade_info.get('entry_price', Decimal('0'))
+                                            quantity = trade_info.get('quantity', Decimal('0'))
+                                            side = trade_info.get('side', 'Buy')
+
+                                            # Рассчитываем PnL
+                                            if side == 'Buy':
+                                                pnl = (avg_price - entry_price) * quantity - commission
+                                            else:
+                                                pnl = (entry_price - avg_price) * quantity - commission
+
+                                            # Обновляем сделку в БД
+                                            from datetime import datetime, timezone, timedelta
+                                            moscow_tz = timezone(timedelta(hours=3))
+                                            exit_time = datetime.now(moscow_tz)
+
+                                            await db_manager.update_trade_on_close(
+                                                trade_id=trade_id,
+                                                exit_price=avg_price,
+                                                pnl=pnl,
+                                                commission=commission,
+                                                exit_time=exit_time
+                                            )
+
+                                            log_info(self.user_id, f"✅ CLOSE ордер {order_id} обработан: сделка {trade_id} закрыта с PnL {pnl:.2f}$", "BaseStrategy")
+                                        else:
+                                            log_warning(self.user_id, f"⚠️ Не найдена активная сделка для CLOSE ордера {order_id}", "BaseStrategy")
+                                    else:
+                                        log_warning(self.user_id, f"⚠️ CLOSE ордер {order_id} не имеет trade_id в БД", "BaseStrategy")
+
+                                except Exception as close_error:
+                                    log_error(self.user_id, f"Ошибка обработки CLOSE ордера {order_id}: {close_error}", "BaseStrategy")
+
+                            else:
+                                # Это OPEN или AVERAGING ордер - обрабатываем стандартно
+                                log_info(self.user_id, f"🔄 Восстановление {order_purpose or 'OPEN'} ордера {order_id}", "BaseStrategy")
+
+                                # КРИТИЧЕСКИ ВАЖНО: Обновляем статус ордера в БД
+                                try:
+                                    await db_manager.update_order_status(
+                                        order_id=order_id,
+                                        status="FILLED",
+                                        filled_quantity=Decimal(str(order_status.get("cumExecQty", "0"))),
+                                        average_price=Decimal(str(order_status.get("avgPrice", "0")))
+                                    )
+                                    log_debug(self.user_id, f"Статус ордера {order_id} обновлён в БД: FILLED", "BaseStrategy")
+                                except Exception as db_error:
+                                    log_error(self.user_id, f"Ошибка обновления статуса ордера {order_id} в БД: {db_error}", "BaseStrategy")
+
+                                filled_event = OrderFilledEvent(
+                                    user_id=self.user_id,
+                                    order_id=order_id,
+                                    symbol=self.symbol,
+                                    side=order_data.get("side", "Buy"),
+                                    qty=Decimal(str(order_status.get("cumExecQty", "0"))),
+                                    price=Decimal(str(order_status.get("avgPrice", "0"))),
+                                    fee=Decimal(str(order_status.get("cumExecFee", "0")))
+                                )
+                                await self._handle_order_filled(filled_event)
                         else:
                             # КРИТИЧЕСКИ ВАЖНО: Обновляем статус отменённых ордеров в БД
                             log_info(self.user_id, f"ℹ️ Ордер {order_id} имеет статус {status}, удаляю из отслеживания", "BaseStrategy")
