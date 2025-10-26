@@ -862,6 +862,30 @@ class BotApplication:
                     f"🔄 Отслеживание ордеров возобновлено."
                 )
 
+            # ===================================================================
+            # ШАГ 3: Восстанавливаем Flash Drop Catcher (если был включен)
+            # ===================================================================
+            flash_drop_config = await redis_manager.get_config(user_id, ConfigType.STRATEGY_FLASH_DROP_CATCHER)
+            flash_drop_enabled = flash_drop_config and flash_drop_config.get("is_enabled", False)
+
+            if flash_drop_enabled:
+                log_info(user_id, "🚀 Восстановление Flash Drop Catcher (сканирование всех символов)...", "BotApplication")
+                try:
+                    success = await session.start_strategy(
+                        strategy_type=StrategyType.FLASH_DROP_CATCHER.value,
+                        symbol="ALL",  # Flash Drop Catcher сканирует ВСЕ символы
+                        analysis_data={'trigger': 'recovery_restart'}
+                    )
+                    if success:
+                        log_info(user_id, "✅ Flash Drop Catcher успешно восстановлен", "BotApplication")
+                        recovery_message += "\n\n🚀 <b>Flash Drop Catcher:</b> Восстановлен и активен"
+                    else:
+                        log_error(user_id, "❌ Не удалось восстановить Flash Drop Catcher", "BotApplication")
+                except Exception as e:
+                    log_error(user_id, f"❌ Ошибка восстановления Flash Drop Catcher: {e}", "BotApplication")
+            else:
+                log_info(user_id, "ℹ️ Flash Drop Catcher отключен в настройках, не восстанавливается", "BotApplication")
+
             await self.bot.send_message(
                 chat_id=user_id,
                 text=recovery_message,

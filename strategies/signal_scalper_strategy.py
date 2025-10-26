@@ -554,7 +554,7 @@ class SignalScalperStrategy(BaseStrategy):
 
         if order_id:
             self.current_order_id = order_id  # Сохраняем ID ожидаемого ордера
-            await self._await_order_fill(order_id, side=side, qty=qty)
+            # WebSocket обработает исполнение ордера и вызовет _handle_order_filled()
         else:
             self.is_waiting_for_trade = False
 
@@ -576,7 +576,7 @@ class SignalScalperStrategy(BaseStrategy):
 
         if order_id:
             self.current_order_id = order_id  # Сохраняем ID ожидаемого ордера
-            await self._await_order_fill(order_id, side=side, qty=position_size_to_close)
+            # WebSocket обработает исполнение ордера и вызовет _handle_order_filled()
         else:
             self.is_waiting_for_trade = False
 
@@ -602,8 +602,8 @@ class SignalScalperStrategy(BaseStrategy):
         """
         Обработка исполненных ордеров.
 
-        ВАЖНО: НЕ использует @strategy_locked, т.к. ВСЕГДА вызывается из контекста,
-        где блокировка УЖЕ захвачена (_await_order_fill вызывается из _enter_position,
+        ВАЖНО: НЕ использует @strategy_locked, т.к. может вызываться из контекста,
+        где блокировка УЖЕ захвачена (например, из _enter_position через WebSocket,
         которая вызывается из _handle_new_candle с @strategy_locked).
 
         Добавление @strategy_locked вызывает DEADLOCK (asyncio.Lock не реентрабельная)!
@@ -1439,9 +1439,8 @@ class SignalScalperStrategy(BaseStrategy):
                 log_info(self.user_id, f"✅ Усреднение #{self.averaging_count} выполнено. Лимит: {self.averaging_count}/{self.max_averaging_count}", "SignalScalper")
                 log_info(self.user_id, f"🎯 Режим выхода в безубыток АКТИВИРОВАН после усреднения", "SignalScalper")
 
-                # Ждем исполнения ордера
+                # WebSocket обработает исполнение ордера и вызовет _handle_order_filled()
                 # Вся логика обновления статистики будет в _handle_order_filled()
-                await self._await_order_fill(order_id, side=side, qty=qty)
 
             self.is_waiting_for_trade = False
 
@@ -1637,8 +1636,7 @@ class SignalScalperStrategy(BaseStrategy):
                         "SignalScalper")
                 log_info(self.user_id, f"🎯 Режим выхода в безубыток АКТИВИРОВАН после усреднения по стагнации", "SignalScalper")
 
-                # Ждем исполнения ордера
-                await self._await_order_fill(order_id, side=side, qty=qty)
+                # WebSocket обработает исполнение ордера и вызовет _handle_order_filled()
 
             self.is_waiting_for_trade = False
 

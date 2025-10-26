@@ -1951,9 +1951,27 @@ class UserSession:
                 message_parts.append("")
 
             # Добавляем информацию о лимитах
-            current_active = len(self.active_strategies)
+            # КРИТИЧНО: В multi-account режиме 3 стратегии для одного символа = 1 слот!
+            # FlashDropCatcher НЕ считается - это изолированная стратегия вне слотов
+            unique_slots = set()
+            for strategy_id in self.active_strategies.keys():
+                # Пропускаем FlashDropCatcher - он не занимает слоты
+                if 'flash_drop_catcher' in strategy_id.lower():
+                    continue
+
+                # Убираем суффикс _botN если есть (multi-account режим)
+                normalized_id = strategy_id
+                if '_bot' in strategy_id:
+                    parts = strategy_id.split('_')
+                    # Проверяем что последняя часть это _botN
+                    if parts[-1].startswith('bot') and len(parts[-1]) > 3 and parts[-1][3:].isdigit():
+                        normalized_id = '_'.join(parts[:-1])
+                unique_slots.add(normalized_id)
+
+            current_active = len(unique_slots)  # Правильный подсчёт слотов (без FlashDropCatcher)
+
             message_parts.append(f"📊 <b>Статус торговых слотов:</b>")
-            message_parts.append(f"▫️ Активных стратегий: {current_active}")
+            message_parts.append(f"▫️ Занято слотов: {current_active}")
             message_parts.append(f"▫️ Максимум одновременно: {max_concurrent}")
             message_parts.append(f"▫️ Доступно слотов: {available_slots}")
 

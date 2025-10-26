@@ -1072,15 +1072,30 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
         strategies_by_type = {}
         for strategy_id in active_strategies:
             try:
-                # Парсим strategy_id: "SIGNAL_SCALPER_SOLUSDT" -> ("SIGNAL_SCALPER", "SOLUSDT")
-                parts = strategy_id.split('_')
-                if len(parts) >= 3:
-                    strategy_type = '_'.join(parts[:-1])  # SIGNAL_SCALPER
-                    symbol = parts[-1]  # SOLUSDT
+                # Парсим strategy_id с поддержкой multi-account режима
+                # Форматы:
+                # - Обычный: "SIGNAL_SCALPER_SOLUSDT"
+                # - Multi-account: "signal_scalper_SOLUSDT_bot1", "signal_scalper_SOLUSDT_bot2", etc.
+
+                # Убираем суффикс _botN если есть
+                normalized_id = strategy_id
+                if '_bot' in strategy_id:
+                    # Убираем последнюю часть если это _botN
+                    parts = strategy_id.split('_')
+                    if parts[-1].startswith('bot') and parts[-1][3:].isdigit():
+                        normalized_id = '_'.join(parts[:-1])
+
+                # Теперь парсим нормализованный ID
+                parts = normalized_id.split('_')
+                if len(parts) >= 2:
+                    # Последняя часть - символ (SOLUSDT)
+                    symbol = parts[-1]
+                    # Остальное - тип стратегии (signal_scalper, FLASH_DROP_CATCHER)
+                    strategy_type = '_'.join(parts[:-1]).upper()
 
                     if strategy_type not in strategies_by_type:
-                        strategies_by_type[strategy_type] = []
-                    strategies_by_type[strategy_type].append(symbol)
+                        strategies_by_type[strategy_type] = set()  # Используем set чтобы избежать дублей
+                    strategies_by_type[strategy_type].add(symbol)
             except Exception as e:
                 log_warning(user_id, f"Ошибка парсинга strategy_id {strategy_id}: {e}", "autotrade_status")
 
@@ -1096,7 +1111,8 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
 
             status_text += f"<b>{display_name}</b>\n"
 
-            for symbol in symbols:
+            # Преобразуем set в отсортированный list для стабильного отображения
+            for symbol in sorted(symbols):
                 symbol_short = symbol.replace('USDT', '')  # SOLUSDT -> SOL
 
                 # MULTI-ACCOUNT: Проверяем позиции по всем ботам для этого символа

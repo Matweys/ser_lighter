@@ -282,95 +282,9 @@ class BaseStrategy(ABC):
             log_error(self.user_id, f"Критическая ошибка при установке плеча для {self.symbol}: {e}",
                       module_name=__name__)
 
-    async def _await_order_fill(self, order_id: str, side: str, qty: Decimal, max_retries: int = 10,
-                                delay: float = 0.3) -> bool:
-        """
-        Ожидает исполнения ордера, опрашивая API. При успехе, СОЗДАЕТ событие
-        и НАПРЯМУЮ вызывает обработчик _handle_order_filled.
-        Является единственным источником правды об исполнении ордера.
-
-        ОПТИМИЗИРОВАНО: delay=0.3s (было 1.5s), max_retries=10 (было 15).
-        Sleep перенесен в конец цикла для мгновенной первой проверки.
-        """
-        log_info(self.user_id,
-                 f"Ожидание исполнения ордера {order_id} через API-polling (до {int(max_retries * delay)} сек)...",
-                 module_name=__name__)
-        for attempt in range(max_retries):
-            try:
-                # КРИТИЧЕСКАЯ ПРОВЕРКА #1: Проверяем статус ордера в БД (САМАЯ БЫСТРАЯ проверка!)
-                # Если WebSocket уже обработал ордер, он будет помечен как FILLED в БД
-                from database.db_trades import db_manager
-                db_order = await db_manager.get_order_by_exchange_id(order_id)
-                if db_order and db_order.get('status') == 'FILLED':
-                    log_info(self.user_id,
-                            f"[БЫСТРЫЙ ВЫХОД] Ордер {order_id} уже FILLED в БД (обработан WebSocket'ом), прекращаем API-polling",
-                            module_name=__name__)
-                    return True
-
-                # БЫСТРАЯ ПРОВЕРКА #2: Если ордер уже обработан через processed_orders
-                if hasattr(self, 'processed_orders') and order_id in self.processed_orders:
-                    log_info(self.user_id, f"[БЫСТРЫЙ ВЫХОД] Ордер {order_id} в processed_orders, прекращаем API-polling", module_name=__name__)
-                    return True
-
-                # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА #3: Если стратегия больше не ждёт ордер (is_waiting_for_trade=False)
-                if hasattr(self, 'is_waiting_for_trade') and not self.is_waiting_for_trade:
-                    log_info(self.user_id, f"[БЫСТРЫЙ ВЫХОД] Стратегия больше не ждёт ордер {order_id}, прекращаем API-polling", module_name=__name__)
-                    return True
-
-                # ПРОВЕРКА API: Проверяем статус через API (может быть медленнее из-за задержки биржи)
-                order_status = await self.api.get_order_status(order_id)
-
-                if order_status:
-                    status = order_status.get("orderStatus")
-                    if status == "Filled":
-                        log_info(self.user_id, f"ПОДТВЕРЖДЕН API: Ордер {order_id} исполнен.", module_name=__name__)
-
-                        # Создаем объект события со всеми данными из ответа API
-                        filled_event = OrderFilledEvent(
-                            user_id=self.user_id,
-                            order_id=order_id,
-                            symbol=self.symbol,
-                            side=side,
-                            qty=self._convert_to_decimal(order_status.get("cumExecQty", qty)),
-                            price=self._convert_to_decimal(order_status.get("avgPrice", "0")),
-                            fee=self._convert_to_decimal(order_status.get("cumExecFee", "0"))
-                        )
-                        # Напрямую вызываем внутренний обработчик
-                        await self._handle_order_filled(filled_event)
-                        return True
-
-                    elif status in ["Cancelled", "Rejected", "Expired"]:
-                        # КРИТИЧЕСКИ ВАЖНО: Обновляем статус ордера в БД
-                        try:
-                            from database.db_trades import db_manager
-                            await db_manager.update_order_status(
-                                order_id=order_id,
-                                status=status.upper(),
-                                filled_quantity=None,
-                                average_price=None
-                            )
-                            log_debug(self.user_id, f"Статус ордера {order_id} обновлён в БД: {status.upper()}", module_name=__name__)
-                        except Exception as db_error:
-                            log_error(self.user_id, f"Ошибка обновления статуса ордера {order_id} в БД: {db_error}", module_name=__name__)
-
-                        log_error(self.user_id, f"Ордер {order_id} не будет исполнен. Статус: {status}",
-                                  module_name=__name__)
-                        return False
-
-                # ОПТИМИЗАЦИЯ: Sleep перенесен в конец цикла - не спим если это последняя попытка
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(delay)
-
-            except Exception as e:
-                log_error(self.user_id, f"Ошибка при ожидании исполнения ордера {order_id}: {e}", module_name=__name__)
-                # Спим даже при ошибке, чтобы не спамить запросы
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(delay)
-
-        log_error(self.user_id, f"Таймаут ожидания исполнения ордера {order_id}. Отменяю ордер для безопасности.",
-                  module_name=__name__)
-        await self._cancel_order(order_id)
-        return False
+    # МЕТОД _await_order_fill() УДАЛЁН!
+    # Market ордера исполняются мгновенно - WebSocket обработает событие исполнения.
+    # API-polling был медленным и вызывал ложные отмены уже исполненных ордеров.
 
 
     @abstractmethod
