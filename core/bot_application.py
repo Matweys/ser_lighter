@@ -658,7 +658,11 @@ class BotApplication:
                 return
 
             watchlist_symbols = global_config.get("watchlist_symbols", [])
-            auto_trading_enabled = global_config.get("auto_trading_enabled", False)
+
+            # ИСПРАВЛЕНИЕ БАГ #1: Читаем autotrade_enabled из session_data (правильное место!)
+            # НЕ из global_config! session_data обновляется при старте/стопе автоторговли
+            session_data = await redis_manager.get_user_session(user_id)
+            auto_trading_enabled = session_data.get('autotrade_enabled', False) if session_data else False
 
             if not watchlist_symbols:
                 log_info(user_id, "Список символов пуст, восстановление стратегий пропущено", "BotApplication")
@@ -756,7 +760,9 @@ class BotApplication:
                     parse_mode="HTML"
                 )
 
-            # Сначала пытаемся восстановить стратегии из сохранённых состояний
+            # ===================================================================
+            # ШАГ 1: Попытка восстановления из сохранённых состояний Redis
+            # ===================================================================
             for strategy_type in strategy_types:
                 for symbol in watchlist_symbols:
                     try:
@@ -779,65 +785,48 @@ class BotApplication:
                         continue
 
             # ===================================================================
-            # ШАГ 2: Если не восстановили из Redis, запускаем стратегии заново
+            # ШАГ 2: КРИТИЧНО - Определяем какие символы НЕ восстановлены из Redis
+            # БАГ #2 ИСПРАВЛЕН: Раньше пропускали символы если хотя бы 1 был восстановлен!
             # ===================================================================
-            if not restored_strategies:
-                log_info(user_id, "Сохранённых стратегий в Redis не найдено", "BotApplication")
+            # Извлекаем символы, которые УЖЕ восстановлены
+            restored_symbols = set()
+            for entry in restored_strategies:
+                # Парсим "SignalScalper(SOLUSDT)" -> "SOLUSDT"
+                if '(' in entry and ')' in entry:
+                    symbol = entry.split('(')[1].rstrip(')')
+                    restored_symbols.add(symbol)
 
-                if has_active_orders:
-                    # Есть открытые позиции - восстанавливаем для их символов
-                    log_info(user_id, f"Восстанавливаю стратегии для символов с открытыми позициями", "BotApplication")
+            # Находим символы из watchlist, которые НЕ восстановлены
+            symbols_to_start = [s for s in watchlist_symbols if s not in restored_symbols]
 
-                    symbols_with_orders = set(pos['symbol'] for pos in open_positions)
-                    log_info(user_id, f"Символы с позициями: {symbols_with_orders}", "BotApplication")
+            log_info(user_id,
+                    f"📊 Восстановлено из Redis: {len(restored_symbols)} ({list(restored_symbols)}), "
+                    f"Нужно запустить: {len(symbols_to_start)} ({symbols_to_start})",
+                    "BotApplication")
 
-                    for symbol in symbols_with_orders:
-                        try:
-                            # Запускаем стратегию для символа с ордерами
+            # ===================================================================
+            # ШАГ 3: Запускаем стратегии для символов, которые НЕ были восстановлены
+            # ===================================================================
+            if symbols_to_start:
+                log_info(user_id, f"🚀 Запускаю {len(symbols_to_start)} стратегий для символов без Redis состояния", "BotApplication")
+
+                # Определяем какие из symbols_to_start имеют активные позиции
+                symbols_with_orders_set = set(pos['symbol'] for pos in open_positions) if open_positions else set()
+
+                for symbol in symbols_to_start:
+                    try:
+                        # Если у символа есть активная позиция - восстанавливаем с флагом recovery
+                        if symbol in symbols_with_orders_set:
                             success = await session.start_strategy(
                                 strategy_type=StrategyType.SIGNAL_SCALPER.value,
                                 symbol=symbol,
                                 analysis_data={'trigger': 'order_recovery', 'recovery_mode': True}
                             )
-
                             if success:
                                 restored_strategies.append(f"SignalScalper({symbol})")
                                 log_info(user_id, f"✅ Восстановлена стратегия для {symbol} с активными ордерами", "BotApplication")
-                            else:
-                                log_error(user_id, f"❌ Не удалось восстановить стратегию для {symbol}", "BotApplication")
-
-                        except Exception as e:
-                            log_error(user_id, f"Ошибка восстановления стратегии для {symbol}: {e}", "BotApplication")
-
-                    # Запускаем стратегии для остальных символов из watchlist (без ордеров)
-                    symbols_without_orders = [s for s in watchlist_symbols if s not in symbols_with_orders]
-                    if symbols_without_orders:
-                        log_info(user_id, f"Запускаю стратегии для {len(symbols_without_orders)} символов без ордеров", "BotApplication")
-                        for symbol in symbols_without_orders:
-                            try:
-                                await session.start_strategy(
-                                    strategy_type=StrategyType.SIGNAL_SCALPER.value,
-                                    symbol=symbol,
-                                    analysis_data={'trigger': 'autotrade_restart'}
-                                )
-                            except Exception as e:
-                                log_error(user_id, f"Ошибка запуска стратегии для {symbol}: {e}", "BotApplication")
-
-                    recovery_message = (
-                        f"✅ <b>ВОССТАНОВЛЕНИЕ ЗАВЕРШЕНО</b>\n\n"
-                        f"🔄 Восстановлено стратегий с активными ордерами: <b>{len(restored_strategies)}</b>\n"
-                        f"{'📋 ' + ', '.join(restored_strategies) if restored_strategies else ''}\n\n"
-                        f"🚀 Запущено новых стратегий: <b>{len(symbols_without_orders)}</b>\n\n"
-                        f"✅ <b>Все ордера под контролем бота!</b>\n"
-                        f"📊 Отслеживание активно"
-                    )
-
-                else:
-                    # Нет активных ордеров, но автоторговля была включена
-                    log_info(user_id, "Автоторговля была включена - запускаю обычные стратегии", "BotApplication")
-
-                    for symbol in watchlist_symbols:
-                        try:
+                        else:
+                            # Если нет активной позиции - обычный запуск
                             success = await session.start_strategy(
                                 strategy_type=StrategyType.SIGNAL_SCALPER.value,
                                 symbol=symbol,
@@ -845,21 +834,39 @@ class BotApplication:
                             )
                             if success:
                                 restored_strategies.append(f"SignalScalper({symbol})")
-                        except Exception as e:
-                            log_error(user_id, f"Ошибка запуска стратегии для {symbol}: {e}", "BotApplication")
+                                log_info(user_id, f"✅ Запущена стратегия для {symbol} (автоторговля)", "BotApplication")
 
-                    recovery_message = (
-                        f"✅ <b>Восстановление завершено</b>\n\n"
-                        f"Запущены стратегии для {len(restored_strategies)} символов\n"
-                        f"🔄 Автоторговля возобновлена"
-                    )
+                    except Exception as e:
+                        log_error(user_id, f"Ошибка запуска стратегии для {symbol}: {e}", "BotApplication")
+
+            # ===================================================================
+            # ШАГ 4: Формируем итоговое сообщение
+            # ===================================================================
+            symbols_with_orders_count = len(set(pos['symbol'] for pos in open_positions)) if open_positions else 0
+            symbols_restored_from_redis = len(restored_symbols)
+            symbols_started_fresh = len(symbols_to_start)
+
+            if has_active_orders:
+                recovery_message = (
+                    f"✅ <b>ВОССТАНОВЛЕНИЕ ЗАВЕРШЕНО</b>\n\n"
+                    f"🔄 Всего стратегий запущено: <b>{len(restored_strategies)}</b>\n"
+                    f"{'📋 ' + ', '.join(restored_strategies) if restored_strategies else ''}\n\n"
+                    f"📊 Статистика:\n"
+                    f"• Восстановлено из Redis: {symbols_restored_from_redis}\n"
+                    f"• Запущено заново: {symbols_started_fresh}\n"
+                    f"• Символов с активными позициями: {symbols_with_orders_count}\n\n"
+                    f"✅ <b>Все ордера под контролем бота!</b>\n"
+                    f"📊 Отслеживание активно"
+                )
             else:
-                # Отправляем итоговое уведомление о восстановлении из сохранённых состояний
                 recovery_message = (
                     f"✅ <b>Восстановление завершено</b>\n\n"
-                    f"Восстановлено стратегий: <b>{len(restored_strategies)}</b>\n"
-                    f"{'📋 ' + chr(10).join(restored_strategies) if restored_strategies else ''}\n\n"
-                    f"🔄 Отслеживание ордеров возобновлено."
+                    f"Запущено стратегий: <b>{len(restored_strategies)}</b>\n"
+                    f"{'📋 ' + ', '.join(restored_strategies) if restored_strategies else ''}\n\n"
+                    f"📊 Статистика:\n"
+                    f"• Восстановлено из Redis: {symbols_restored_from_redis}\n"
+                    f"• Запущено заново: {symbols_started_fresh}\n\n"
+                    f"🔄 Автоторговля возобновлена"
                 )
 
             # ===================================================================
