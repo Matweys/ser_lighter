@@ -1541,11 +1541,11 @@ class BaseStrategy(ABC):
         """
         log_info(self.user_id, f"Запущен API-монитор для позиции {self.symbol}", "BaseStrategy")
 
-        while self.is_running and self.position_size > 0:
+        while self.is_running and self.position_size and self.position_size > 0:
             try:
                 await asyncio.sleep(60)  # Проверка раз в минуту
 
-                if not self.is_running or self.position_size == 0:
+                if not self.is_running or not self.position_size or self.position_size == 0:
                     break  # Выходим, если стратегия остановлена или позиция закрыта штатно
 
                 positions = await self.api.get_positions(symbol=self.symbol)
