@@ -741,7 +741,7 @@ class BaseStrategy(ABC):
                     order_purpose = 'OPEN'
 
             # Получаем параметры
-            leverage = int(self.get_config_value("leverage", 1))
+            leverage = int(float(self.get_config_value("leverage", 1)))
             trade_id = getattr(self, 'active_trade_db_id', None)
 
             # ШАГ 1: СОХРАНЯЕМ В БД ПЕРЕД отправкой на биржу (order_id пока неизвестен)
@@ -1183,7 +1183,7 @@ class BaseStrategy(ABC):
                 side=side,
                 entry_price=price,
                 quantity=quantity,
-                leverage=int(self.get_config_value("leverage", 1)),
+                leverage=int(float(self.get_config_value("leverage", 1))),
                 status="ACTIVE",
                 strategy_type=self.strategy_type.value,
                 entry_time=datetime.now(timezone.utc),

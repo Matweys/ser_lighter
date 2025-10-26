@@ -128,15 +128,15 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
         # Загружаем параметры из конфигурации (ВАЖНО: дефолты должны совпадать с default_configs.py!)
         self.TIMEFRAME_INTERVAL = str(self.get_config_value("timeframe_interval", "15"))
-        self.HISTORY_BARS = int(self.get_config_value("candle_history_size", 12))  # ИСПРАВЛЕНО: 7 → 12
+        self.HISTORY_BARS = int(float(self.get_config_value("candle_history_size", 12)))  # ИСПРАВЛЕНО: 7 → 12
         self.BASE_DROP_PCT = self._convert_to_decimal(self.get_config_value("base_drop_percent", 4.0)) / Decimal('100')  # ИСПРАВЛЕНО: 5.0 → 4.0
         self.MIN_DROP_PCT = self._convert_to_decimal(self.get_config_value("min_drop_percent", 2.5)) / Decimal('100')  # ИСПРАВЛЕНО: 3.0 → 2.5
         self.MAX_DROP_PCT = self._convert_to_decimal(self.get_config_value("max_drop_percent", 10.0)) / Decimal('100')  # ИСПРАВЛЕНО: 15.0 → 10.0
         self.VOLUME_SPIKE_MIN = self._convert_to_decimal(self.get_config_value("volume_spike_min", 2.5))  # ИСПРАВЛЕНО: 3.0 → 2.5
         self.MIN_DAILY_VOLUME_USD = self._convert_to_decimal(self.get_config_value("min_daily_volume_usd", 1000000.0))
-        self.MAX_CONCURRENT_POSITIONS = int(self.get_config_value("max_concurrent_positions", 2))
+        self.MAX_CONCURRENT_POSITIONS = int(float(self.get_config_value("max_concurrent_positions", 2)))
         self.HARD_STOP_LOSS_USDT = self._convert_to_decimal(self.get_config_value("hard_stop_loss_usdt", -500.0))  # ИСПРАВЛЕНО: -15.0 → -500.0
-        self.WEBSOCKET_CHUNK_SIZE = int(self.get_config_value("websocket_chunk_size", 150))
+        self.WEBSOCKET_CHUNK_SIZE = int(float(self.get_config_value("websocket_chunk_size", 150)))
         self.ENABLE_HEARTBEAT = bool(self.get_config_value("enable_heartbeat_notifications", True))  # Heartbeat уведомления
 
         log_info(self.user_id,
@@ -756,7 +756,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
             # Получаем параметры из конфигурации
             order_amount = self._convert_to_decimal(self.get_config_value("order_amount", 200.0))
-            leverage = int(self.get_config_value("leverage", 2))
+            leverage = int(float(self.get_config_value("leverage", 2)))
 
             # Устанавливаем плечо (используем параметр symbol, НЕ self.symbol!)
             await self.api.set_leverage(symbol=symbol, leverage=leverage)
