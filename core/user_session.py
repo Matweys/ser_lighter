@@ -1779,11 +1779,22 @@ class UserSession:
 
             # Анализируем текущие активные стратегии
             active_strategies_analysis = await self._analyze_active_strategies()
-            # ИСПРАВЛЕНО: Считаем ВСЕ активные стратегии, а не только с открытыми позициями
-            # Стратегия занимает слот, даже если просто ждёт сигнал без позиции
-            current_trading_count = len(active_strategies_analysis)
 
-            log_info(self.user_id, f"📊 Анализ активных стратегий: всего {len(active_strategies_analysis)}, с позициями {current_trading_count}/{max_concurrent_trades}", module_name=__name__)
+            # КРИТИЧНО: Считаем УНИКАЛЬНЫЕ СИМВОЛЫ для SignalScalper (учитываем multi-account!)
+            # Multi-account: 1 символ = 4 записи (_bot1, _bot2, _bot3, base) = 1 СЛОТ
+            # FlashDropCatcher НЕ влияет на слоты SignalScalper
+            unique_symbols = set()
+            for strategy_id, analysis in active_strategies_analysis.items():
+                # Учитываем ТОЛЬКО SignalScalper стратегии
+                if analysis.get('strategy_type') == StrategyType.SIGNAL_SCALPER.value:
+                    unique_symbols.add(analysis['symbol'])
+
+            current_trading_count = len(unique_symbols)  # Количество УНИКАЛЬНЫХ символов
+
+            # Отдельно считаем стратегии С ОТКРЫТЫМИ ПОЗИЦИЯМИ (для корректного логирования)
+            strategies_with_positions_count = sum(1 for s in active_strategies_analysis.values() if s.get('has_active_position', False))
+
+            log_info(self.user_id, f"📊 Анализ активных стратегий: всего записей {len(active_strategies_analysis)}, уникальных символов {current_trading_count}, с позициями {strategies_with_positions_count}, лимит слотов {max_concurrent_trades}", module_name=__name__)
 
             # === ОБРАБОТКА УДАЛЕННЫХ СИМВОЛОВ ===
             strategies_to_stop_immediately = []
