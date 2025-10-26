@@ -539,12 +539,27 @@ class UserSession:
                     del self.coordinators[symbol]
                     log_info(self.user_id, f"✅ Coordinator для {symbol} удалён", module_name=__name__)
 
-                # КРИТИЧНО: ВСЕГДА удаляем стратегию из active_strategies (даже если координатора уже нет)
+                # КРИТИЧНО: Удаляем ВСЕ стратегии координатора из active_strategies
+                # В multi-account режиме для каждого символа создаются 4 стратегии:
+                # 1. signal_scalper_SYMBOL_bot1
+                # 2. signal_scalper_SYMBOL_bot2
+                # 3. signal_scalper_SYMBOL_bot3
+                # 4. signal_scalper_SYMBOL (базовая для совместимости)
                 strategy_removed = False
+
+                # Удаляем базовую стратегию
                 if strategy_id in self.active_strategies:
                     del self.active_strategies[strategy_id]
                     strategy_removed = True
                     log_info(self.user_id, f"✅ Стратегия {strategy_id} удалена из active_strategies", module_name=__name__)
+
+                # Удаляем стратегии ботов (bot1, bot2, bot3)
+                for bot_num in [1, 2, 3]:
+                    bot_strategy_id = f"{strategy_id}_bot{bot_num}"
+                    if bot_strategy_id in self.active_strategies:
+                        del self.active_strategies[bot_strategy_id]
+                        strategy_removed = True
+                        log_info(self.user_id, f"✅ Стратегия бота {bot_strategy_id} удалена из active_strategies", module_name=__name__)
 
                 # Если была операция удаления (координатор или стратегия)
                 if coordinator_exists or strategy_removed:
@@ -1600,6 +1615,9 @@ class UserSession:
         """
         Проверяет возможность запуска стратегии с учётом лимитов слотов.
 
+        КРИТИЧНО: В multi-account режиме 1 символ = 4 стратегии (_bot1, _bot2, _bot3, base) = 1 СЛОТ!
+        Поэтому считаем УНИКАЛЬНЫЕ СИМВОЛЫ, а не отдельные стратегии.
+
         Returns:
             str: Одно из значений:
                 - "start_immediately" - есть свободный слот, можно запускать
@@ -1612,43 +1630,66 @@ class UserSession:
             risk_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
             max_concurrent_trades = risk_config.get("max_concurrent_trades", self.MAX_STRATEGY_SLOTS)
 
-            # Получаем все стратегии данного типа
-            same_type_strategies = [
-                (sid, strategy) for sid, strategy in self.active_strategies.items()
-                if strategy.strategy_type.value == strategy_type
-            ]
+            # КРИТИЧНО: Считаем УНИКАЛЬНЫЕ СИМВОЛЫ, а не отдельные стратегии!
+            # В multi-account режиме для каждого символа создается 4 стратегии:
+            # - signal_scalper_SYMBOL_bot1
+            # - signal_scalper_SYMBOL_bot2
+            # - signal_scalper_SYMBOL_bot3
+            # - signal_scalper_SYMBOL (базовая)
+            # Но это все ОДИН слот!
 
-            log_info(self.user_id, f"🔍 Проверка слотов для {strategy_type}_{symbol}: найдено {len(same_type_strategies)} стратегий того же типа", module_name=__name__)
+            unique_symbols = {}  # symbol -> list of (strategy_id, strategy)
+
+            for sid, strategy in self.active_strategies.items():
+                if strategy.strategy_type.value != strategy_type:
+                    continue
+
+                sym = strategy.symbol
+                if sym not in unique_symbols:
+                    unique_symbols[sym] = []
+                unique_symbols[sym].append((sid, strategy))
+
+            log_info(self.user_id, f"🔍 Проверка слотов для {strategy_type}_{symbol}: найдено {len(unique_symbols)} уникальных символов (макс: {max_concurrent_trades})", module_name=__name__)
 
             # Если меньше лимита - можно запускать сразу
-            if len(same_type_strategies) < max_concurrent_trades:
-                log_info(self.user_id, f"✅ Есть свободный слот: {len(same_type_strategies)}/{max_concurrent_trades}", module_name=__name__)
+            if len(unique_symbols) < max_concurrent_trades:
+                log_info(self.user_id, f"✅ Есть свободный слот: {len(unique_symbols)}/{max_concurrent_trades}", module_name=__name__)
                 return "start_immediately"
 
-            # Все слоты заняты - ищем неактивные стратегии для замены
-            inactive_strategies = []
-            active_strategies = []
+            # Все слоты заняты - ищем символы БЕЗ активных позиций для замены
+            symbols_with_positions = []
+            symbols_without_positions = []
 
-            for strategy_id, strategy in same_type_strategies:
-                has_position = getattr(strategy, 'position_active', False)
-                if has_position:
-                    active_strategies.append((strategy_id, strategy))
+            for sym, strategies_list in unique_symbols.items():
+                # Проверяем, есть ли хотя бы одна стратегия с активной позицией для этого символа
+                has_any_position = any(getattr(strat, 'position_active', False) for _, strat in strategies_list)
+
+                if has_any_position:
+                    symbols_with_positions.append(sym)
                 else:
-                    inactive_strategies.append((strategy_id, strategy))
+                    symbols_without_positions.append(sym)
 
-            log_info(self.user_id, f"📊 Анализ слотов: активных {len(active_strategies)}, неактивных {len(inactive_strategies)}", module_name=__name__)
+            log_info(self.user_id, f"📊 Анализ слотов: символов с позициями {len(symbols_with_positions)}, без позиций {len(symbols_without_positions)}", module_name=__name__)
 
-            # Если есть неактивные стратегии - заменяем первую
-            if inactive_strategies:
-                strategy_to_replace_id, strategy_to_replace = inactive_strategies[0]
-                log_info(self.user_id, f"🔄 Заменяю неактивную стратегию {strategy_to_replace_id} на {strategy_type}_{symbol}", module_name=__name__)
+            # Если есть символы без позиций - заменяем первый
+            if symbols_without_positions:
+                symbol_to_replace = symbols_without_positions[0]
+                log_info(self.user_id, f"🔄 Заменяю неактивный символ {symbol_to_replace} на {symbol}", module_name=__name__)
 
-                # Останавливаем старую стратегию
-                await self.stop_strategy(strategy_to_replace_id, reason=f"replaced_by_{symbol}")
+                # КРИТИЧНО: В multi-account режиме нужно остановить КООРДИНАТОР, а не отдельную стратегию!
+                # Проверяем, есть ли координатор для этого символа
+                if symbol_to_replace in self.coordinators:
+                    # Останавливаем координатор (он остановит все 3 бота)
+                    await self.stop_strategy(f"{strategy_type}_{symbol_to_replace}", reason=f"replaced_by_{symbol}")
+                else:
+                    # Обычный режим - останавливаем единственную стратегию
+                    strategy_to_replace_id = f"{strategy_type}_{symbol_to_replace}"
+                    await self.stop_strategy(strategy_to_replace_id, reason=f"replaced_by_{symbol}")
+
                 return "replaced_inactive"
 
             # Все слоты заняты активными позициями - добавляем в очередь
-            log_info(self.user_id, f"⏳ Все слоты заняты активными позициями, добавляю {symbol} в очередь", module_name=__name__)
+            log_info(self.user_id, f"⏳ Все {max_concurrent_trades} слотов заняты активными позициями, добавляю {symbol} в очередь", module_name=__name__)
             await self._add_to_strategy_queue(strategy_type, symbol)
             return "queued"
 

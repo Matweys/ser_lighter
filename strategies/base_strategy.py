@@ -1615,7 +1615,8 @@ class BaseStrategy(ABC):
             scalper_attributes = [
                 'averaging_count', 'total_position_size', 'average_entry_price',
                 'last_averaging_percent', 'sl_extended', 'config_frozen',
-                'active_trade_config', 'peak_profit_usd', 'hold_signal_counter'
+                'active_trade_config', 'peak_profit_usd', 'hold_signal_counter',
+                '_last_known_price', 'initial_margin_usd'  # КРИТИЧНО для координатора: расчет PnL%
             ]
 
             # Сохраняем все доступные атрибуты

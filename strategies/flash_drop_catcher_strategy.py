@@ -17,12 +17,13 @@ from datetime import datetime
 from collections import defaultdict, deque
 from aiogram import Bot
 from core.logger import log_info, log_error, log_warning, log_debug
-from core.enums import StrategyType, PositionSide
+from core.enums import StrategyType, PositionSide, ConfigType
 from core.events import EventType, EventBus, PriceUpdateEvent, OrderFilledEvent
 from api.bybit_api import BybitAPI
 from .base_strategy import BaseStrategy
 from aiogram.utils.markdown import hbold, hcode
 from core.concurrency_manager import strategy_locked
+from cache.redis_manager import redis_manager
 
 # Настройка точности для Decimal
 getcontext().prec = 28
@@ -70,24 +71,29 @@ class FlashDropCatcherStrategy(BaseStrategy):
         self._ws_url = "wss://stream.bybit.com/v5/public/linear"
 
         # === ПАРАМЕТРЫ ТОРГОВЛИ ===
-        self.MAX_CONCURRENT_POSITIONS = 2  # Максимум 2 позиции одновременно (из конфига)
+        self.MAX_CONCURRENT_POSITIONS = 2  # Максимум позиций одновременно (из конфига, динамический)
 
-        # Параметры позиции
-        self.position_active = False
-        self.entry_price: Decimal = Decimal('0')
-        self.entry_time: Optional[datetime] = None  # Время открытия позиции
-        self.position_size: Decimal = Decimal('0')
-        self.active_direction = "LONG"
+        # КРИТИЧНО: Словарь для отслеживания МНОЖЕСТВЕННЫХ активных позиций
+        # Каждая позиция отслеживается независимо с полным набором данных
+        # Структура: {
+        #   symbol: {
+        #     'entry_price': Decimal,           # Цена входа
+        #     'entry_time': datetime,           # Время входа
+        #     'position_size': Decimal,         # Размер позиции
+        #     'order_id': str,                  # ID ордера открытия для отслеживания в БД
+        #     'highest_pnl': Decimal,           # Максимальный PnL для trailing stop
+        #     'current_trailing_level': int,    # Текущий уровень trailing stop
+        #     'last_trailing_notification_level': int,  # Последний уведомленный уровень
+        #     'signal_drop_percent': Decimal,   # Процент падения сигнала
+        #     'signal_volume_ratio': Decimal,   # Коэффициент всплеска объёма
+        #     'signal_volatility_pct': Decimal  # Волатильность на момент сигнала
+        #   }
+        # }
+        self.active_flash_positions: Dict[str, Dict[str, Any]] = {}
 
-        # Информация о сигнале (для уведомлений)
-        self.signal_drop_percent: Decimal = Decimal('0')
-        self.signal_volume_ratio: Decimal = Decimal('0')
-        self.signal_volatility_pct: Decimal = Decimal('0')
-
-        # Trailing stop параметры (из signal_scalper)
-        self.highest_pnl = Decimal('0')
-        self.current_trailing_level = 0
-        self.last_trailing_notification_level = -1
+        # ВАЖНО: self.symbol ВСЕГДА равен "ALL" для этой стратегии!
+        # Стратегия сканирует ВСЕ символы и работает с множеством позиций параллельно
+        # self.symbol меняется ВРЕМЕННО только при вызове _place_order() для корректной работы базового класса
 
         # Hard stop loss при -15$ (из конфига)
         self.HARD_STOP_LOSS_USDT = Decimal('-15.0')
@@ -629,6 +635,49 @@ class FlashDropCatcherStrategy(BaseStrategy):
     # === ТОРГОВАЯ ЛОГИКА (ИНТЕГРАЦИЯ) ===
     # ============================================================================
 
+    async def _is_symbol_in_signal_scalper_watchlist(self, symbol: str) -> bool:
+        """
+        Проверяет, находится ли символ в вайтлисте signal_scalper стратегии.
+
+        ✅ КРИТИЧНО: Flash Drop Catcher НЕ ДОЛЖНА открывать позиции на символах,
+        которые уже торгуются signal_scalper стратегией (находятся в вайтлисте).
+
+        Args:
+            symbol: Символ для проверки
+
+        Returns:
+            True если символ В вайтлисте signal_scalper, False если НЕ в вайтлисте
+        """
+        try:
+            # Получаем глобальную конфигурацию пользователя из Redis
+            global_config = await redis_manager.get_user_config(self.user_id, ConfigType.GLOBAL)
+
+            if not global_config:
+                log_debug(self.user_id, "Глобальная конфигурация не найдена, вайтлист пуст", "FlashDropCatcher")
+                return False
+
+            # Получаем вайтлист символов (watchlist_symbols)
+            watchlist = global_config.get("watchlist_symbols", [])
+
+            if not watchlist or not isinstance(watchlist, list):
+                log_debug(self.user_id, "Вайтлист пуст или имеет неверный формат", "FlashDropCatcher")
+                return False
+
+            # Проверяем наличие символа в вайтлисте
+            is_in_watchlist = symbol in watchlist
+
+            if is_in_watchlist:
+                log_debug(self.user_id,
+                         f"✅ Символ {symbol} найден в signal_scalper вайтлисте: {watchlist}",
+                         "FlashDropCatcher")
+
+            return is_in_watchlist
+
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка проверки вайтлиста для {symbol}: {e}", "FlashDropCatcher")
+            # При ошибке возвращаем False (разрешаем торговать), чтобы не блокировать стратегию
+            return False
+
     async def _handle_drop_signal(self, symbol: str, price: Decimal, drop_pct: Decimal,
                                   volume_ratio: Decimal, volatility_pct: Decimal):
         """
@@ -639,25 +688,23 @@ class FlashDropCatcherStrategy(BaseStrategy):
             # Это гарантирует, что используются АКТУАЛЬНЫЕ настройки из Redis
             await self._force_config_reload()
 
-            # Проверка 1: Подсчитываем количество открытых позиций на бирже
-            all_positions = await self.api.get_positions()
-            open_positions_count = 0
+            # Проверка 0: НЕ ТОРГОВАТЬ символами из signal_scalper вайтлиста
+            if await self._is_symbol_in_signal_scalper_watchlist(symbol):
+                log_warning(self.user_id,
+                           f"⚠️ Пропускаем сигнал {symbol} - символ в вайтлисте signal_scalper!",
+                           "FlashDropCatcher")
+                return
 
-            # get_positions() возвращает List[Dict] напрямую
-            if all_positions and isinstance(all_positions, list):
-                for pos in all_positions:
-                    position_size = float(pos.get("size", 0))
-                    if position_size > 0:
-                        open_positions_count += 1
-                        # Проверяем, есть ли уже позиция на этот символ
-                        if pos["symbol"] == symbol:
-                            self.rejected_due_to_position_exists += 1
-                            log_warning(self.user_id,
-                                       f"⚠️ Пропускаем сигнал {symbol} - уже есть открытая позиция!",
-                                       "FlashDropCatcher")
-                            return
+            # Проверка 1: Проверяем, есть ли уже позиция на этот символ (в НАШЕМ словаре)
+            if symbol in self.active_flash_positions:
+                self.rejected_due_to_position_exists += 1
+                log_warning(self.user_id,
+                           f"⚠️ Пропускаем сигнал {symbol} - уже есть открытая позиция!",
+                           "FlashDropCatcher")
+                return
 
-            # Проверка 2: Достигнут ли лимит одновременных позиций
+            # Проверка 2: Достигнут ли лимит одновременных позиций (считаем СВОИ позиции из словаря)
+            open_positions_count = len(self.active_flash_positions)
             if open_positions_count >= self.MAX_CONCURRENT_POSITIONS:
                 self.rejected_due_to_max_positions += 1
                 log_warning(self.user_id,
@@ -796,12 +843,38 @@ class FlashDropCatcherStrategy(BaseStrategy):
                              "FlashDropCatcher")
                     self.entry_price = entry_price
 
-                # Сбрасываем trailing stop параметры
-                self.highest_pnl = Decimal('0')
-                self.current_trailing_level = 0
-                self.last_trailing_notification_level = -1
+                # Инициализируем trailing stop параметры
+                highest_pnl = Decimal('0')
+                current_trailing_level = 0
+                last_trailing_notification_level = -1
 
-                log_info(self.user_id, f"✅ LONG позиция открыта по РЕАЛЬНОЙ цене {self.entry_price:.8f}", "FlashDropCatcher")
+                # КРИТИЧНО: Добавляем позицию в словарь активных позиций со ВСЕМИ данными
+                self.active_flash_positions[symbol] = {
+                    'entry_price': self.entry_price,
+                    'entry_time': self.entry_time,
+                    'position_size': position_size,
+                    'order_id': order_result,  # ID ордера для отслеживания в БД
+                    'highest_pnl': highest_pnl,
+                    'current_trailing_level': current_trailing_level,
+                    'last_trailing_notification_level': last_trailing_notification_level,
+                    'signal_drop_percent': drop_percent,
+                    'signal_volume_ratio': volume_ratio,
+                    'signal_volatility_pct': volatility_pct
+                }
+
+                # СТАРЫЕ поля (для совместимости с текущим кодом, будут удалены в следующих шагах)
+                self.highest_pnl = highest_pnl
+                self.current_trailing_level = current_trailing_level
+                self.last_trailing_notification_level = last_trailing_notification_level
+
+                log_info(self.user_id,
+                        f"✅ LONG позиция открыта по РЕАЛЬНОЙ цене {self.entry_price:.8f}\n"
+                        f"   Позиция добавлена в active_flash_positions[{symbol}]:\n"
+                        f"   - order_id: {order_result}\n"
+                        f"   - entry_price: {self.entry_price}\n"
+                        f"   - position_size: {position_size}\n"
+                        f"   - signal: drop={float(drop_percent):.2f}%, volume={float(volume_ratio):.2f}x",
+                        "FlashDropCatcher")
 
                 # Уведомление
                 if self.bot:
@@ -853,32 +926,46 @@ class FlashDropCatcherStrategy(BaseStrategy):
     @strategy_locked
     async def handle_price_update(self, event: PriceUpdateEvent):
         """
-        Обработчик обновлений цены для активной позиции.
+        Обработчик обновлений цены для ВСЕХ активных позиций.
+
+        ✅ КРИТИЧНО: Теперь обрабатывает МНОЖЕСТВЕННЫЕ позиции параллельно!
+        Каждая позиция отслеживается независимо со своими trailing stop параметрами.
+
         THREAD-SAFE: Защищено декоратором @strategy_locked.
         """
-        if not self.position_active or event.symbol != self.symbol:
+        # ВАЖНО: Проверяем, есть ли хотя бы одна активная позиция
+        if not self.active_flash_positions:
             return
 
         try:
+            # Проверяем, есть ли позиция по этому символу в нашем словаре
+            if event.symbol not in self.active_flash_positions:
+                return  # Это не наш символ, игнорируем
+
+            # Получаем данные позиции из словаря
+            position_data = self.active_flash_positions[event.symbol]
+
             current_price = self._convert_to_decimal(event.price)
 
-            # Рассчитываем текущий PnL
-            current_pnl = await self._calculate_current_pnl(current_price)
+            # Рассчитываем текущий PnL для этой конкретной позиции
+            entry_price = position_data['entry_price']
+            position_size = position_data['position_size']
+            current_pnl = (current_price - entry_price) * position_size
 
             # Проверка 1: Hard stop loss при -500$
             if current_pnl <= self.HARD_STOP_LOSS_USDT:
                 log_warning(self.user_id,
-                           f"🛑 HARD STOP LOSS! PnL={current_pnl:.2f}$ достиг {self.HARD_STOP_LOSS_USDT}$",
+                           f"🛑 HARD STOP LOSS! {event.symbol}: PnL={current_pnl:.2f}$ достиг {self.HARD_STOP_LOSS_USDT}$",
                            "FlashDropCatcher")
-                await self._close_position("hard_stop_loss")
+                await self._close_position(event.symbol, "hard_stop_loss")
                 return
 
             # Проверка 2: Trailing stop в прибыли
             if current_pnl > Decimal('0'):
-                await self._check_trailing_stop(current_pnl)
+                await self._check_trailing_stop(event.symbol, position_data, current_pnl)
 
         except Exception as e:
-            log_error(self.user_id, f"Ошибка обработки обновления цены: {e}", "FlashDropCatcher")
+            log_error(self.user_id, f"Ошибка обработки обновления цены для {event.symbol}: {e}", "FlashDropCatcher")
 
     # ============================================================================
     # === TRAILING STOP ЛОГИКА (СКОПИРОВАНО ИЗ SIGNAL_SCALPER) ===
@@ -949,34 +1036,44 @@ class FlashDropCatcherStrategy(BaseStrategy):
         }
         return level_names.get(level, "НЕИЗВЕСТНЫЙ УРОВЕНЬ")
 
-    async def _check_trailing_stop(self, current_pnl: Decimal):
-        """Проверяет условия trailing stop"""
-        # Обновляем максимальный PnL
-        if current_pnl > self.highest_pnl:
-            self.highest_pnl = current_pnl
+    async def _check_trailing_stop(self, symbol: str, position_data: Dict[str, Any], current_pnl: Decimal):
+        """
+        Проверяет условия trailing stop для конкретной позиции.
+
+        ✅ КРИТИЧНО: Работает с МНОЖЕСТВЕННЫМИ позициями.
+        Каждая позиция отслеживается независимо со своими trailing stop параметрами.
+
+        Args:
+            symbol: Символ позиции
+            position_data: Данные позиции из словаря active_flash_positions[symbol]
+            current_pnl: Текущий PnL позиции
+        """
+        # Обновляем максимальный PnL в словаре позиции
+        if current_pnl > position_data['highest_pnl']:
+            position_data['highest_pnl'] = current_pnl
 
             # Определяем новый уровень
             new_level = self._get_trailing_level(current_pnl)
 
-            if new_level > self.current_trailing_level:
-                self.current_trailing_level = new_level
+            if new_level > position_data['current_trailing_level']:
+                position_data['current_trailing_level'] = new_level
 
                 # Уведомление о новом уровне
-                if new_level != self.last_trailing_notification_level:
+                if new_level != position_data['last_trailing_notification_level']:
                     log_info(self.user_id,
-                            f"📈 Новый уровень трейлинга: {self._get_level_name(new_level)}, PnL=${current_pnl:.2f}",
+                            f"📈 {symbol} - Новый уровень трейлинга: {self._get_level_name(new_level)}, PnL=${current_pnl:.2f}",
                             "FlashDropCatcher")
-                    self.last_trailing_notification_level = new_level
+                    position_data['last_trailing_notification_level'] = new_level
 
         # Проверяем откат для закрытия (20% от максимума)
-        if self.current_trailing_level > 0:
-            pullback_threshold = self.highest_pnl * Decimal('0.8')
+        if position_data['current_trailing_level'] > 0:
+            pullback_threshold = position_data['highest_pnl'] * Decimal('0.8')
 
             if current_pnl <= pullback_threshold:
                 log_warning(self.user_id,
-                           f"💰 TRAILING STOP! Откат 20% от максимума. Max={self.highest_pnl:.2f}$, Current={current_pnl:.2f}$",
+                           f"💰 TRAILING STOP! {symbol}: Откат 20% от максимума. Max={position_data['highest_pnl']:.2f}$, Current={current_pnl:.2f}$",
                            "FlashDropCatcher")
-                await self._close_position("trailing_stop_profit")
+                await self._close_position(symbol, "trailing_stop_profit")
 
     async def _calculate_current_pnl(self, current_price: Decimal) -> Decimal:
         """Рассчитывает текущий PnL позиции"""
@@ -988,21 +1085,45 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
         return pnl
 
-    async def _close_position(self, reason: str):
-        """Закрывает текущую позицию"""
-        if not self.position_active:
+    async def _close_position(self, symbol: str, reason: str):
+        """
+        Закрывает позицию по указанному символу.
+
+        ✅ КРИТИЧНО: Работает с МНОЖЕСТВЕННЫМИ позициями через словарь active_flash_positions.
+        Каждая позиция закрывается независимо с использованием своих данных.
+
+        Args:
+            symbol: Символ позиции для закрытия
+            reason: Причина закрытия (для логирования)
+        """
+        # Проверяем, существует ли позиция по этому символу
+        if symbol not in self.active_flash_positions:
+            log_warning(self.user_id, f"⚠️ Позиция {symbol} не найдена в active_flash_positions, пропускаем закрытие", "FlashDropCatcher")
             return
 
         try:
-            log_info(self.user_id, f"🔄 Закрытие позиции: {self.symbol}, причина: {reason}", "FlashDropCatcher")
+            # Получаем данные позиции из словаря
+            position_data = self.active_flash_positions[symbol]
+            position_size = position_data['position_size']
 
-            # ИСПРАВЛЕНИЕ: Используем _place_order из базового класса для сохранения в БД!
-            close_result = await self._place_order(
-                side="Sell",  # Закрываем LONG через Sell
-                order_type="Market",
-                qty=Decimal(str(self.position_size)),
-                reduce_only=True
-            )
+            log_info(self.user_id, f"🔄 Закрытие позиции: {symbol}, причина: {reason}, размер: {position_size}", "FlashDropCatcher")
+
+            # КРИТИЧНО: Временно устанавливаем self.symbol для _place_order
+            # (базовый метод использует self.symbol для сохранения в БД)
+            original_symbol = self.symbol
+            self.symbol = symbol
+
+            try:
+                # ИСПРАВЛЕНИЕ: Используем _place_order из базового класса для сохранения в БД!
+                close_result = await self._place_order(
+                    side="Sell",  # Закрываем LONG через Sell
+                    order_type="Market",
+                    qty=position_size,
+                    reduce_only=True
+                )
+            finally:
+                # Восстанавливаем self.symbol обратно в "ALL"
+                self.symbol = original_symbol
 
             # place_order() возвращает order_id (строку), а не словарь
             if close_result:
@@ -1020,12 +1141,12 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
                 try:
                     # Получаем данные OPEN ордера из БД (по order_id!)
-                    open_order = await db_manager.get_open_order_for_position(self.user_id, self.symbol, self.account_priority)
+                    open_order = await db_manager.get_open_order_for_position(self.user_id, symbol, self.account_priority)
 
                     if open_order:
                         # ✅ ИСТОЧНИК ИСТИНЫ #1: OPEN ордер из БД
                         entry_price_for_pnl = Decimal(str(open_order.get('average_price', '0')))
-                        position_size_for_pnl = self.position_size
+                        position_size_for_pnl = position_size
                         open_commission = Decimal(str(open_order.get('commission', '0')))
 
                         log_info(self.user_id,
@@ -1063,58 +1184,49 @@ class FlashDropCatcherStrategy(BaseStrategy):
                         final_pnl = pnl_gross - commission
 
                         log_info(self.user_id,
-                                f"💰 [PNL РАСЧЁТ] entry={entry_price_for_pnl:.4f}, exit={exit_price:.4f}, "
+                                f"💰 [PNL РАСЧЁТ] {symbol}: entry={entry_price_for_pnl:.4f}, exit={exit_price:.4f}, "
                                 f"size={position_size_for_pnl}, direction=LONG | "
                                 f"PnL_gross={pnl_gross:.4f}, fees={commission:.4f} (open={open_commission:.4f}+close={close_commission:.4f}), PnL_net={final_pnl:.4f}",
                                 "FlashDropCatcher")
                     else:
-                        log_warning(self.user_id, f"⚠️ [FALLBACK] OPEN ордер не найден в БД, используем данные из памяти", "FlashDropCatcher")
+                        log_warning(self.user_id, f"⚠️ [FALLBACK] OPEN ордер для {symbol} не найден в БД, используем данные из памяти", "FlashDropCatcher")
                         # ФОЛБЭК: Используем unrealisedPnl из позиции
-                        positions = await self.api.get_positions(symbol=self.symbol)
+                        positions = await self.api.get_positions(symbol=symbol)
                         if positions and isinstance(positions, list):
                             for pos in positions:
-                                if pos["symbol"] == self.symbol:
+                                if pos["symbol"] == symbol:
                                     final_pnl = self._convert_to_decimal(pos.get("unrealisedPnl", 0))
                                     break
 
                 except Exception as api_error:
-                    log_error(self.user_id, f"❌ [BYBIT PNL] Ошибка запроса closedPnL: {api_error}, используем unrealisedPnl", "FlashDropCatcher")
+                    log_error(self.user_id, f"❌ [BYBIT PNL] Ошибка запроса closedPnL для {symbol}: {api_error}, используем unrealisedPnl", "FlashDropCatcher")
                     # ФОЛБЭК: Используем unrealisedPnl из позиции
-                    positions = await self.api.get_positions(symbol=self.symbol)
+                    positions = await self.api.get_positions(symbol=symbol)
                     if positions and isinstance(positions, list):
                         for pos in positions:
-                            if pos["symbol"] == self.symbol:
+                            if pos["symbol"] == symbol:
                                 final_pnl = self._convert_to_decimal(pos.get("unrealisedPnl", 0))
                                 break
 
-                # СОХРАНЯЕМ значения перед сбросом для передачи в уведомление
+                # СОХРАНЯЕМ значения для передачи в уведомление
                 # ПОЛУЧАЕМ ИЗ БД для надёжности (работает даже после перезапуска бота)
                 from database.db_trades import db_manager
-                open_order = await db_manager.get_open_order_for_position(self.user_id, self.symbol, self.account_priority)
+                open_order = await db_manager.get_open_order_for_position(self.user_id, symbol, self.account_priority)
                 if open_order:
                     saved_entry_time = open_order.get('filled_at')  # Время из БД
                     saved_entry_price = open_order.get('average_price')  # Цена из БД
-                    log_debug(self.user_id, f"[ИЗ БД] Время входа: {saved_entry_time}, Цена входа: {saved_entry_price}", "FlashDropCatcher")
+                    log_debug(self.user_id, f"[ИЗ БД] {symbol} - Время входа: {saved_entry_time}, Цена входа: {saved_entry_price}", "FlashDropCatcher")
                 else:
-                    # Fallback на переменные в памяти (если БД недоступна)
-                    saved_entry_time = self.entry_time
-                    saved_entry_price = self.entry_price
-                    log_warning(self.user_id, f"[FALLBACK] Не найден OPEN ордер в БД, используем данные из памяти", "FlashDropCatcher")
+                    # Fallback на данные из словаря (если БД недоступна)
+                    saved_entry_time = position_data.get('entry_time')
+                    saved_entry_price = position_data.get('entry_price')
+                    log_warning(self.user_id, f"[FALLBACK] Не найден OPEN ордер в БД для {symbol}, используем данные из active_flash_positions", "FlashDropCatcher")
 
-                # Сбрасываем параметры
-                self.position_active = False
-                self.entry_price = Decimal('0')
-                self.entry_time = None  # Сбрасываем время входа
-                self.position_size = Decimal('0')
-                self.highest_pnl = Decimal('0')
-                self.current_trailing_level = 0
-                self.last_trailing_notification_level = -1
+                # КРИТИЧНО: Удаляем позицию из словаря активных позиций
+                del self.active_flash_positions[symbol]
+                log_info(self.user_id, f"✅ Позиция {symbol} удалена из active_flash_positions (осталось позиций: {len(self.active_flash_positions)})", "FlashDropCatcher")
 
-                # ИСПРАВЛЕНИЕ: Сбрасываем symbol в "ALL" чтобы стратегия могла входить в новые сделки!
-                self.symbol = "ALL"
-                self.active_direction = None
-
-                log_info(self.user_id, f"✅ Позиция закрыта. PnL: ${final_pnl:.2f}", "FlashDropCatcher")
+                log_info(self.user_id, f"✅ Позиция {symbol} закрыта. PnL: ${final_pnl:.2f}", "FlashDropCatcher")
 
                 # ИСПОЛЬЗУЕМ БАЗОВЫЙ МЕТОД для отправки уведомления (с временем и ценами)
                 await self._send_trade_close_notification(
@@ -1126,10 +1238,10 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 )
 
             else:
-                log_error(self.user_id, "Не удалось закрыть позицию", "FlashDropCatcher")
+                log_error(self.user_id, f"Не удалось закрыть позицию {symbol}", "FlashDropCatcher")
 
         except Exception as e:
-            log_error(self.user_id, f"Ошибка закрытия позиции: {e}", "FlashDropCatcher")
+            log_error(self.user_id, f"Ошибка закрытия позиции {symbol}: {e}", "FlashDropCatcher")
 
     # ============================================================================
     # === ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ===
@@ -1149,86 +1261,115 @@ class FlashDropCatcherStrategy(BaseStrategy):
         return Decimal('0')
 
     async def get_detailed_status(self) -> Dict[str, Any]:
-        """Возвращает детальную информацию о текущей позиции для команды /trade_details"""
+        """
+        Возвращает детальную информацию обо ВСЕХ активных позициях для команды /trade_details.
+
+        ✅ КРИТИЧНО: Работает с МНОЖЕСТВЕННЫМИ позициями.
+        Возвращает список всех активных позиций из словаря active_flash_positions.
+        """
         try:
-            if not self.position_active:
+            # Проверяем, есть ли активные позиции в словаре
+            if not self.active_flash_positions:
                 return {
                     "has_position": False,
-                    "symbol": self.symbol,
+                    "symbol": "ALL",
                     "strategy_type": StrategyType.FLASH_DROP_CATCHER.value,
-                    "account_priority": self.account_priority
+                    "account_priority": self.account_priority,
+                    "total_positions": 0
                 }
 
-            current_price = await self._get_current_market_price()
-            if not current_price or current_price == Decimal('0'):
-                current_price = self.entry_price
+            # Собираем информацию обо всех активных позициях
+            positions_list = []
 
-            current_pnl = await self._calculate_current_pnl(current_price)
-            price_change_percent = Decimal('0')
-            if self.entry_price > 0:
-                price_change_percent = ((current_price - self.entry_price) / self.entry_price) * Decimal('100')
+            for symbol, position_data in self.active_flash_positions.items():
+                try:
+                    # Получаем текущую цену для этого символа
+                    try:
+                        ticker = await self.api.get_ticker(symbol=symbol)
+                        current_price = ticker["lastPrice"] if ticker and "lastPrice" in ticker else position_data['entry_price']
+                    except Exception as e:
+                        log_warning(self.user_id, f"Не удалось получить текущую цену для {symbol}: {e}", "FlashDropCatcher")
+                        current_price = position_data['entry_price']
 
-            breakeven_price = None
-            try:
-                positions = await self.api.get_positions(symbol=self.symbol)
-                # get_positions() возвращает List[Dict]
-                if positions and isinstance(positions, list) and len(positions) > 0:
-                    breakeven_price_from_exchange = positions[0].get("breakEvenPrice", None)
-                    if breakeven_price_from_exchange:
-                        breakeven_price = self._convert_to_decimal(breakeven_price_from_exchange)
-            except Exception as e:
-                log_warning(self.user_id, f"Не удалось получить breakEvenPrice: {e}", "FlashDropCatcher")
+                    # Рассчитываем PnL для этой позиции
+                    entry_price = position_data['entry_price']
+                    position_size = position_data['position_size']
+                    current_pnl = (current_price - entry_price) * position_size
 
+                    price_change_percent = Decimal('0')
+                    if entry_price > 0:
+                        price_change_percent = ((current_price - entry_price) / entry_price) * Decimal('100')
+
+                    # Получаем breakeven price с биржи
+                    breakeven_price = None
+                    try:
+                        exchange_positions = await self.api.get_positions(symbol=symbol)
+                        if exchange_positions and isinstance(exchange_positions, list) and len(exchange_positions) > 0:
+                            breakeven_price_from_exchange = exchange_positions[0].get("breakEvenPrice", None)
+                            if breakeven_price_from_exchange:
+                                breakeven_price = self._convert_to_decimal(breakeven_price_from_exchange)
+                    except Exception as e:
+                        log_debug(self.user_id, f"Не удалось получить breakEvenPrice для {symbol}: {e}", "FlashDropCatcher")
+
+                    # Формируем информацию о позиции
+                    position_info = {
+                        "symbol": symbol,
+                        "direction": "LONG",
+                        "entry_price": float(entry_price),
+                        "entry_time": position_data.get('entry_time').isoformat() if position_data.get('entry_time') else None,
+                        "current_price": float(current_price),
+                        "position_size": float(position_size),
+                        "order_id": position_data.get('order_id'),
+                        "pnl": {
+                            "unrealized_pnl": float(current_pnl),
+                            "price_change_percent": float(price_change_percent),
+                            "peak_profit": float(position_data['highest_pnl'])
+                        },
+                        "trailing_stop": {
+                            "current_level": position_data['current_trailing_level'],
+                            "level_name": self._get_level_name(position_data['current_trailing_level']),
+                            "highest_pnl": float(position_data['highest_pnl'])
+                        },
+                        "signal": {
+                            "drop_percent": float(position_data.get('signal_drop_percent', 0)),
+                            "volume_ratio": float(position_data.get('signal_volume_ratio', 0)),
+                            "volatility_pct": float(position_data.get('signal_volatility_pct', 0))
+                        },
+                        "margin": {
+                            "initial_margin": float(self.get_config_value("order_amount", 200.0)),
+                            "breakeven_price": float(breakeven_price) if breakeven_price else None
+                        },
+                        "stop_loss": {
+                            "has_stop_loss": True,
+                            "stop_loss_type": "hard_stop",
+                            "stop_loss_usdt": float(self.HARD_STOP_LOSS_USDT)
+                        }
+                    }
+
+                    positions_list.append(position_info)
+
+                except Exception as pos_error:
+                    log_error(self.user_id, f"Ошибка получения статуса позиции {symbol}: {pos_error}", "FlashDropCatcher")
+                    # Продолжаем обработку остальных позиций
+
+            # Возвращаем информацию обо всех позициях
             return {
                 "has_position": True,
-                "symbol": self.symbol,
+                "symbol": "ALL",  # Для совместимости
                 "strategy_type": StrategyType.FLASH_DROP_CATCHER.value,
                 "account_priority": self.account_priority,
-                "position": {
-                    "direction": self.active_direction,
-                    "entry_price": float(self.entry_price),
-                    "current_price": float(current_price),
-                    "position_size": float(self.position_size),
-                    "total_position_size": float(self.position_size)
-                },
-                "averaging": {
-                    "count": 0,
-                    "executed": 0,
-                    "average_entry_price": None,
-                    "effective_entry_price": float(self.entry_price),
-                    "breakeven_price": float(breakeven_price) if breakeven_price else None,
-                    "use_breakeven_exit": False
-                },
-                "margin": {
-                    "initial_margin": float(self.get_config_value("order_amount", 200.0)),
-                    "current_total_margin": float(self.get_config_value("order_amount", 200.0)),
-                    "total_fees_paid": 0.0
-                },
-                "pnl": {
-                    "unrealized_pnl": float(current_pnl),
-                    "price_change_percent": float(price_change_percent),
-                    "peak_profit": float(self.highest_pnl)
-                },
-                "trailing_stop": {
-                    "current_level": self.current_trailing_level,
-                    "level_name": self._get_level_name(self.current_trailing_level),
-                    "highest_pnl": float(self.highest_pnl)
-                },
-                "stop_loss": {
-                    "has_stop_loss": True,
-                    "stop_loss_type": "hard_stop",
-                    "stop_loss_price": None,
-                    "stop_loss_usdt": float(self.HARD_STOP_LOSS_USDT)
-                }
+                "total_positions": len(self.active_flash_positions),
+                "positions": positions_list  # Список всех активных позиций
             }
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка получения детального статуса: {e}", "FlashDropCatcher")
             return {
                 "has_position": False,
-                "symbol": self.symbol,
+                "symbol": "ALL",
                 "strategy_type": StrategyType.FLASH_DROP_CATCHER.value,
                 "account_priority": self.account_priority,
+                "total_positions": 0,
                 "error": str(e)
             }
 
@@ -1268,8 +1409,15 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 elapsed_time = datetime.now() - self.last_heartbeat_time
                 elapsed_minutes = int(elapsed_time.total_seconds() / 60)
 
-                # Статус позиции
-                position_status = "🟢 НЕТ АКТИВНЫХ ПОЗИЦИЙ" if not self.position_active else f"🔵 АКТИВНА ПОЗИЦИЯ: {self.symbol}"
+                # Статус позиции (для множественных позиций)
+                if not self.active_flash_positions:
+                    position_status = "🟢 НЕТ АКТИВНЫХ ПОЗИЦИЙ"
+                elif len(self.active_flash_positions) == 1:
+                    symbol = list(self.active_flash_positions.keys())[0]
+                    position_status = f"🔵 АКТИВНА 1 ПОЗИЦИЯ: {symbol}"
+                else:
+                    symbols_str = ", ".join(list(self.active_flash_positions.keys()))
+                    position_status = f"🔵 АКТИВНО {len(self.active_flash_positions)} ПОЗИЦИЙ: {symbols_str}"
 
                 # Статистика за период (защита от деления на 0)
                 candles_per_minute = self.processed_candles_count / max(elapsed_minutes, 1) if elapsed_minutes > 0 else 0
@@ -1391,14 +1539,18 @@ class FlashDropCatcherStrategy(BaseStrategy):
         """
         МГНОВЕННЫЙ обработчик ручного закрытия позиции через WebSocket.
         Вызывается когда пользователь вручную закрыл позицию на бирже.
+
+        ✅ КРИТИЧНО: Работает с МНОЖЕСТВЕННЫМИ позициями.
+        Проверяет, есть ли закрытый символ в словаре active_flash_positions.
         """
         from core.events import PositionClosedEvent
 
         if not isinstance(event, PositionClosedEvent):
             return
 
-        # Проверяем что это наш символ
-        if event.symbol != self.symbol or not self.position_active:
+        # Проверяем, есть ли этот символ в наших активных позициях
+        if event.symbol not in self.active_flash_positions:
+            log_debug(self.user_id, f"Символ {event.symbol} не найден в active_flash_positions, пропускаем", "FlashDropCatcher")
             return
 
         log_warning(self.user_id,
@@ -1406,6 +1558,9 @@ class FlashDropCatcherStrategy(BaseStrategy):
                    "FlashDropCatcher")
 
         try:
+            # Получаем данные позиции из словаря
+            position_data = self.active_flash_positions[event.symbol]
+
             # ✅ ПРАВИЛЬНЫЙ РАСЧЕТ PnL: используем ТОЧНЫЕ данные по order_id из БД
             # Источники истины:
             # 1. OPEN ордер из БД (по order_id) → entry_price, entry_qty, entry_commission
@@ -1419,19 +1574,18 @@ class FlashDropCatcherStrategy(BaseStrategy):
             commission = Decimal('0')
 
             # Получаем данные OPEN ордера из БД
-            from database.db_trades import db_manager
-            open_order = await db_manager.get_open_order_for_position(self.user_id, self.symbol, self.account_priority)
+            open_order = await db_manager.get_open_order_for_position(self.user_id, event.symbol, self.account_priority)
             if open_order:
                 saved_entry_time = open_order.get('filled_at')
                 saved_entry_price = open_order.get('average_price')
 
                 # ✅ ИСТОЧНИК ИСТИНЫ #1: OPEN ордер из БД
                 entry_price_for_pnl = Decimal(str(saved_entry_price))
-                position_size_for_pnl = self.position_size
+                position_size_for_pnl = position_data['position_size']
                 open_commission = Decimal(str(open_order.get('commission', '0')))
 
                 log_info(self.user_id,
-                        f"[БД→ORDER_ID] Используем OPEN ордер {open_order['order_id']}: "
+                        f"[БД→ORDER_ID] {event.symbol}: Используем OPEN ордер {open_order['order_id']}: "
                         f"entry_price={entry_price_for_pnl:.4f}, size={position_size_for_pnl}, fee={open_commission:.4f}",
                         "FlashDropCatcher")
 
@@ -1446,7 +1600,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 final_pnl = pnl_gross - commission
 
                 log_info(self.user_id,
-                        f"💰 [PNL РАСЧЁТ РУЧНОЕ] entry={entry_price_for_pnl:.4f}, exit≈{exit_price:.4f}, "
+                        f"💰 [PNL РАСЧЁТ РУЧНОЕ] {event.symbol}: entry={entry_price_for_pnl:.4f}, exit≈{exit_price:.4f}, "
                         f"size={position_size_for_pnl}, direction=LONG | "
                         f"PnL_gross={pnl_gross:.4f}, fees≈{commission:.4f}, PnL_net≈{final_pnl:.4f}",
                         "FlashDropCatcher")
@@ -1456,27 +1610,24 @@ class FlashDropCatcherStrategy(BaseStrategy):
                     await db_manager.close_order(
                         order_id=open_order['order_id'],
                         close_price=float(exit_price) if exit_price > Decimal('0') else None,
-                        close_size=float(self.position_size) if self.position_size > 0 else None,
+                        close_size=float(position_size_for_pnl) if position_size_for_pnl > 0 else None,
                         realized_pnl=float(final_pnl),
                         close_reason="manual_close_by_user"
                     )
-                    log_info(self.user_id, f"✅ Ордер {open_order['order_id']} закрыт в БД (ручное закрытие)", "FlashDropCatcher")
+                    log_info(self.user_id, f"✅ Ордер {open_order['order_id']} для {event.symbol} закрыт в БД (ручное закрытие)", "FlashDropCatcher")
                 except Exception as db_error:
-                    log_error(self.user_id, f"❌ Ошибка обновления БД: {db_error}", "FlashDropCatcher")
+                    log_error(self.user_id, f"❌ Ошибка обновления БД для {event.symbol}: {db_error}", "FlashDropCatcher")
             else:
-                saved_entry_time = self.entry_time
-                saved_entry_price = self.entry_price
+                # Fallback на данные из словаря
+                saved_entry_time = position_data.get('entry_time')
+                saved_entry_price = position_data.get('entry_price')
+                log_warning(self.user_id, f"[FALLBACK] OPEN ордер для {event.symbol} не найден в БД, используем данные из словаря", "FlashDropCatcher")
 
-            # Сбрасываем состояние
-            self.position_active = False
-            self.entry_price = Decimal('0')
-            self.entry_time = None
-            self.position_size = Decimal('0')
-            self.highest_pnl = Decimal('0')
-            self.current_trailing_level = 0
-            self.last_trailing_notification_level = -1
+            # КРИТИЧНО: Удаляем позицию из словаря активных позиций
+            del self.active_flash_positions[event.symbol]
+            log_info(self.user_id, f"✅ Позиция {event.symbol} удалена из active_flash_positions (ручное закрытие, осталось позиций: {len(self.active_flash_positions)})", "FlashDropCatcher")
 
-            log_info(self.user_id, f"✅ Позиция закрыта вручную. PnL: ${final_pnl:.2f}", "FlashDropCatcher")
+            log_info(self.user_id, f"✅ Позиция {event.symbol} закрыта вручную. PnL: ${final_pnl:.2f}", "FlashDropCatcher")
 
             # Отправляем уведомление
             await self._send_trade_close_notification(
@@ -1488,7 +1639,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
             )
 
         except Exception as e:
-            log_error(self.user_id, f"❌ Ошибка обработки ручного закрытия: {e}", "FlashDropCatcher")
+            log_error(self.user_id, f"❌ Ошибка обработки ручного закрытия для {event.symbol}: {e}", "FlashDropCatcher")
 
     async def _execute_strategy_logic(self):
         """Базовый метод выполнения логики (не используется в этой стратегии)"""
