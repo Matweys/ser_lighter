@@ -1740,7 +1740,8 @@ class BaseStrategy(ABC):
                     # Восстанавливаем типы данных
                     if attr_name in ['entry_price', 'position_size', 'stop_loss_price',
                                    'total_position_size', 'average_entry_price', 'peak_profit_usd',
-                                   'last_averaging_percent', 'intended_order_amount']:
+                                   'last_averaging_percent', 'intended_order_amount', 'initial_margin_usd',
+                                   '_last_known_price', 'current_total_margin']:
                         setattr(self, attr_name, Decimal(str(attr_value)) if attr_value else None)
                     elif attr_name == 'processed_orders':
                         setattr(self, attr_name, set(attr_value) if attr_value else set())
