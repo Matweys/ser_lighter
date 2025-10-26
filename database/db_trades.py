@@ -1444,6 +1444,7 @@ class _DatabaseManager:
     async def update_order_status(self, order_id: str, status: str,
                                 filled_quantity: Decimal = None,
                                 average_price: Decimal = None,
+                                commission: Decimal = None,
                                 metadata: Dict[str, Any] = None) -> bool:
         """
         Обновляет статус ордера в БД (УСТАРЕВШИЙ МЕТОД - используйте update_order_on_fill)
@@ -1453,6 +1454,7 @@ class _DatabaseManager:
             status: Новый статус
             filled_quantity: Исполненное количество
             average_price: Средняя цена исполнения
+            commission: Комиссия за исполнение ордера
             metadata: Дополнительные данные
 
         Returns:
@@ -1475,6 +1477,11 @@ class _DatabaseManager:
                 param_count += 1
                 set_clauses.append(f"average_price = ${param_count}")
                 params.append(average_price)
+
+            if commission is not None:
+                param_count += 1
+                set_clauses.append(f"commission = ${param_count}")
+                params.append(commission)
 
             if metadata is not None:
                 param_count += 1
