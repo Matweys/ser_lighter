@@ -1835,7 +1835,10 @@ class UserSession:
             # Отдельно считаем стратегии С ОТКРЫТЫМИ ПОЗИЦИЯМИ (для корректного логирования)
             strategies_with_positions_count = sum(1 for s in active_strategies_analysis.values() if s.get('has_active_position', False))
 
-            log_info(self.user_id, f"📊 Анализ активных стратегий: всего записей {len(active_strategies_analysis)}, уникальных символов {current_trading_count}, с позициями {strategies_with_positions_count}, лимит слотов {max_concurrent_trades}", module_name=__name__)
+            # Логируем анализ вайтлиста (только SignalScalper использует вайтлист)
+            log_info(self.user_id, f"📊 Анализ вайтлиста: уникальных символов SignalScalper {current_trading_count}/{max_concurrent_trades}, всего активных экземпляров {len(active_strategies_analysis)}", module_name=__name__)
+            if strategies_with_positions_count > 0:
+                log_info(self.user_id, f"🔍 Экземпляров стратегий с открытыми позициями: {strategies_with_positions_count}", module_name=__name__)
 
             # === ОБРАБОТКА УДАЛЕННЫХ СИМВОЛОВ ===
             strategies_to_stop_immediately = []
@@ -1873,7 +1876,27 @@ class UserSession:
                             f"✅ Coordinator для {symbol} помечен для отложенной остановки. "
                             f"Боты с позициями продолжат работу до закрытия.",
                             module_name=__name__)
-                    # НЕ уменьшаем current_trading_count, т.к. координатор остановится автоматически
+
+                    # КРИТИЧНО: СРАЗУ удаляем стратегии из active_strategies для корректного подсчёта слотов
+                    # Координатор продолжит работу в фоне до закрытия позиций
+                    strategy_type = StrategyType.SIGNAL_SCALPER.value  # Координаторы только для SignalScalper
+                    strategy_id = f"{strategy_type}_{symbol}"
+
+                    # Удаляем базовую стратегию
+                    if strategy_id in self.active_strategies:
+                        del self.active_strategies[strategy_id]
+                        log_info(self.user_id, f"🗑️ Стратегия {strategy_id} удалена из active_strategies (deferred stop)", module_name=__name__)
+
+                    # Удаляем стратегии ботов (bot1, bot2, bot3)
+                    for bot_num in [1, 2, 3]:
+                        bot_strategy_id = f"{strategy_id}_bot{bot_num}"
+                        if bot_strategy_id in self.active_strategies:
+                            del self.active_strategies[bot_strategy_id]
+                            log_info(self.user_id, f"🗑️ Стратегия {bot_strategy_id} удалена из active_strategies (deferred stop)", module_name=__name__)
+
+                    # Уменьшаем счётчик слотов
+                    current_trading_count -= 1
+                    log_info(self.user_id, f"📊 Слот для {symbol} освобождён (deferred stop, текущих слотов: {current_trading_count})", module_name=__name__)
                 else:
                     log_error(self.user_id, f"❌ Не удалось пометить Coordinator для {symbol} для остановки", module_name=__name__)
 

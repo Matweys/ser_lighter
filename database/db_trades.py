@@ -1530,12 +1530,13 @@ class _DatabaseManager:
             log_error(0, f"Ошибка проверки существования сделки {trade_id}: {e}", module_name='database')
             return False
 
-    async def get_order_by_exchange_id(self, order_id: str) -> Optional[Dict[str, Any]]:
+    async def get_order_by_exchange_id(self, order_id: str, user_id: int = None) -> Optional[Dict[str, Any]]:
         """
         Получает ордер по ID с биржи (с fallback для только что созданных ордеров)
 
         Args:
             order_id: ID ордера на бирже
+            user_id: ID пользователя для изоляции (ОБЯЗАТЕЛЬНО для multi-user!)
 
         Returns:
             Optional[Dict]: Данные ордера или None
@@ -1544,16 +1545,25 @@ class _DatabaseManager:
         и еще не обновлены настоящим ID с биржи (race condition fix)
         """
         try:
-            # Основной поиск по order_id
-            query = """
-            SELECT id, user_id, symbol, side, order_type, quantity, price,
-                   filled_quantity, average_price, status, order_id,
-                   client_order_id, strategy_type, bot_priority, metadata, created_at, updated_at
-            FROM orders
-            WHERE order_id = $1
-            """
-
-            result = await self._execute_query(query, (order_id,), fetch_one=True)
+            # Основной поиск по order_id + user_id (изоляция пользователей!)
+            if user_id is not None:
+                query = """
+                SELECT id, user_id, symbol, side, order_type, quantity, price,
+                       filled_quantity, average_price, status, order_id,
+                       client_order_id, strategy_type, bot_priority, metadata, created_at, updated_at, commission
+                FROM orders
+                WHERE order_id = $1 AND user_id = $2
+                """
+                result = await self._execute_query(query, (order_id, user_id), fetch_one=True)
+            else:
+                query = """
+                SELECT id, user_id, symbol, side, order_type, quantity, price,
+                       filled_quantity, average_price, status, order_id,
+                       client_order_id, strategy_type, bot_priority, metadata, created_at, updated_at, commission
+                FROM orders
+                WHERE order_id = $1
+                """
+                result = await self._execute_query(query, (order_id,), fetch_one=True)
 
             if result:
                 order_dict = dict(result)
@@ -1598,9 +1608,9 @@ class _DatabaseManager:
             return None
 
     # Алиас для обратной совместимости
-    async def get_order_by_id(self, order_id: str) -> Optional[Dict[str, Any]]:
+    async def get_order_by_id(self, order_id: str, user_id: int = None) -> Optional[Dict[str, Any]]:
         """Алиас для get_order_by_exchange_id"""
-        return await self.get_order_by_exchange_id(order_id)
+        return await self.get_order_by_exchange_id(order_id, user_id)
 
     async def get_open_order_for_position(self, user_id: int, symbol: str, bot_priority: int = 1) -> Optional[Dict[str, Any]]:
         """
@@ -2056,7 +2066,7 @@ class _DatabaseManager:
             log_error(user_id, f"Ошибка подсчета активных ордеров: {e}", module_name='database')
             return 0
 
-    async def close_order(self, order_id: str, close_price: float = None,
+    async def close_order(self, order_id: str, user_id: int = None, close_price: float = None,
                          close_size: float = None, realized_pnl: float = None,
                          close_reason: str = "manual_close") -> bool:
         """
@@ -2066,6 +2076,7 @@ class _DatabaseManager:
 
         Args:
             order_id: ID ордера на бирже (OPEN ордер)
+            user_id: ID пользователя для изоляции (ОБЯЗАТЕЛЬНО для multi-user!)
             close_price: Цена закрытия
             close_size: Размер закрытия
             realized_pnl: Реализованный PnL
@@ -2078,36 +2089,64 @@ class _DatabaseManager:
             moscow_tz = timezone(timedelta(hours=3))
             current_time = datetime.now(moscow_tz)
 
-            # Обновляем метаданные OPEN ордера
+            # Обновляем метаданные OPEN ордера + фильтруем по user_id для изоляции!
             # ИСПРАВЛЕНО: Используем CAST для явного приведения типов, чтобы избежать ошибки
             # "could not determine data type of parameter $3" когда передается None
-            query = """
-            UPDATE orders
-            SET
-                is_active = FALSE,
-                status = 'CLOSED',
-                updated_at = $2,
-                metadata = jsonb_set(
-                    COALESCE(metadata, '{}'::jsonb),
-                    '{close_info}',
-                    jsonb_build_object(
-                        'close_price', CAST($3 AS DOUBLE PRECISION),
-                        'close_size', CAST($4 AS DOUBLE PRECISION),
-                        'realized_pnl', CAST($5 AS DOUBLE PRECISION),
-                        'close_reason', $6::TEXT,
-                        'closed_at', $7::TEXT
+            if user_id is not None:
+                query = """
+                UPDATE orders
+                SET
+                    is_active = FALSE,
+                    status = 'CLOSED',
+                    updated_at = $2,
+                    metadata = jsonb_set(
+                        COALESCE(metadata, '{}'::jsonb),
+                        '{close_info}',
+                        jsonb_build_object(
+                            'close_price', CAST($3 AS DOUBLE PRECISION),
+                            'close_size', CAST($4 AS DOUBLE PRECISION),
+                            'realized_pnl', CAST($5 AS DOUBLE PRECISION),
+                            'close_reason', $6::TEXT,
+                            'closed_at', $7::TEXT
+                        )
                     )
+                WHERE order_id = $1 AND user_id = $8
+                RETURNING user_id, symbol
+                """
+                result = await self._execute_query(
+                    query,
+                    (order_id, current_time, close_price, close_size, realized_pnl,
+                     close_reason, current_time.isoformat(), user_id),
+                    fetch_one=True
                 )
-            WHERE order_id = $1
-            RETURNING user_id, symbol
-            """
-
-            result = await self._execute_query(
-                query,
-                (order_id, current_time, close_price, close_size, realized_pnl,
-                 close_reason, current_time.isoformat()),
-                fetch_one=True
-            )
+            else:
+                # Обратная совместимость (не рекомендуется!)
+                query = """
+                UPDATE orders
+                SET
+                    is_active = FALSE,
+                    status = 'CLOSED',
+                    updated_at = $2,
+                    metadata = jsonb_set(
+                        COALESCE(metadata, '{}'::jsonb),
+                        '{close_info}',
+                        jsonb_build_object(
+                            'close_price', CAST($3 AS DOUBLE PRECISION),
+                            'close_size', CAST($4 AS DOUBLE PRECISION),
+                            'realized_pnl', CAST($5 AS DOUBLE PRECISION),
+                            'close_reason', $6::TEXT,
+                            'closed_at', $7::TEXT
+                        )
+                    )
+                WHERE order_id = $1
+                RETURNING user_id, symbol
+                """
+                result = await self._execute_query(
+                    query,
+                    (order_id, current_time, close_price, close_size, realized_pnl,
+                     close_reason, current_time.isoformat()),
+                    fetch_one=True
+                )
 
             if result:
                 log_info(result['user_id'],

@@ -328,7 +328,7 @@ class BaseStrategy(ABC):
             if order_id not in self.active_orders:
                 # Проверяем в БД
                 from database.db_trades import db_manager
-                db_order = await db_manager.get_order_by_exchange_id(order_id)
+                db_order = await db_manager.get_order_by_exchange_id(order_id, self.user_id)
                 if not db_order or db_order.get('user_id') != self.user_id:
                     return  # Это не наш ордер
 
@@ -1804,7 +1804,7 @@ class BaseStrategy(ABC):
 
                     # КРИТИЧНО: Проверяем статус в БД ПЕРЕД обработкой
                     from database.db_trades import db_manager
-                    db_order = await db_manager.get_order_by_exchange_id(order_id)
+                    db_order = await db_manager.get_order_by_exchange_id(order_id, self.user_id)
                     db_status = db_order.get('status') if db_order else None
 
                     if db_status == 'FILLED':

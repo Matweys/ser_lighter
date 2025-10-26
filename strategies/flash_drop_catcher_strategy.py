@@ -650,7 +650,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
         """
         try:
             # Получаем глобальную конфигурацию пользователя из Redis
-            global_config = await redis_manager.get_user_config(self.user_id, ConfigType.GLOBAL)
+            global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
 
             if not global_config:
                 log_debug(self.user_id, "Глобальная конфигурация не найдена, вайтлист пуст", "FlashDropCatcher")
@@ -1140,8 +1140,15 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 commission = Decimal('0')
 
                 try:
-                    # Получаем данные OPEN ордера из БД (по order_id!)
-                    open_order = await db_manager.get_open_order_for_position(self.user_id, symbol, self.account_priority)
+                    # КРИТИЧНО: Используем order_id из словаря position_data для гарантированного поиска
+                    open_order_id = position_data.get('order_id')
+
+                    if not open_order_id:
+                        log_error(self.user_id, f"❌ order_id отсутствует в position_data для {symbol}!", "FlashDropCatcher")
+                        open_order = None
+                    else:
+                        # Ищем OPEN ордер по order_id + user_id (изоляция!)
+                        open_order = await db_manager.get_order_by_id(open_order_id, self.user_id)
 
                     if open_order:
                         # ✅ ИСТОЧНИК ИСТИНЫ #1: OPEN ордер из БД
@@ -1154,11 +1161,11 @@ class FlashDropCatcherStrategy(BaseStrategy):
                                 f"entry_price={entry_price_for_pnl:.4f}, size={position_size_for_pnl}, fee={open_commission:.4f}",
                                 "FlashDropCatcher")
 
-                        # ✅ ИСТОЧНИК ИСТИНЫ #2: CLOSE ордер из БД (по order_id!)
+                        # ✅ ИСТОЧНИК ИСТИНЫ #2: CLOSE ордер из БД (по order_id + user_id!)
                         # close_result - это order_id закрывающего ордера
                         # Ждём немного, чтобы ордер точно попал в БД
                         await asyncio.sleep(0.5)
-                        close_order = await db_manager.get_order_by_id(close_result)
+                        close_order = await db_manager.get_order_by_id(close_result, self.user_id)
 
                         if close_order:
                             exit_price = Decimal(str(close_order.get('average_price', '0')))
@@ -1402,8 +1409,8 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 # КРИТИЧНО: Перезагружаем конфигурацию перед проверкой настройки heartbeat
                 await self._force_config_reload()
 
-                # Проверяем, включены ли heartbeat уведомления в Telegram (используем загруженное значение)
-                enable_heartbeat = self.ENABLE_HEARTBEAT
+                # КРИТИЧНО: Читаем СВЕЖЕЕ значение из конфига (после перезагрузки), а не закешированное
+                enable_heartbeat = bool(self.get_config_value("enable_heartbeat_notifications", True))
 
                 # Формируем сообщение о статусе
                 elapsed_time = datetime.now() - self.last_heartbeat_time
@@ -1605,10 +1612,11 @@ class FlashDropCatcherStrategy(BaseStrategy):
                         f"PnL_gross={pnl_gross:.4f}, fees≈{commission:.4f}, PnL_net≈{final_pnl:.4f}",
                         "FlashDropCatcher")
 
-                # Обновляем БД - закрываем ордер
+                # Обновляем БД - закрываем ордер (с user_id для изоляции!)
                 try:
                     await db_manager.close_order(
                         order_id=open_order['order_id'],
+                        user_id=self.user_id,
                         close_price=float(exit_price) if exit_price > Decimal('0') else None,
                         close_size=float(position_size_for_pnl) if position_size_for_pnl > 0 else None,
                         realized_pnl=float(final_pnl),

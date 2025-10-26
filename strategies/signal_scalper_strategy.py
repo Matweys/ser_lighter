@@ -616,7 +616,7 @@ class SignalScalperStrategy(BaseStrategy):
         # КРИТИЧЕСКИ ВАЖНО: Проверяем что ордер принадлежит БОТУ (есть в БД)
         from database.db_trades import db_manager
         try:
-            order_in_db = await db_manager.get_order_by_id(event.order_id)
+            order_in_db = await db_manager.get_order_by_id(event.order_id, self.user_id)
 
             if not order_in_db:
                 log_warning(self.user_id,
@@ -1962,6 +1962,7 @@ class SignalScalperStrategy(BaseStrategy):
                     position_size_to_report = self.total_position_size if self.total_position_size > 0 else self.position_size
                     await db_manager.close_order(
                         order_id=open_order['order_id'],
+                        user_id=self.user_id,
                         close_price=float(exit_price) if exit_price > Decimal('0') else None,
                         close_size=float(position_size_to_report) if position_size_to_report > 0 else None,
                         realized_pnl=float(final_pnl),

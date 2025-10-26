@@ -641,10 +641,11 @@ class DataFeedHandler:
 
                     # ✅ КРИТИЧНО: Обновляем статус в БД ПЕРЕД публикацией события
                     # Это позволяет API-polling немедленно обнаружить исполненный ордер
+                    # ИСПРАВЛЕНО: Используем update_order_on_fill вместо update_order_status
+                    # чтобы filled_at устанавливался корректно!
                     try:
-                        await db_manager.update_order_status(
+                        await db_manager.update_order_on_fill(
                             order_id=order_id,
-                            status="FILLED",
                             filled_quantity=to_decimal(order_data.get("cumExecQty", "0")),
                             average_price=to_decimal(order_data.get("avgPrice", "0")),
                             commission=to_decimal(order_data.get("cumExecFee", "0"))
