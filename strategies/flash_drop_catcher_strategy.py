@@ -91,6 +91,11 @@ class FlashDropCatcherStrategy(BaseStrategy):
         # }
         self.active_flash_positions: Dict[str, Dict[str, Any]] = {}
 
+        # КРИТИЧНО: Защита от двойной обработки ордеров и отслеживание состояния
+        self.processed_orders: set = set()  # Множество обработанных order_id
+        self.pending_orders: Dict[str, str] = {}  # {order_id: symbol} - ожидающие исполнения OPEN ордера
+        self._last_known_price: Optional[Decimal] = None  # КРИТИЧНО: Последняя известная цена для fallback расчёта PnL
+
         # ВАЖНО: self.symbol ВСЕГДА равен "ALL" для этой стратегии!
         # Стратегия сканирует ВСЕ символы и работает с множеством позиций параллельно
         # self.symbol меняется ВРЕМЕННО только при вызове _place_order() для корректной работы базового класса
@@ -947,6 +952,9 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
             current_price = self._convert_to_decimal(event.price)
 
+            # КРИТИЧНО: Сохраняем последнюю известную цену для расчета PnL при закрытии
+            self._last_known_price = current_price
+
             # Рассчитываем текущий PnL для этой конкретной позиции
             entry_price = position_data['entry_price']
             position_size = position_data['position_size']
@@ -1138,6 +1146,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 final_pnl = Decimal('0')
                 exit_price = Decimal('0')
                 commission = Decimal('0')
+                open_order = None  # КРИТИЧНО: Инициализация перед try блоком для использования после except
 
                 try:
                     # КРИТИЧНО: Используем order_id из словаря position_data для гарантированного поиска
@@ -1171,10 +1180,19 @@ class FlashDropCatcherStrategy(BaseStrategy):
                             exit_price = Decimal(str(close_order.get('average_price', '0')))
                             close_commission = Decimal(str(close_order.get('commission', '0')))
 
-                            log_info(self.user_id,
-                                    f"[БД→ORDER_ID] Используем CLOSE ордер {close_result}: "
-                                    f"exit_price={exit_price:.4f}, fee={close_commission:.4f}",
-                                    "FlashDropCatcher")
+                            # КРИТИЧНО: Проверяем, что ордер действительно исполнен (average_price > 0)
+                            # Если ордер найден в БД, но еще не исполнен (статус NEW), average_price = 0
+                            if exit_price == Decimal('0'):
+                                # Используем fallback на последнюю известную цену
+                                exit_price = self._last_known_price if hasattr(self, '_last_known_price') and self._last_known_price else entry_price_for_pnl
+                                log_warning(self.user_id,
+                                           f"⚠️ [FALLBACK] CLOSE ордер {close_result} найден в БД, но еще не исполнен (average_price=0), используем _last_known_price={exit_price:.4f}",
+                                           "FlashDropCatcher")
+                            else:
+                                log_info(self.user_id,
+                                        f"[БД→ORDER_ID] Используем CLOSE ордер {close_result}: "
+                                        f"exit_price={exit_price:.4f}, fee={close_commission:.4f}",
+                                        "FlashDropCatcher")
                         else:
                             # Fallback: используем последнюю известную цену
                             exit_price = self._last_known_price if hasattr(self, '_last_known_price') and self._last_known_price else entry_price_for_pnl
@@ -1216,9 +1234,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
                                 break
 
                 # СОХРАНЯЕМ значения для передачи в уведомление
-                # ПОЛУЧАЕМ ИЗ БД для надёжности (работает даже после перезапуска бота)
-                from database.db_trades import db_manager
-                open_order = await db_manager.get_open_order_for_position(self.user_id, symbol, self.account_priority)
+                # ИСПОЛЬЗУЕМ УЖЕ ПОЛУЧЕННЫЙ open_order выше (строка 1159)
                 if open_order:
                     saved_entry_time = open_order.get('filled_at')  # Время из БД
                     saved_entry_price = open_order.get('average_price')  # Цена из БД
@@ -1653,6 +1669,102 @@ class FlashDropCatcherStrategy(BaseStrategy):
         """Базовый метод выполнения логики (не используется в этой стратегии)"""
         pass
 
-    async def _handle_order_filled(self, event):
-        """Обработка исполнения ордера (не используется в этой стратегии)"""
-        pass
+    async def _handle_order_filled(self, event: OrderFilledEvent):
+        """
+        КРИТИЧНАЯ ОБРАБОТКА исполненных ордеров для ВОССТАНОВЛЕНИЯ после WebSocket потери.
+
+        Эта обработка КРИТИЧНА для случаев:
+        1. WebSocket потерял соединение → событие OrderFilledEvent пришло ПОСЛЕ переподключения
+        2. Бот перезапустился → восстановление состояния из БД через синхронизацию
+
+        БЕЗ этого метода: если WebSocket потеряется, стратегия НЕ УЗНАЕТ о открытой позиции!
+        """
+        # Защита от дубликатов
+        if event.order_id in self.processed_orders:
+            log_debug(self.user_id, f"[ДУПЛИКАТ] Ордер {event.order_id} уже обработан, игнорируем", "FlashDropCatcher")
+            return
+
+        # КРИТИЧНО: Проверяем что ордер принадлежит БОТУ (есть в БД)
+        from database.db_trades import db_manager
+        try:
+            order_in_db = await db_manager.get_order_by_id(event.order_id, self.user_id)
+
+            if not order_in_db:
+                log_warning(self.user_id,
+                           f"⚠️ [НЕ НАШ ОРДЕР] Ордер {event.order_id} НЕ найден в БД бота! ИГНОРИРУЮ.",
+                           "FlashDropCatcher")
+                return
+
+            # Проверяем bot_priority
+            order_bot_priority = order_in_db.get('bot_priority', 1)
+            if order_bot_priority != self.account_priority:
+                log_debug(self.user_id,
+                         f"[НЕ НАШ БОТ] Ордер {event.order_id} принадлежит Bot_{order_bot_priority}, а это Bot_{self.account_priority}",
+                         "FlashDropCatcher")
+                return
+
+            log_info(self.user_id, f"✅ [НАША СДЕЛКА] Ордер {event.order_id} подтверждён в БД", "FlashDropCatcher")
+
+        except Exception as db_check_error:
+            log_error(self.user_id,
+                     f"❌ Ошибка проверки ордера {event.order_id} в БД: {db_check_error}. ИГНОРИРУЮ!",
+                     "FlashDropCatcher")
+            return
+
+        # Добавляем в обработанные
+        self.processed_orders.add(event.order_id)
+
+        # Определяем тип ордера (OPEN или CLOSE) по order_purpose из БД
+        order_purpose = order_in_db.get('order_purpose', 'OPEN')
+        symbol = order_in_db.get('symbol')
+
+        log_info(self.user_id,
+                f"[ОБРАБОТКА] Ордер {event.order_id} ({event.side} {event.qty} {symbol}) - purpose={order_purpose}",
+                "FlashDropCatcher")
+
+        if order_purpose == 'OPEN':
+            # Это ОТКРЫТИЕ позиции
+            # Проверяем, есть ли уже позиция по этому символу (защита от дубликатов)
+            if symbol in self.active_flash_positions:
+                log_warning(self.user_id,
+                           f"⚠️ Позиция {symbol} УЖЕ существует в active_flash_positions, пропускаем дубликат OPEN события",
+                           "FlashDropCatcher")
+                return
+
+            # Восстанавливаем состояние позиции из БД
+            entry_price = Decimal(str(order_in_db.get('average_price', '0')))
+            position_size = Decimal(str(event.qty))
+            entry_time = order_in_db.get('filled_at')
+
+            # Добавляем позицию в словарь активных
+            self.active_flash_positions[symbol] = {
+                'entry_price': entry_price,
+                'entry_time': entry_time,
+                'position_size': position_size,
+                'order_id': event.order_id,
+                'highest_pnl': Decimal('0'),
+                'current_trailing_level': 0,
+                'last_trailing_notification_level': -1,
+                'signal_drop_percent': Decimal('0'),  # Неизвестно при восстановлении
+                'signal_volume_ratio': Decimal('0'),
+                'signal_volatility_pct': Decimal('0')
+            }
+
+            log_info(self.user_id,
+                    f"✅ [ВОССТАНОВЛЕНО] Позиция {symbol} добавлена в active_flash_positions "
+                    f"(entry={entry_price:.8f}, size={position_size}, time={entry_time})",
+                    "FlashDropCatcher")
+
+        elif order_purpose == 'CLOSE':
+            # Это ЗАКРЫТИЕ позиции
+            # Позиция уже должна быть удалена из active_flash_positions в методе _close_position
+            # Но на всякий случай проверяем и удаляем если еще есть
+            if symbol in self.active_flash_positions:
+                log_warning(self.user_id,
+                           f"⚠️ Позиция {symbol} ещё в active_flash_positions при CLOSE событии, удаляем",
+                           "FlashDropCatcher")
+                del self.active_flash_positions[symbol]
+
+            log_info(self.user_id,
+                    f"✅ [CLOSE] Позиция {symbol} закрыта (осталось позиций: {len(self.active_flash_positions)})",
+                    "FlashDropCatcher")

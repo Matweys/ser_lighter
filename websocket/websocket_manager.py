@@ -21,6 +21,7 @@ from core.events import (
 from cache.redis_manager import redis_manager, ConfigType
 from database.db_trades import db_manager
 from core.settings_config import system_config
+from api.bybit_api import BybitAPI
 
 # Настройка точности для Decimal
 getcontext().prec = 28
@@ -516,6 +517,10 @@ class DataFeedHandler:
 
                     log_info(self.user_id, "Подключен к приватному WebSocket", module_name=__name__)
 
+                    # КРИТИЧНО: Синхронизация состояния после переподключения
+                    # Проверяем пропущенные события исполнения ордеров
+                    await self._sync_orders_after_reconnect()
+
                     # Обработка сообщений
                     async for message in websocket:
                         if not self.running:
@@ -604,6 +609,107 @@ class DataFeedHandler:
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка парсинга приватного сообщения: {e}", module_name=__name__)
+
+    async def _sync_orders_after_reconnect(self):
+        """
+        КРИТИЧНАЯ СИНХРОНИЗАЦИЯ: Проверяет пропущенные события исполнения ордеров после WebSocket переподключения.
+
+        Проблема: WebSocket может потерять соединение в момент исполнения ордера,
+        и событие OrderFilledEvent будет потеряно. Стратегия не узнает о открытой позиции.
+
+        Решение: После каждого переподключения WebSocket проверяем все активные ордера
+        в БД и синхронизируем их статус с биржей.
+        """
+        try:
+            log_info(self.user_id, "🔄 Синхронизация ордеров после WebSocket переподключения...", module_name=__name__)
+
+            # Получаем все активные ордера из БД для этого аккаунта
+            # Активные = статус NEW/FILLED и order_role = OPEN (не закрывающие)
+            active_orders = await db_manager.get_active_orders_for_sync(
+                user_id=self.user_id,
+                account_priority=self.account_priority
+            )
+
+            if not active_orders:
+                log_info(self.user_id, "✅ Нет активных ордеров для синхронизации", module_name=__name__)
+                return
+
+            log_info(self.user_id, f"📋 Найдено {len(active_orders)} активных ордеров для синхронизации", module_name=__name__)
+
+            # Проверяем каждый ордер
+            synced_count = 0
+            for order in active_orders:
+                order_id = order.get("order_id")
+                symbol = order.get("symbol")
+                db_status = order.get("status")
+
+                try:
+                    # Запрашиваем актуальный статус с биржи через API
+                    keys = await db_manager.get_api_keys(self.user_id, "bybit", account_priority=self.account_priority)
+                    if not keys:
+                        log_warning(self.user_id, f"⚠️ Не найдены API ключи для синхронизации ордера {order_id}", module_name=__name__)
+                        continue
+
+                    api_key, api_secret, _ = keys
+
+                    # Создаем временный API клиент
+                    # ИСПРАВЛЕНО: demo режим определяется через system_config
+                    demo_mode = system_config.DEMO_MODE
+                    api = BybitAPI(api_key=api_key, secret_key=api_secret, demo=demo_mode, user_id=self.user_id)
+
+                    # Запрашиваем статус ордера с биржи
+                    order_info = await api.get_order_status(order_id=order_id, symbol=symbol)
+
+                    if not order_info:
+                        log_warning(self.user_id, f"⚠️ Ордер {order_id} не найден на бирже (возможно уже отменён)", module_name=__name__)
+                        continue
+
+                    exchange_status = order_info.get("orderStatus", "")
+
+                    # Если ордер исполнен на бирже, но в БД еще NEW - генерируем событие!
+                    if exchange_status == "Filled" and db_status != "FILLED":
+                        log_warning(self.user_id,
+                                   f"🔔 ПРОПУЩЕННОЕ СОБЫТИЕ: Ордер {order_id} исполнен на бирже, но не обработан в БД! Генерирую OrderFilledEvent...",
+                                   module_name=__name__)
+
+                        # Обновляем статус в БД
+                        await db_manager.update_order_on_fill(
+                            order_id=order_id,
+                            filled_quantity=to_decimal(order_info.get("cumExecQty", "0")),
+                            average_price=to_decimal(order_info.get("avgPrice", "0")),
+                            commission=to_decimal(order_info.get("cumExecFee", "0"))
+                        )
+
+                        # Генерируем пропущенное событие
+                        filled_event = OrderFilledEvent(
+                            user_id=self.user_id,
+                            order_id=order_id,
+                            symbol=symbol,
+                            side=order_info.get("side"),
+                            qty=to_decimal(order_info.get("cumExecQty", "0")),
+                            price=to_decimal(order_info.get("avgPrice", "0")),
+                            fee=to_decimal(order_info.get("cumExecFee", "0"))
+                        )
+                        await self.event_bus.publish(filled_event)
+
+                        synced_count += 1
+                        log_info(self.user_id, f"✅ Ордер {order_id} синхронизирован и событие отправлено", module_name=__name__)
+                    elif exchange_status == "Filled":
+                        log_debug(self.user_id, f"✓ Ордер {order_id} уже синхронизирован (FILLED в БД)", module_name=__name__)
+                    else:
+                        log_debug(self.user_id, f"○ Ордер {order_id} еще не исполнен (статус: {exchange_status})", module_name=__name__)
+
+                except Exception as order_error:
+                    log_error(self.user_id, f"❌ Ошибка синхронизации ордера {order_id}: {order_error}", module_name=__name__)
+                    continue
+
+            if synced_count > 0:
+                log_info(self.user_id, f"🎯 Синхронизация завершена: восстановлено {synced_count} пропущенных событий", module_name=__name__)
+            else:
+                log_info(self.user_id, "✅ Синхронизация завершена: все ордера актуальны", module_name=__name__)
+
+        except Exception as e:
+            log_error(self.user_id, f"❌ Ошибка синхронизации ордеров после переподключения: {e}", module_name=__name__)
 
     async def _handle_order_update(self, data: List[Dict]):
         """

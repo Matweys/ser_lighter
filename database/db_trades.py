@@ -1607,6 +1607,51 @@ class _DatabaseManager:
             log_error(0, f"Ошибка получения ордера {order_id}: {e}", module_name='database')
             return None
 
+    async def get_active_orders_for_sync(self, user_id: int, account_priority: int) -> List[Dict[str, Any]]:
+        """
+        Получает все активные открывающие ордера для синхронизации после WebSocket переподключения.
+
+        КРИТИЧНО: Возвращает только OPEN ордера (не CLOSE), которые могут быть не синхронизированы
+        после потери WebSocket соединения.
+
+        Args:
+            user_id: ID пользователя
+            account_priority: Приоритет аккаунта (1, 2, 3)
+
+        Returns:
+            List[Dict]: Список активных ордеров для синхронизации
+        """
+        try:
+            # Ищем ордера которые:
+            # 1. Принадлежат этому пользователю и bot_priority
+            # 2. Статус = NEW или FILLED (могут быть не обработаны)
+            # 3. order_purpose = OPEN (не закрывающие ордера)
+            # 4. Созданы недавно (последние 24 часа, на случай долгих отключений)
+            query = """
+            SELECT
+                order_id, symbol, side, status, quantity, average_price,
+                commission, order_purpose, created_at
+            FROM orders
+            WHERE user_id = $1
+              AND bot_priority = $2
+              AND order_purpose = 'OPEN'
+              AND status IN ('NEW', 'FILLED')
+              AND created_at > NOW() - INTERVAL '24 hours'
+            ORDER BY created_at DESC
+            """
+
+            results = await self._execute_query(query, (user_id, account_priority))
+
+            if not results:
+                return []
+
+            orders = [dict(row) for row in results]
+            return orders
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка получения активных ордеров для синхронизации: {e}", module_name='database')
+            return []
+
     # Алиас для обратной совместимости
     async def get_order_by_id(self, order_id: str, user_id: int = None) -> Optional[Dict[str, Any]]:
         """Алиас для get_order_by_exchange_id"""

@@ -178,6 +178,8 @@ async def _generate_stats_report(user_id: int, start_date: Optional[datetime] = 
             # Переводим названия стратегий на русский
             if strategy_name == 'Signal Scalper':
                 strategy_name = 'Signal Scalper'
+            elif strategy_name == 'Flash Drop Catcher':
+                strategy_name = '🚀 Flash Drop Catcher'
 
             net_pnl = stat['net_pnl']
             trades = stat['total_trades']
