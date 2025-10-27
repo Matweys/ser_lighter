@@ -631,10 +631,16 @@ class DataFeedHandler:
             )
 
             if not active_orders:
-                log_info(self.user_id, "✅ Нет активных ордеров для синхронизации", module_name=__name__)
+                log_info(self.user_id, f"✅ Нет активных ордеров для синхронизации (bot_priority={self.account_priority})", module_name=__name__)
                 return
 
-            log_info(self.user_id, f"📋 Найдено {len(active_orders)} активных ордеров для синхронизации", module_name=__name__)
+            log_info(self.user_id, f"📋 Найдено {len(active_orders)} активных ордеров для синхронизации (bot_priority={self.account_priority})", module_name=__name__)
+
+            # ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ для диагностики
+            for order in active_orders:
+                log_info(self.user_id,
+                        f"  → Ордер {order.get('order_id')}: {order.get('symbol')} {order.get('side')} {order.get('quantity')}, статус БД={order.get('status')}, purpose={order.get('order_purpose')}",
+                        module_name=__name__)
 
             # Проверяем каждый ордер
             synced_count = 0
@@ -666,21 +672,29 @@ class DataFeedHandler:
 
                     exchange_status = order_info.get("orderStatus", "")
 
-                    # Если ордер исполнен на бирже, но в БД еще NEW - генерируем событие!
-                    if exchange_status == "Filled" and db_status != "FILLED":
-                        log_warning(self.user_id,
-                                   f"🔔 ПРОПУЩЕННОЕ СОБЫТИЕ: Ордер {order_id} исполнен на бирже, но не обработан в БД! Генерирую OrderFilledEvent...",
-                                   module_name=__name__)
+                    # КРИТИЧНО: Если ордер исполнен на бирже - ВСЕГДА генерируем событие!
+                    # Стратегия сама проверит через processed_orders - был ли ордер уже обработан
+                    if exchange_status == "Filled":
+                        # Обновляем статус в БД (если еще не FILLED)
+                        if db_status != "FILLED":
+                            log_warning(self.user_id,
+                                       f"🔔 ПРОПУЩЕННОЕ СОБЫТИЕ (БД=NEW): Ордер {order_id} исполнен на бирже, обновляю БД и генерирую OrderFilledEvent...",
+                                       module_name=__name__)
 
-                        # Обновляем статус в БД
-                        await db_manager.update_order_on_fill(
-                            order_id=order_id,
-                            filled_quantity=to_decimal(order_info.get("cumExecQty", "0")),
-                            average_price=to_decimal(order_info.get("avgPrice", "0")),
-                            commission=to_decimal(order_info.get("cumExecFee", "0"))
-                        )
+                            await db_manager.update_order_on_fill(
+                                order_id=order_id,
+                                filled_quantity=to_decimal(order_info.get("cumExecQty", "0")),
+                                average_price=to_decimal(order_info.get("avgPrice", "0")),
+                                commission=to_decimal(order_info.get("cumExecFee", "0"))
+                            )
+                        else:
+                            # Ордер FILLED в БД, но событие могло быть потеряно!
+                            log_warning(self.user_id,
+                                       f"🔔 ВОССТАНОВЛЕНИЕ: Ордер {order_id} FILLED в БД, генерирую OrderFilledEvent для восстановления подписки...",
+                                       module_name=__name__)
 
-                        # Генерируем пропущенное событие
+                        # КРИТИЧНО: ВСЕГДА генерируем событие для FILLED ордеров после переподключения!
+                        # Стратегия сама проверит в processed_orders - был ли ордер уже обработан
                         filled_event = OrderFilledEvent(
                             user_id=self.user_id,
                             order_id=order_id,
@@ -693,9 +707,7 @@ class DataFeedHandler:
                         await self.event_bus.publish(filled_event)
 
                         synced_count += 1
-                        log_info(self.user_id, f"✅ Ордер {order_id} синхронизирован и событие отправлено", module_name=__name__)
-                    elif exchange_status == "Filled":
-                        log_debug(self.user_id, f"✓ Ордер {order_id} уже синхронизирован (FILLED в БД)", module_name=__name__)
+                        log_info(self.user_id, f"✅ Ордер {order_id} ({symbol}) - OrderFilledEvent отправлено в EventBus для восстановления", module_name=__name__)
                     else:
                         log_debug(self.user_id, f"○ Ордер {order_id} еще не исполнен (статус: {exchange_status})", module_name=__name__)
 
