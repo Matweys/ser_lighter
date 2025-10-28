@@ -922,7 +922,10 @@ class BaseStrategy(ABC):
         """
         Универсальное размещение ордера через API. Возвращает orderId или None.
 
-        КРИТИЧНО: Сохраняет ордер в БД ПЕРЕД отправкой на биржу (предотвращает race condition с WebSocket)
+        ПРАВИЛЬНАЯ ПОСЛЕДОВАТЕЛЬНОСТЬ:
+        1. Создать ордер через API → получить order_id
+        2. Сохранить в БД ОДИН РАЗ с правильным order_id
+        3. Готово! Никаких UPDATE, никаких race conditions
         """
         try:
             if not self.api:
@@ -933,12 +936,12 @@ class BaseStrategy(ABC):
             import time
             import random
 
-            # Генерируем уникальный client_order_id для раннего сохранения
+            # Генерируем уникальный client_order_id для отслеживания
             timestamp_ms = int(time.time() * 1000)
             random_suffix = random.randint(1000, 9999)
             client_order_id = f"bot{self.account_priority}_{self.symbol}_{timestamp_ms}_{random_suffix}"
 
-            # Определяем order_purpose ДО размещения
+            # Определяем order_purpose
             if reduce_only:
                 order_purpose = 'CLOSE'
             else:
@@ -952,7 +955,21 @@ class BaseStrategy(ABC):
             leverage = int(float(self.get_config_value("leverage", 1)))
             trade_id = getattr(self, 'active_trade_db_id', None)
 
-            # ШАГ 1: СОХРАНЯЕМ В БД ПЕРЕД отправкой на биржу (order_id пока неизвестен)
+            # ДИАГНОСТИКА: Логируем API ключ
+            api_key_masked = f"{self.api.api_key[:4]}...{self.api.api_key[-4:]}" if len(self.api.api_key) > 8 else "***"
+            log_info(self.user_id, f"[Bot #{self.account_priority}] Размещение ордера {side} {qty} {self.symbol} | API: {api_key_masked}", module_name=__name__)
+
+            # ШАГ 1: СОЗДАЕМ ОРДЕР ЧЕРЕЗ API - получаем order_id сразу
+            order_id = await self.api.place_order(
+                symbol=self.symbol, side=side, order_type=order_type, qty=qty, price=price,
+                stop_loss=stop_loss, take_profit=take_profit, reduce_only=reduce_only
+            )
+
+            if not order_id:
+                log_error(self.user_id, f"Не удалось разместить ордер для {self.symbol} (API не вернул ID).", module_name=__name__)
+                return None
+
+            # ШАГ 2: СОХРАНЯЕМ В БД ОДИН РАЗ с правильным order_id от биржи
             try:
                 db_id = await db_manager.save_order_full(
                     user_id=self.user_id,
@@ -961,7 +978,7 @@ class BaseStrategy(ABC):
                     order_type=order_type,
                     quantity=qty,
                     price=price or Decimal('0'),
-                    order_id=client_order_id,  # КРИТИЧНО: Используем уникальный client_order_id вместо "PENDING" для избежания конфликта unique constraint
+                    order_id=order_id,  # ПРАВИЛЬНЫЙ order_id от биржи сразу!
                     strategy_type=self.strategy_type.value,
                     order_purpose=order_purpose,
                     leverage=leverage,
@@ -975,50 +992,20 @@ class BaseStrategy(ABC):
                         "created_by": "base_strategy_place_order"
                     }
                 )
-                log_info(self.user_id, f"📝 Ордер сохранён в БД ПЕРЕД отправкой (DB_ID={db_id}, temp_order_id={client_order_id})", module_name=__name__)
+                log_info(self.user_id, f"✅ Ордер сохранён в БД: order_id={order_id} (DB_ID={db_id})", module_name=__name__)
             except Exception as db_error:
-                log_error(self.user_id, f"КРИТИЧЕСКАЯ ОШИБКА: не удалось сохранить ордер в БД перед отправкой: {db_error}", module_name=__name__)
-                return None
+                log_error(self.user_id, f"❌ Ошибка сохранения ордера {order_id} в БД: {db_error}", module_name=__name__)
+                # Ордер уже создан на бирже, продолжаем работу даже если БД упала
+                # WebSocket обработает исполнение, recovery восстановит состояние
 
-            # ДИАГНОСТИКА: Логируем API ключ для проверки правильности распределения
-            api_key_masked = f"{self.api.api_key[:4]}...{self.api.api_key[-4:]}" if len(self.api.api_key) > 8 else "***"
-            log_info(self.user_id, f"[Bot #{self.account_priority}] Размещение ордера {side} {qty} {self.symbol} | API: {api_key_masked}", module_name=__name__)
+            # ШАГ 3: Готово! Добавляем в активные ордера
+            self.active_orders[order_id] = {"order_id": order_id, "status": "New"}
 
-            # ШАГ 2: ОТПРАВЛЯЕМ на биржу
-            order_id = await self.api.place_order(
-                symbol=self.symbol, side=side, order_type=order_type, qty=qty, price=price,
-                stop_loss=stop_loss, take_profit=take_profit, reduce_only=reduce_only
-            )
-
-            if order_id:
-                self.active_orders[order_id] = {"order_id": order_id, "status": "New"}
-
-                # ШАГ 3: ОБНОВЛЯЕМ order_id и status в БД (меняем "PENDING" на настоящий ID и status на 'NEW')
-                try:
-                    await db_manager._execute_query(
-                        "UPDATE orders SET order_id = $1, status = 'NEW', updated_at = NOW() WHERE client_order_id = $2",
-                        (order_id, client_order_id)
-                    )
-                    log_info(self.user_id, f"✅ Ордер обновлён в БД: order_id={order_id} status=NEW (client={client_order_id})", module_name=__name__)
-                except Exception as update_error:
-                    log_error(self.user_id, f"Ошибка обновления order_id в БД: {update_error}", module_name=__name__)
-
-                # Сохраняем состояние после размещения ордера
-                await self.save_strategy_state({"last_action": "order_placed", "order_id": order_id})
-                log_info(self.user_id, f"Ордер {order_id} ({side} {qty} {self.symbol}) отправлен на биржу.",
-                         module_name=__name__)
-                return order_id
-            else:
-                # Биржа не вернула ID - удаляем запись из БД
-                log_error(self.user_id, f"Не удалось разместить ордер для {self.symbol} (API не вернул ID). Удаляю из БД.", module_name=__name__)
-                try:
-                    await db_manager._execute_query(
-                        "DELETE FROM orders WHERE client_order_id = $1",
-                        (client_order_id,)
-                    )
-                except:
-                    pass
-                return None
+            # Сохраняем состояние стратегии
+            await self.save_strategy_state({"last_action": "order_placed", "order_id": order_id})
+            log_info(self.user_id, f"Ордер {order_id} ({side} {qty} {self.symbol}) размещен на бирже и сохранен в БД.",
+                     module_name=__name__)
+            return order_id
 
         except Exception as e:
             log_error(self.user_id, f"Критическая ошибка в _place_order: {e}", module_name=__name__)
