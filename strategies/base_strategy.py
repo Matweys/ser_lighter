@@ -1169,31 +1169,16 @@ class BaseStrategy(ABC):
 
     async def _send_trade_open_notification(self, side: str, price: Decimal, quantity: Decimal,
                                             intended_amount: Optional[Decimal] = None, signal_price: Optional[Decimal] = None):
-        """Отправляет уведомление и СОЗДАЕТ запись о сделке в БД."""
+        """
+        Отправляет уведомление об открытии позиции.
+
+        ИСПРАВЛЕНО: Создание trade в БД теперь происходит в _handle_order_filled() для OPEN ордеров.
+        Этот метод ТОЛЬКО отправляет уведомление пользователю.
+        """
         try:
             # ДИАГНОСТИКА: Логируем вызов метода и состояние bot
             log_info(self.user_id, f"🔔 _send_trade_open_notification вызван: side={side}, price={price}, qty={quantity}", "base_strategy")
             log_info(self.user_id, f"🤖 Состояние self.bot: {type(self.bot).__name__ if self.bot else 'None'}", "base_strategy")
-
-            # --- БЛОК ДЛЯ ЗАПИСИ В БД ПРИ ОТКРЫТИИ ---
-            from database.db_trades import TradeRecord
-            new_trade = TradeRecord(
-                user_id=self.user_id,
-                symbol=self.symbol,
-                side=side,
-                entry_price=price,
-                quantity=quantity,
-                leverage=int(float(self.get_config_value("leverage", 1))),
-                status="ACTIVE",
-                strategy_type=self.strategy_type.value,
-                entry_time=datetime.now(timezone.utc),
-                profit=Decimal('0'), # PnL при открытии всегда 0
-                commission=Decimal('0')
-            )
-            trade_id = await db_manager.save_trade(new_trade)
-            if trade_id:
-                # Сохраняем ID для будущего обновления при закрытии
-                self.active_trade_db_id = trade_id
 
             # Проверяем, что бот инициализирован
             if not self.bot:
@@ -1434,19 +1419,13 @@ class BaseStrategy(ABC):
 
     # strategies/base_strategy.py -> _send_trade_close_notification
     async def _send_trade_close_notification(self, pnl: Decimal, commission: Decimal = Decimal('0'), exit_price: Optional[Decimal] = None, entry_price: Optional[Decimal] = None, entry_time: Optional[datetime] = None):
-        """Отправляет уведомление, обновляет статистику и ОБНОВЛЯЕТ запись о сделке в БД."""
-        try:
-            # --- БЛОК ДЛЯ ОБНОВЛЕНИЯ В БД ПРИ ЗАКРЫТИИ ---
-            if hasattr(self, 'active_trade_db_id') and self.active_trade_db_id:
-                await db_manager.update_trade_on_close(
-                    trade_id=self.active_trade_db_id,
-                    exit_price=exit_price if exit_price else Decimal('0'),
-                    pnl=pnl,
-                    commission=commission,
-                    exit_time=datetime.now(timezone.utc)
-                )
-                del self.active_trade_db_id # Очищаем ID после использования
+        """
+        Отправляет уведомление и обновляет статистику.
 
+        ИСПРАВЛЕНО: Обновление trade в БД теперь происходит в _handle_order_filled() для CLOSE ордеров.
+        Этот метод ТОЛЬКО отправляет уведомление и обновляет статистику.
+        """
+        try:
             # 1. Обновляем статистику самой стратегии
             self.stats["orders_count"] += 1
             self.stats["total_pnl"] += pnl
@@ -1831,70 +1810,11 @@ class BaseStrategy(ABC):
 
                             order_purpose = db_order.get('order_purpose') if db_order else None
 
-                            # КРИТИЧНО: Обрабатываем CLOSE ордера отдельно от OPEN/AVERAGING
-                            if order_purpose == 'CLOSE':
-                                # Это CLOSE ордер - НЕ создаём новую сделку, а обновляем существующую
-                                log_info(self.user_id, f"🔄 Восстановление CLOSE ордера {order_id} - обновляем существующую сделку", "BaseStrategy")
+                            # ✅ УНИФИЦИРОВАНО: ВСЕ типы ордеров (OPEN, AVERAGING, CLOSE) обрабатываются ОДИНАКОВО
+                            # Генерируем OrderFilledEvent и передаём в _handle_order_filled()
+                            # Это гарантирует что CLOSE ордера обновляют trade через ЕДИНУЮ точку входа в стратегиях
 
-                                try:
-                                    # Получаем данные исполнения
-                                    filled_qty = Decimal(str(order_status.get("cumExecQty", "0")))
-                                    avg_price = Decimal(str(order_status.get("avgPrice", "0")))
-                                    commission = Decimal(str(order_status.get("cumExecFee", "0")))
-
-                                    # Обновляем ордер в БД с данными о закрытии
-                                    await db_manager.update_order_on_fill(
-                                        order_id=order_id,
-                                        filled_quantity=filled_qty,
-                                        average_price=avg_price,
-                                        commission=commission,
-                                        profit=None  # PnL будет рассчитан при обновлении сделки
-                                    )
-
-                                    # Получаем trade_id из БД чтобы обновить правильную сделку
-                                    trade_id = db_order.get('trade_id') if db_order else None
-
-                                    if trade_id:
-                                        # Рассчитываем PnL на основе entry_price из БД
-                                        from database.db_trades import db_manager
-                                        trade_info = await db_manager.get_active_trade(self.user_id, self.symbol)
-
-                                        if trade_info:
-                                            entry_price = trade_info.get('entry_price', Decimal('0'))
-                                            quantity = trade_info.get('quantity', Decimal('0'))
-                                            side = trade_info.get('side', 'Buy')
-
-                                            # Рассчитываем PnL
-                                            if side == 'Buy':
-                                                pnl = (avg_price - entry_price) * quantity - commission
-                                            else:
-                                                pnl = (entry_price - avg_price) * quantity - commission
-
-                                            # Обновляем сделку в БД
-                                            from datetime import datetime, timezone, timedelta
-                                            moscow_tz = timezone(timedelta(hours=3))
-                                            exit_time = datetime.now(moscow_tz)
-
-                                            await db_manager.update_trade_on_close(
-                                                trade_id=trade_id,
-                                                exit_price=avg_price,
-                                                pnl=pnl,
-                                                commission=commission,
-                                                exit_time=exit_time
-                                            )
-
-                                            log_info(self.user_id, f"✅ CLOSE ордер {order_id} обработан: сделка {trade_id} закрыта с PnL {pnl:.2f}$", "BaseStrategy")
-                                        else:
-                                            log_warning(self.user_id, f"⚠️ Не найдена активная сделка для CLOSE ордера {order_id}", "BaseStrategy")
-                                    else:
-                                        log_warning(self.user_id, f"⚠️ CLOSE ордер {order_id} не имеет trade_id в БД", "BaseStrategy")
-
-                                except Exception as close_error:
-                                    log_error(self.user_id, f"Ошибка обработки CLOSE ордера {order_id}: {close_error}", "BaseStrategy")
-
-                            else:
-                                # Это OPEN или AVERAGING ордер - обрабатываем стандартно
-                                log_info(self.user_id, f"🔄 Восстановление {order_purpose or 'OPEN'} ордера {order_id}", "BaseStrategy")
+                            log_info(self.user_id, f"🔄 Восстановление {order_purpose or 'UNKNOWN'} ордера {order_id}", "BaseStrategy")
 
                                 # КРИТИЧЕСКИ ВАЖНО: Обновляем статус ордера в БД
                                 try:

@@ -371,6 +371,9 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
             # КРИТИЧНО: Сбрасываем флаг ожидания, чтобы разблокировать обработку цен
             self.strategy.is_waiting_for_trade = False
 
+            # КРИТИЧНО: Восстанавливаем active_trade_db_id из БД (связь с таблицей trades)
+            await self._restore_active_trade_db_id()
+
             # КРИТИЧНО: Восстанавливаем initial_margin_usd для координатора
             leverage = self.strategy._convert_to_decimal(self.strategy.get_config_value("leverage", 1.0))
             position_value = entry_price * position_size
@@ -484,6 +487,9 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
                 else:
                     self.strategy.position_size = exchange_size
 
+            # ✅ КРИТИЧНО: Восстанавливаем active_trade_db_id из БД (связь с таблицей trades)
+            await self._restore_active_trade_db_id()
+
             # ✅ КРИТИЧНО: Восстанавливаем initial_margin_usd для координатора
             # Это поле НЕОБХОДИМО для расчета PnL% и активации следующего бота!
             if not hasattr(self.strategy, 'initial_margin_usd') or self.strategy.initial_margin_usd == 0:
@@ -571,6 +577,61 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
                 "SignalScalperRecovery"
             )
         return None
+
+    async def _restore_active_trade_db_id(self):
+        """
+        КРИТИЧНО: Восстанавливает active_trade_db_id из базы данных.
+
+        Этот метод запрашивает БД для получения ID активной сделки по user_id и symbol.
+        Без этого ID стратегия не сможет обновить trade при закрытии позиции!
+        """
+        try:
+            # Проверяем, не восстановлен ли уже trade_id из сохранённого состояния
+            if hasattr(self.strategy, 'active_trade_db_id') and self.strategy.active_trade_db_id:
+                log_info(
+                    self.user_id,
+                    f"✅ active_trade_db_id уже восстановлен из состояния: trade_id={self.strategy.active_trade_db_id}",
+                    "SignalScalperRecovery"
+                )
+                return
+
+            # Запрашиваем активную сделку из БД
+            from database.db_trades import db_manager
+
+            active_trade = await db_manager.get_active_trade(self.user_id, self.symbol)
+
+            if active_trade:
+                trade_id = active_trade.get('id')
+                self.strategy.active_trade_db_id = trade_id
+
+                log_info(
+                    self.user_id,
+                    f"🔗 Восстановлена связь с БД: trade_id={trade_id} для {self.symbol}",
+                    "SignalScalperRecovery"
+                )
+
+                # Дополнительная информация для отладки
+                log_debug(
+                    self.user_id,
+                    f"Данные восстановленной сделки: entry_price={active_trade.get('entry_price')}, "
+                    f"quantity={active_trade.get('quantity')}, side={active_trade.get('side')}",
+                    "SignalScalperRecovery"
+                )
+            else:
+                log_warning(
+                    self.user_id,
+                    f"⚠️ Активная сделка для {self.symbol} НЕ найдена в БД! "
+                    f"Возможно, позиция открыта вне бота или произошла рассинхронизация.",
+                    "SignalScalperRecovery"
+                )
+                # НЕ создаём новую сделку здесь - это должно быть сделано при открытии позиции!
+
+        except Exception as e:
+            log_error(
+                self.user_id,
+                f"❌ Ошибка восстановления active_trade_db_id: {e}",
+                "SignalScalperRecovery"
+            )
 
     async def _restore_stop_loss_from_exchange(self):
         """Восстанавливает информацию о стоп-лоссе с биржи."""

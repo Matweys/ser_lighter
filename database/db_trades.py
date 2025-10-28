@@ -1622,19 +1622,40 @@ class _DatabaseManager:
             List[Dict]: Список активных ордеров для синхронизации
         """
         try:
-            # Ищем ордера которые:
+            # ДИАГНОСТИКА: Проверяем сколько вообще ордеров в БД для этого пользователя
+            diagnostic_query = """
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN bot_priority = $2 THEN 1 ELSE 0 END) as with_priority,
+                   SUM(CASE WHEN order_purpose = 'OPEN' THEN 1 ELSE 0 END) as open_purpose,
+                   SUM(CASE WHEN status IN ('NEW', 'FILLED') THEN 1 ELSE 0 END) as new_filled,
+                   SUM(CASE WHEN created_at > NOW() - INTERVAL '24 hours' THEN 1 ELSE 0 END) as recent
+            FROM orders
+            WHERE user_id = $1
+            """
+
+            diag_result = await self._execute_query(diagnostic_query, (user_id, account_priority), fetch_one=True)
+            if diag_result:
+                log_info(user_id,
+                        f"🔍 ДИАГНОСТИКА БД: Всего ордеров={diag_result['total']}, "
+                        f"с bot_priority={account_priority}: {diag_result['with_priority']}, "
+                        f"purpose=OPEN: {diag_result['open_purpose']}, "
+                        f"status=NEW/FILLED: {diag_result['new_filled']}, "
+                        f"последние 24ч: {diag_result['recent']}",
+                        module_name='database')
+
+            # ИСПРАВЛЕНО: Ищем ордера которые:
             # 1. Принадлежат этому пользователю и bot_priority
             # 2. Статус = NEW или FILLED (могут быть не обработаны)
-            # 3. order_purpose = OPEN (не закрывающие ордера)
+            # 3. ВСЕ типы ордеров: OPEN, CLOSE, AVERAGING (НЕ только OPEN!)
             # 4. Созданы недавно (последние 24 часа, на случай долгих отключений)
             query = """
             SELECT
                 order_id, symbol, side, status, quantity, average_price,
-                commission, order_purpose, created_at
+                commission, order_purpose, created_at, bot_priority
             FROM orders
             WHERE user_id = $1
               AND bot_priority = $2
-              AND order_purpose = 'OPEN'
+              AND order_purpose IN ('OPEN', 'CLOSE', 'AVERAGING')
               AND status IN ('NEW', 'FILLED')
               AND created_at > NOW() - INTERVAL '24 hours'
             ORDER BY created_at DESC
@@ -1643,6 +1664,19 @@ class _DatabaseManager:
             results = await self._execute_query(query, (user_id, account_priority))
 
             if not results:
+                # ДОПОЛНИТЕЛЬНАЯ ДИАГНОСТИКА: Проверяем что есть БЕЗ фильтров
+                all_orders_query = """
+                SELECT order_id, symbol, bot_priority, order_purpose, status, created_at
+                FROM orders
+                WHERE user_id = $1
+                ORDER BY created_at DESC
+                LIMIT 10
+                """
+                all_orders = await self._execute_query(all_orders_query, (user_id,))
+                if all_orders:
+                    log_warning(user_id, f"⚠️ В БД есть {len(all_orders)} последних ордеров, но НИ ОДИН не подходит под фильтры синхронизации!", module_name='database')
+                    for order in all_orders:
+                        log_info(user_id, f"  → {order['order_id'][:8]}: {order['symbol']} bot={order['bot_priority']} purpose={order['order_purpose']} status={order['status']} created={order['created_at']}", module_name='database')
                 return []
 
             orders = [dict(row) for row in results]
@@ -2077,6 +2111,44 @@ class _DatabaseManager:
 
         except Exception as e:
             log_error(0, f"Ошибка обновления ордера {order_id} при исполнении: {e}", module_name='database')
+            return False
+
+    async def update_order_trade_id(self, order_id: str, trade_id: int) -> bool:
+        """
+        Связывает ордер со сделкой (устанавливает trade_id).
+
+        КРИТИЧНО: Вызывается после создания trade для связывания OPEN ордера с записью в таблице trades.
+        Все последующие ордера (AVERAGING, CLOSE) будут использовать тот же trade_id.
+
+        Args:
+            order_id: ID ордера на бирже
+            trade_id: ID сделки из таблицы trades
+
+        Returns:
+            bool: True если обновление успешно
+        """
+        try:
+            moscow_tz = timezone(timedelta(hours=3))
+            current_time = datetime.now(moscow_tz)
+
+            query = """
+            UPDATE orders
+            SET trade_id = $2, updated_at = $3
+            WHERE order_id = $1
+            RETURNING user_id, symbol, order_purpose
+            """
+
+            result = await self._execute_query(query, (order_id, trade_id, current_time), fetch_one=True)
+
+            if result:
+                log_info(result['user_id'],
+                        f"🔗 Ордер {order_id} ({result['order_purpose']}) связан со сделкой trade_id={trade_id}",
+                        module_name='database')
+                return True
+            return False
+
+        except Exception as e:
+            log_error(0, f"Ошибка связывания ордера {order_id} со сделкой {trade_id}: {e}", module_name='database')
             return False
 
     async def get_active_orders_count(self, user_id: int, strategy_type: str = None) -> int:

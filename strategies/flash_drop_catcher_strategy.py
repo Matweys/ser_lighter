@@ -848,6 +848,39 @@ class FlashDropCatcherStrategy(BaseStrategy):
                              "FlashDropCatcher")
                     self.entry_price = entry_price
 
+                # КРИТИЧНО: Создаём trade в БД СРАЗУ после исполнения OPEN ордера (НЕ в уведомлении!)
+                from database.db_trades import db_manager, TradeRecord
+                from datetime import timezone as tz
+                try:
+                    new_trade = TradeRecord(
+                        user_id=self.user_id,
+                        symbol=symbol,  # Используем symbol (не self.symbol!)
+                        side="Buy",  # FlashDropCatcher всегда открывает LONG
+                        entry_price=self.entry_price,
+                        quantity=position_size,
+                        leverage=int(float(leverage)),
+                        status="ACTIVE",
+                        strategy_type=self.strategy_type.value,
+                        entry_time=datetime.now(tz.utc),
+                        profit=Decimal('0'),
+                        commission=Decimal('0')  # Комиссия будет обновлена при закрытии
+                    )
+                    trade_id = await db_manager.save_trade(new_trade)
+                    if trade_id:
+                        log_info(self.user_id, f"✅ Trade создан в БД: trade_id={trade_id} для {symbol}", "FlashDropCatcher")
+
+                        # Связываем OPEN ордер со сделкой
+                        await db_manager.update_order_trade_id(order_result, trade_id)
+
+                        # КРИТИЧНО: Сохраняем trade_id для обновления при закрытии
+                        created_trade_id = trade_id
+                    else:
+                        log_error(self.user_id, f"❌ Не удалось создать trade в БД для {symbol}!", "FlashDropCatcher")
+                        created_trade_id = None
+                except Exception as trade_error:
+                    log_error(self.user_id, f"❌ Ошибка создания trade в БД для {symbol}: {trade_error}", "FlashDropCatcher")
+                    created_trade_id = None
+
                 # Инициализируем trailing stop параметры
                 highest_pnl = Decimal('0')
                 current_trailing_level = 0
@@ -859,6 +892,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
                     'entry_time': self.entry_time,
                     'position_size': position_size,
                     'order_id': order_result,  # ID ордера для отслеживания в БД
+                    'trade_id': created_trade_id,  # ID записи в таблице trades для обновления при закрытии
                     'highest_pnl': highest_pnl,
                     'current_trailing_level': current_trailing_level,
                     'last_trailing_notification_level': last_trailing_notification_level,
@@ -1250,6 +1284,24 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 log_info(self.user_id, f"✅ Позиция {symbol} удалена из active_flash_positions (осталось позиций: {len(self.active_flash_positions)})", "FlashDropCatcher")
 
                 log_info(self.user_id, f"✅ Позиция {symbol} закрыта. PnL: ${final_pnl:.2f}", "FlashDropCatcher")
+
+                # КРИТИЧНО: Обновляем trade в таблице trades СРАЗУ после закрытия (НЕ в уведомлении!)
+                trade_id_to_update = position_data.get('trade_id')
+                if trade_id_to_update:
+                    try:
+                        from datetime import timezone as tz
+                        await db_manager.update_trade_on_close(
+                            trade_id=trade_id_to_update,
+                            exit_price=exit_price,
+                            pnl=final_pnl,
+                            commission=commission,
+                            exit_time=datetime.now(tz.utc)
+                        )
+                        log_info(self.user_id, f"✅ Trade {trade_id_to_update} обновлён в БД: PnL={final_pnl:.2f}$", "FlashDropCatcher")
+                    except Exception as trade_update_error:
+                        log_error(self.user_id, f"❌ Ошибка обновления trade {trade_id_to_update} в БД: {trade_update_error}", "FlashDropCatcher")
+                else:
+                    log_warning(self.user_id, f"⚠️ trade_id не найден в position_data для {symbol} - trade не обновлён в БД!", "FlashDropCatcher")
 
                 # ИСПОЛЬЗУЕМ БАЗОВЫЙ МЕТОД для отправки уведомления (с временем и ценами)
                 await self._send_trade_close_notification(
@@ -1736,12 +1788,16 @@ class FlashDropCatcherStrategy(BaseStrategy):
             position_size = Decimal(str(event.qty))
             entry_time = order_in_db.get('filled_at')
 
+            # КРИТИЧНО: Восстанавливаем trade_id из ордера (если есть)
+            restored_trade_id = order_in_db.get('trade_id')
+
             # Добавляем позицию в словарь активных
             self.active_flash_positions[symbol] = {
                 'entry_price': entry_price,
                 'entry_time': entry_time,
                 'position_size': position_size,
                 'order_id': event.order_id,
+                'trade_id': restored_trade_id,  # ID записи в таблице trades для обновления при закрытии
                 'highest_pnl': Decimal('0'),
                 'current_trailing_level': 0,
                 'last_trailing_notification_level': -1,

@@ -809,6 +809,35 @@ class SignalScalperStrategy(BaseStrategy):
             # КРИТИЧЕСКИ ВАЖНО: Подписываемся на события цены для усреднения и трейлинга
             await self.event_bus.subscribe(EventType.PRICE_UPDATE, self.handle_price_update, user_id=self.user_id)
 
+            # КРИТИЧНО: Создаём trade в БД СРАЗУ после исполнения OPEN ордера (НЕ в уведомлении!)
+            from database.db_trades import db_manager, TradeRecord
+            from datetime import timezone as tz
+            try:
+                new_trade = TradeRecord(
+                    user_id=self.user_id,
+                    symbol=self.symbol,
+                    side=event.side,
+                    entry_price=real_entry_price,
+                    quantity=event.qty,
+                    leverage=int(float(self.get_config_value("leverage", 1))),
+                    status="ACTIVE",
+                    strategy_type=self.strategy_type.value,
+                    entry_time=datetime.now(tz.utc),
+                    profit=Decimal('0'),
+                    commission=event.fee
+                )
+                trade_id = await db_manager.save_trade(new_trade)
+                if trade_id:
+                    self.active_trade_db_id = trade_id
+                    log_info(self.user_id, f"✅ Trade создан в БД: trade_id={trade_id}", "SignalScalper")
+
+                    # Связываем OPEN ордер со сделкой
+                    await db_manager.update_order_trade_id(event.order_id, trade_id)
+                else:
+                    log_error(self.user_id, "❌ Не удалось создать trade в БД!", "SignalScalper")
+            except Exception as trade_error:
+                log_error(self.user_id, f"❌ Ошибка создания trade в БД: {trade_error}", "SignalScalper")
+
             # Передаем сохраненную цену сигнала в уведомление (для сравнения)
             signal_price = getattr(self, 'signal_price', None)
             await self._send_trade_open_notification(event.side, real_entry_price, event.qty, self.intended_order_amount, signal_price)
@@ -1027,6 +1056,25 @@ class SignalScalperStrategy(BaseStrategy):
                 log_debug(self.user_id, f"✅ Ордер CLOSE {event.order_id} обновлён в БД с profit={pnl_net:.2f}$", "SignalScalper")
             except Exception as db_error:
                 log_error(self.user_id, f"❌ Ошибка обновления CLOSE ордера {event.order_id} в БД: {db_error}", "SignalScalper")
+
+            # КРИТИЧНО: Обновляем trade в таблице trades СРАЗУ после закрытия (НЕ в уведомлении!)
+            if hasattr(self, 'active_trade_db_id') and self.active_trade_db_id:
+                try:
+                    from datetime import timezone as tz
+                    await db_manager.update_trade_on_close(
+                        trade_id=self.active_trade_db_id,
+                        exit_price=exit_price_for_pnl,
+                        pnl=pnl_net,
+                        commission=self.total_fees_paid,
+                        exit_time=datetime.now(tz.utc)
+                    )
+                    log_info(self.user_id, f"✅ Trade {self.active_trade_db_id} обновлён в БД: PnL={pnl_net:.2f}$", "SignalScalper")
+                    # Очищаем trade_id после закрытия
+                    self.active_trade_db_id = None
+                except Exception as trade_error:
+                    log_error(self.user_id, f"❌ Ошибка обновления trade в БД: {trade_error}", "SignalScalper")
+            else:
+                log_warning(self.user_id, "⚠️ active_trade_db_id не найден - trade не обновлён в БД!", "SignalScalper")
 
             self.last_closed_direction = self.active_direction
 
