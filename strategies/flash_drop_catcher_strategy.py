@@ -761,23 +761,22 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
             # Получаем параметры из конфигурации
             order_amount = self._convert_to_decimal(self.get_config_value("order_amount", 200.0))
-            leverage = int(float(self.get_config_value("leverage", 2)))
+            leverage = self._convert_to_decimal(self.get_config_value("leverage", 2))
 
             # Устанавливаем плечо (используем параметр symbol, НЕ self.symbol!)
-            await self.api.set_leverage(symbol=symbol, leverage=leverage)
+            await self.api.set_leverage(symbol=symbol, leverage=int(leverage))
 
-            # Получаем информацию о символе для правильного размера позиции
-            instrument_info = await self.api.get_instruments_info(symbol=symbol)
-            if not instrument_info:
-                log_error(self.user_id, f"Не удалось получить информацию о символе {symbol}", "FlashDropCatcher")
+            # ИСПРАВЛЕНИЕ: Используем calculate_quantity_from_usdt() как в signal_scalper
+            # Этот метод правильно округляет количество по qtyStep
+            position_size = await self.api.calculate_quantity_from_usdt(symbol, order_amount, leverage, price=entry_price)
+
+            if position_size <= Decimal('0'):
+                log_error(self.user_id, f"Не удалось рассчитать количество для {symbol}", "FlashDropCatcher")
                 return
 
-            # get_instruments_info возвращает словарь {symbol: info} для одного символа
-            qty_step = instrument_info.get("qtyStep", Decimal("0.001"))
-
-            # Рассчитываем размер позиции
-            position_size = (order_amount * leverage) / entry_price
-            position_size = (position_size // qty_step) * qty_step
+            log_info(self.user_id,
+                    f"✅ Рассчитано количество: {position_size} для {symbol} (order_amount={order_amount}, leverage={leverage}, price={entry_price})",
+                    "FlashDropCatcher")
 
             # Открываем LONG позицию (логируем symbol, НЕ self.symbol!)
             log_info(self.user_id,
