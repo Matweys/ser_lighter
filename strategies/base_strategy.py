@@ -1816,28 +1816,28 @@ class BaseStrategy(ABC):
 
                             log_info(self.user_id, f"🔄 Восстановление {order_purpose or 'UNKNOWN'} ордера {order_id}", "BaseStrategy")
 
-                                # КРИТИЧЕСКИ ВАЖНО: Обновляем статус ордера в БД
-                                try:
-                                    await db_manager.update_order_status(
-                                        order_id=order_id,
-                                        status="FILLED",
-                                        filled_quantity=Decimal(str(order_status.get("cumExecQty", "0"))),
-                                        average_price=Decimal(str(order_status.get("avgPrice", "0")))
-                                    )
-                                    log_debug(self.user_id, f"Статус ордера {order_id} обновлён в БД: FILLED", "BaseStrategy")
-                                except Exception as db_error:
-                                    log_error(self.user_id, f"Ошибка обновления статуса ордера {order_id} в БД: {db_error}", "BaseStrategy")
-
-                                filled_event = OrderFilledEvent(
-                                    user_id=self.user_id,
+                            # КРИТИЧЕСКИ ВАЖНО: Обновляем статус ордера в БД
+                            try:
+                                await db_manager.update_order_status(
                                     order_id=order_id,
-                                    symbol=self.symbol,
-                                    side=order_data.get("side", "Buy"),
-                                    qty=Decimal(str(order_status.get("cumExecQty", "0"))),
-                                    price=Decimal(str(order_status.get("avgPrice", "0"))),
-                                    fee=Decimal(str(order_status.get("cumExecFee", "0")))
+                                    status="FILLED",
+                                    filled_quantity=Decimal(str(order_status.get("cumExecQty", "0"))),
+                                    average_price=Decimal(str(order_status.get("avgPrice", "0")))
                                 )
-                                await self._handle_order_filled(filled_event)
+                                log_debug(self.user_id, f"Статус ордера {order_id} обновлён в БД: FILLED", "BaseStrategy")
+                            except Exception as db_error:
+                                log_error(self.user_id, f"Ошибка обновления статуса ордера {order_id} в БД: {db_error}", "BaseStrategy")
+
+                            filled_event = OrderFilledEvent(
+                                user_id=self.user_id,
+                                order_id=order_id,
+                                symbol=self.symbol,
+                                side=order_data.get("side", "Buy"),
+                                qty=Decimal(str(order_status.get("cumExecQty", "0"))),
+                                price=Decimal(str(order_status.get("avgPrice", "0"))),
+                                fee=Decimal(str(order_status.get("cumExecFee", "0")))
+                            )
+                            await self._handle_order_filled(filled_event)
                         else:
                             # КРИТИЧЕСКИ ВАЖНО: Обновляем статус отменённых ордеров в БД
                             log_info(self.user_id, f"ℹ️ Ордер {order_id} имеет статус {status}, удаляю из отслеживания", "BaseStrategy")
