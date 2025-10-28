@@ -667,36 +667,105 @@ class BaseStrategy(ABC):
 
             
     async def _handle_position_update(self, event: PositionUpdateEvent):
-        """Обработка обновления позиции"""
+        """
+        Обработка обновления позиции.
+
+        КРИТИЧНО: Обрабатывает закрытие позиции вручную (через веб-интерфейс биржи).
+        Когда size=0 и стратегия считает позицию активной - завершаем trade и сбрасываем состояние.
+        """
         if event.user_id != self.user_id or event.symbol != self.symbol:
             return
-            
+
         try:
-            # Обновление данных позиции
-            position_key = f"{event.symbol}_{event.side}"
-            self.active_positions[position_key] = {
-                "symbol": event.symbol,
-                "side": event.side,
-                "size": self._convert_to_decimal(event.size),
-                "entry_price": self._convert_to_decimal(event.entry_price),
-                "mark_price": self._convert_to_decimal(event.mark_price),
-                "unrealized_pnl": self._convert_to_decimal(event.unrealized_pnl),
-                "updated_at": datetime.now()
-            }
+            position_size = self._convert_to_decimal(event.size)
 
-            # Обновление статистики
-            unrealized_pnl = self._convert_to_decimal(event.unrealized_pnl)
-            self.stats["current_drawdown"] = min(Decimal('0'), unrealized_pnl)
-            if abs(self.stats["current_drawdown"]) > self.stats["max_drawdown"]:
-                self.stats["max_drawdown"] = abs(self.stats["current_drawdown"])
+            # КРИТИЧНО: Обнаружение закрытия позиции вручную (не через ордер стратегии)
+            if position_size == 0 and self.position_active:
+                log_warning(
+                    self.user_id,
+                    f"⚠️ Позиция {self.symbol} закрыта ВРУЧНУЮ (не через бота). Завершаю trade и сбрасываю состояние.",
+                    "BaseStrategy"
+                )
 
-            # Сохраняем состояние после обновления позиции
-            await self.save_strategy_state({
-                "last_action": "position_updated",
-                "position_key": position_key,
-                "unrealized_pnl": str(unrealized_pnl)
-            })
-                
+                # Обновляем trade в БД если есть active_trade_db_id
+                if hasattr(self, 'active_trade_db_id') and self.active_trade_db_id:
+                    try:
+                        from database.db_trades import db_manager
+                        from datetime import timezone as tz
+
+                        # Используем mark_price как exit_price
+                        exit_price = self._convert_to_decimal(event.mark_price)
+                        unrealized_pnl = self._convert_to_decimal(event.unrealized_pnl)
+
+                        await db_manager.update_trade_on_close(
+                            trade_id=self.active_trade_db_id,
+                            exit_price=exit_price,
+                            pnl=unrealized_pnl,
+                            commission=Decimal('0'),  # Комиссия неизвестна при ручном закрытии
+                            exit_time=datetime.now(tz.utc)
+                        )
+                        log_info(
+                            self.user_id,
+                            f"✅ Trade {self.active_trade_db_id} завершен в БД. PnL: ${unrealized_pnl:.2f}",
+                            "BaseStrategy"
+                        )
+                    except Exception as db_error:
+                        log_error(
+                            self.user_id,
+                            f"❌ Ошибка завершения trade при ручном закрытии: {db_error}",
+                            "BaseStrategy"
+                        )
+
+                # Сбрасываем состояние стратегии
+                self.position_active = False
+                self.position_size = Decimal('0')
+                self.entry_price = Decimal('0')
+                self.active_trade_db_id = None
+
+                # Удаляем позицию из словаря
+                position_key = f"{event.symbol}_{event.side}"
+                if position_key in self.active_positions:
+                    del self.active_positions[position_key]
+
+                # Сохраняем сброшенное состояние
+                await self.save_strategy_state({
+                    "last_action": "position_closed_manually",
+                    "reason": "external_close"
+                })
+
+                log_info(
+                    self.user_id,
+                    f"✅ Состояние стратегии {self.symbol} сброшено после ручного закрытия позиции",
+                    "BaseStrategy"
+                )
+                return
+
+            # Обычное обновление данных позиции (когда size > 0)
+            if position_size > 0:
+                position_key = f"{event.symbol}_{event.side}"
+                self.active_positions[position_key] = {
+                    "symbol": event.symbol,
+                    "side": event.side,
+                    "size": position_size,
+                    "entry_price": self._convert_to_decimal(event.entry_price),
+                    "mark_price": self._convert_to_decimal(event.mark_price),
+                    "unrealized_pnl": self._convert_to_decimal(event.unrealized_pnl),
+                    "updated_at": datetime.now()
+                }
+
+                # Обновление статистики
+                unrealized_pnl = self._convert_to_decimal(event.unrealized_pnl)
+                self.stats["current_drawdown"] = min(Decimal('0'), unrealized_pnl)
+                if abs(self.stats["current_drawdown"]) > self.stats["max_drawdown"]:
+                    self.stats["max_drawdown"] = abs(self.stats["current_drawdown"])
+
+                # Сохраняем состояние после обновления позиции
+                await self.save_strategy_state({
+                    "last_action": "position_updated",
+                    "position_key": position_key,
+                    "unrealized_pnl": str(unrealized_pnl)
+                })
+
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки обновления позиции: {e}", module_name=__name__)
             
@@ -1808,39 +1877,12 @@ class BaseStrategy(ABC):
                             # Ордер исполнен - проверяем его назначение (order_purpose)
                             log_info(self.user_id, f"📈 Ордер {order_id} был исполнен во время перезагрузки", "BaseStrategy")
 
-                            order_purpose = db_order.get('order_purpose') if db_order else None
-
-                            # ✅ КРИТИЧНО: Проверяем, был ли этот ордер УЖЕ обработан до перезагрузки
-                            # Если ордер OPEN/AVERAGING и позиция уже активна - значит ордер был обработан ранее
-                            # ИЗБЕГАЕМ ПОВТОРНОЙ ОБРАБОТКИ старых ордеров!
-                            if order_purpose in ('OPEN', 'AVERAGING') and getattr(self, 'position_active', False):
-                                log_warning(self.user_id,
-                                          f"⚠️ Ордер {order_id} ({order_purpose}) уже обработан ранее (позиция активна). "
-                                          f"ПРОПУСКАЕМ повторную обработку для предотвращения ложных усреднений!",
-                                          "BaseStrategy")
-
-                                # Обновляем статус в БД без отправки события
-                                try:
-                                    await db_manager.update_order_status(
-                                        order_id=order_id,
-                                        status="FILLED",
-                                        filled_quantity=Decimal(str(order_status.get("cumExecQty", "0"))),
-                                        average_price=Decimal(str(order_status.get("avgPrice", "0")))
-                                    )
-                                    log_info(self.user_id,
-                                           f"✅ Статус старого ордера {order_id} обновлён в БД без повторной обработки",
-                                           "BaseStrategy")
-                                except Exception as db_error:
-                                    log_error(self.user_id, f"Ошибка обновления статуса ордера {order_id}: {db_error}", "BaseStrategy")
-
-                                orders_to_remove.append(order_id)
-                                continue
-
                             # ✅ УНИФИЦИРОВАНО: ВСЕ типы ордеров (OPEN, AVERAGING, CLOSE) обрабатываются ОДИНАКОВО
                             # Генерируем OrderFilledEvent и передаём в _handle_order_filled()
                             # Это гарантирует что CLOSE ордера обновляют trade через ЕДИНУЮ точку входа в стратегиях
 
-                            log_info(self.user_id, f"🔄 Восстановление {order_purpose or 'UNKNOWN'} ордера {order_id}", "BaseStrategy")
+                            order_purpose = db_order.get('order_purpose') if db_order else 'UNKNOWN'
+                            log_info(self.user_id, f"🔄 Восстановление {order_purpose} ордера {order_id}", "BaseStrategy")
 
                             # КРИТИЧЕСКИ ВАЖНО: Обновляем статус ордера в БД
                             try:
