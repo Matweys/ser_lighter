@@ -1810,6 +1810,32 @@ class BaseStrategy(ABC):
 
                             order_purpose = db_order.get('order_purpose') if db_order else None
 
+                            # ✅ КРИТИЧНО: Проверяем, был ли этот ордер УЖЕ обработан до перезагрузки
+                            # Если ордер OPEN/AVERAGING и позиция уже активна - значит ордер был обработан ранее
+                            # ИЗБЕГАЕМ ПОВТОРНОЙ ОБРАБОТКИ старых ордеров!
+                            if order_purpose in ('OPEN', 'AVERAGING') and getattr(self, 'position_active', False):
+                                log_warning(self.user_id,
+                                          f"⚠️ Ордер {order_id} ({order_purpose}) уже обработан ранее (позиция активна). "
+                                          f"ПРОПУСКАЕМ повторную обработку для предотвращения ложных усреднений!",
+                                          "BaseStrategy")
+
+                                # Обновляем статус в БД без отправки события
+                                try:
+                                    await db_manager.update_order_status(
+                                        order_id=order_id,
+                                        status="FILLED",
+                                        filled_quantity=Decimal(str(order_status.get("cumExecQty", "0"))),
+                                        average_price=Decimal(str(order_status.get("avgPrice", "0")))
+                                    )
+                                    log_info(self.user_id,
+                                           f"✅ Статус старого ордера {order_id} обновлён в БД без повторной обработки",
+                                           "BaseStrategy")
+                                except Exception as db_error:
+                                    log_error(self.user_id, f"Ошибка обновления статуса ордера {order_id}: {db_error}", "BaseStrategy")
+
+                                orders_to_remove.append(order_id)
+                                continue
+
                             # ✅ УНИФИЦИРОВАНО: ВСЕ типы ордеров (OPEN, AVERAGING, CLOSE) обрабатываются ОДИНАКОВО
                             # Генерируем OrderFilledEvent и передаём в _handle_order_filled()
                             # Это гарантирует что CLOSE ордера обновляют trade через ЕДИНУЮ точку входа в стратегиях
