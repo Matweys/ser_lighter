@@ -180,7 +180,7 @@ class UserSession:
         """
         try:
             # Метод оставлен для совместимости, но больше не используется
-            log_debug(self.user_id, "Очистка стейл блокировок пропущена (impulse_trailing удалён)", "UserSession")
+            log_debug(self.user_id, "Очистка стейл блокировок пропущена (метод deprecated)", "UserSession")
         except Exception as e:
             log_error(self.user_id, f"Критическая ошибка при очистке 'залипших' блокировок: {e}", "UserSession")
 

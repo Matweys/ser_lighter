@@ -608,10 +608,16 @@ class SignalScalperStrategy(BaseStrategy):
 
         Добавление @strategy_locked вызывает DEADLOCK (asyncio.Lock не реентрабельная)!
         """
-        # УЛУЧШЕННАЯ ЗАЩИТА ОТ ДВОЙНОЙ ОБРАБОТКИ
+        # КРИТИЧНО: АТОМАРНАЯ ЗАЩИТА ОТ RACE CONDITION!
+        # Добавляем ордер в set НЕМЕДЛЕННО, ПЕРЕД любыми async операциями
+        # Это предотвращает двойную обработку при одновременном приходе WebSocket + Recovery событий
         if event.order_id in self.processed_orders:
             log_debug(self.user_id, f"[ДУПЛИКАТ] Ордер {event.order_id} уже обработан, игнорируем EventBus дубликат.", "SignalScalper")
             return
+
+        # АТОМАРНО добавляем в set (set.add() thread-safe благодаря GIL)
+        self.processed_orders.add(event.order_id)
+        log_debug(self.user_id, f"🔒 Ордер {event.order_id} заблокирован от повторной обработки", "SignalScalper")
 
         # КРИТИЧЕСКИ ВАЖНО: Проверяем что ордер принадлежит БОТУ (есть в БД)
         from database.db_trades import db_manager
@@ -649,16 +655,26 @@ class SignalScalperStrategy(BaseStrategy):
                      "SignalScalper")
             return
 
-        # НЕМЕДЛЕННО добавляем ордер в обработанные чтобы блокировать повторную обработку
-        self.processed_orders.add(event.order_id)
-        self.current_order_id = None  # Сбрасываем ожидаемый ордер
+        # Сбрасываем ожидаемый ордер после подтверждения принадлежности
+        self.current_order_id = None
 
         log_info(self.user_id, f"[ОБРАБОТКА] Обрабатываем ордер {event.order_id} ({event.side} {event.qty} {self.symbol})", "SignalScalper")
 
-        # УМНАЯ МНОГОУРОВНЕВАЯ ЛОГИКА ОПРЕДЕЛЕНИЯ ТИПА ОРДЕРА
+        # КРИТИЧНО: ПРИОРИТЕТНАЯ проверка order_purpose из БД (АБСОЛЮТНЫЙ источник истины)
+        # Это защита от ошибочной обработки CLOSE ордеров как OPEN при восстановлении после перезагрузки
+        order_purpose = order_in_db.get('order_purpose', 'UNKNOWN')
 
-        # ПЕРВИЧНАЯ проверка по reduce_only флагу (наиболее надежно)
-        is_closing_order = hasattr(event, 'reduce_only') and event.reduce_only
+        if order_purpose == 'CLOSE':
+            # Это ВСЕГДА ордер закрытия, независимо от других условий!
+            is_closing_order = True
+            log_info(self.user_id,
+                    f"[БД→ORDER_PURPOSE] Ордер {event.order_id} имеет purpose=CLOSE в БД - это ЗАКРЫТИЕ позиции",
+                    "SignalScalper")
+        else:
+            # УМНАЯ МНОГОУРОВНЕВАЯ ЛОГИКА ОПРЕДЕЛЕНИЯ ТИПА ОРДЕРА
+
+            # ПЕРВИЧНАЯ проверка по reduce_only флагу (наиболее надежно)
+            is_closing_order = hasattr(event, 'reduce_only') and event.reduce_only
 
         # ВТОРИЧНАЯ проверка по направлению ордера (fallback для случаев без reduce_only)
         if not is_closing_order and self.position_active:
@@ -865,10 +881,17 @@ class SignalScalperStrategy(BaseStrategy):
                 enable_stag = self.active_trade_config.get("enable_stagnation_detector", True)
                 enable_avg = self.active_trade_config.get("enable_averaging", True)
 
+                # ЗАЩИТА: Проверяем что stagnation_ranges не пустой перед доступом к [0]
+                stagnation_trigger_info = ""
+                if self.stagnation_ranges and len(self.stagnation_ranges) > 0:
+                    stagnation_trigger_info = f"{self.stagnation_ranges[0]['min']}-{self.stagnation_ranges[0]['max']}% от маржи"
+                else:
+                    stagnation_trigger_info = "Не настроено"
+
                 log_info(self.user_id,
                         f"🔧 Параметры усреднений:\n"
                         f"   📍 Усреднение #1 (Детектор застревания): {'✅ ВКЛ' if enable_stag else '❌ ВЫКЛ'}\n"
-                        f"      ├─ Триггер: {self.stagnation_ranges[0]['min']}-{self.stagnation_ranges[0]['max']}% от маржи\n"
+                        f"      ├─ Триггер: {stagnation_trigger_info}\n"
                         f"      ├─ Время наблюдения: {self.stagnation_check_interval} сек\n"
                         f"      └─ Множитель: {self.stagnation_averaging_multiplier}x\n"
                         f"   📊 Усреднение #2 (Основное): {'✅ ВКЛ' if enable_avg else '❌ ВЫКЛ'}\n"

@@ -138,6 +138,69 @@ class BaseStrategy(ABC):
         except (ValueError, TypeError):
             return Decimal('0')
 
+    async def _has_recent_bot_close_orders(self, seconds: int = 10) -> bool:
+        """
+        Проверяет наличие недавних CLOSE ордеров от ЛЮБОГО бота координатора.
+
+        КРИТИЧНО: БЕЗ фильтра по bot_priority - проверяем ВСЕ боты (1, 2, 3)!
+        Цель: отличить БОТОВСКОЕ закрытие от РУЧНОГО (пользователем через биржу).
+
+        Используется для различия:
+        - Любой БОТ (1/2/3) закрыл → ждем OrderFilledEvent (return True)
+        - ПОЛЬЗОВАТЕЛЬ закрыл вручную через биржу → обрабатываем сразу (return False)
+
+        Args:
+            seconds: Окно времени для поиска (по умолчанию 10 секунд)
+
+        Returns:
+            bool: True если найден недавний CLOSE ордер от ЛЮБОГО бота координатора
+        """
+        from database.db_trades import db_manager
+        from datetime import timezone as tz, timedelta
+
+        try:
+            cutoff_time = datetime.now(tz.utc) - timedelta(seconds=seconds)
+
+            # КРИТИЧНО: БЕЗ фильтра по bot_priority!
+            # Проверяем ЛЮБОЙ CLOSE ордер от координатора (Bot 1/2/3)
+            query = """
+            SELECT order_id, bot_priority, created_at
+            FROM orders
+            WHERE user_id = $1
+              AND symbol = $2
+              AND order_purpose = 'CLOSE'
+              AND created_at >= $3
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+
+            result = await db_manager.pool.fetchrow(
+                query,
+                self.user_id,
+                self.symbol,
+                cutoff_time
+            )
+
+            if result:
+                log_debug(
+                    self.user_id,
+                    f"✅ Найден недавний CLOSE ордер: {result['order_id']} "
+                    f"(Bot_{result['bot_priority']}, создан {result['created_at']})",
+                    "BaseStrategy"
+                )
+                return True
+
+            return False
+
+        except Exception as e:
+            log_error(
+                self.user_id,
+                f"❌ Ошибка проверки недавних CLOSE ордеров: {e}",
+                "BaseStrategy"
+            )
+            # При ошибке возвращаем False (безопаснее обработать как ручное)
+            return False
+
     @staticmethod
     def _format_duration_russian(duration_seconds: int) -> str:
         """
@@ -679,34 +742,88 @@ class BaseStrategy(ABC):
         try:
             position_size = self._convert_to_decimal(event.size)
 
-            # КРИТИЧНО: Обнаружение закрытия позиции вручную (не через ордер стратегии)
+            # КРИТИЧНО: Различаем БОТОВСКОЕ vs РУЧНОЕ закрытие
             if position_size == 0 and self.position_active:
+
+                # ШАГ 1: Проверяем - может бот закрыл?
+                has_bot_close_order = await self._has_recent_bot_close_orders(seconds=10)
+
+                if has_bot_close_order:
+                    # Это БОТ закрыл позицию - ждем OrderFilledEvent для полной обработки
+                    log_debug(
+                        self.user_id,
+                        f"ℹ️ Позиция {self.symbol} закрыта БОТОМ. "
+                        f"Ожидаю OrderFilledEvent для обработки (пропускаю PositionUpdateEvent).",
+                        "BaseStrategy"
+                    )
+                    return  # Выходим, OrderFilledEvent обработает все
+
+                # ШАГ 2: Это РУЧНОЕ закрытие пользователем
                 log_warning(
                     self.user_id,
-                    f"⚠️ Позиция {self.symbol} закрыта ВРУЧНУЮ (не через бота). Завершаю trade и сбрасываю состояние.",
+                    f"⚠️ Позиция {self.symbol} закрыта ВРУЧНУЮ пользователем (через биржу).",
                     "BaseStrategy"
                 )
 
-                # Обновляем trade в БД если есть active_trade_db_id
+                # ШАГ 3: Получаем ТОЧНЫЙ PnL с биржи
+                final_pnl = Decimal('0')
+                commission = Decimal('0')
+                exit_price = self._convert_to_decimal(event.mark_price)
+                entry_price_saved = getattr(self, 'entry_price', Decimal('0'))
+                entry_time_saved = getattr(self, 'entry_time', None)
+
+                try:
+                    # Запрашиваем closedPnL с биржи (ТОЧНЫЙ результат с комиссиями)
+                    closed_pnl_data = await self.api.get_closed_pnl(symbol=self.symbol, limit=1)
+
+                    if closed_pnl_data:
+                        # Используем РЕАЛЬНЫЙ closedPnl от биржи
+                        final_pnl = closed_pnl_data['closedPnl']
+                        exit_price = closed_pnl_data['avgExitPrice']
+                        # Комиссии УЖЕ учтены в closedPnl
+                        commission = closed_pnl_data['openFee'] + closed_pnl_data['closeFee']
+
+                        log_info(
+                            self.user_id,
+                            f"✅ [BYBIT API] closedPnl={final_pnl:.2f}$, "
+                            f"avgExitPrice={exit_price:.4f}, комиссии={commission:.2f}$",
+                            "BaseStrategy"
+                        )
+                    else:
+                        # Fallback: используем unrealisedPnl из события
+                        final_pnl = self._convert_to_decimal(event.unrealized_pnl)
+                        commission = Decimal('0')
+                        log_warning(
+                            self.user_id,
+                            f"⚠️ [FALLBACK] closedPnl недоступен, используем unrealisedPnl={final_pnl:.2f}$",
+                            "BaseStrategy"
+                        )
+
+                except Exception as api_error:
+                    log_error(
+                        self.user_id,
+                        f"❌ Ошибка получения closedPnL: {api_error}. Используем unrealisedPnl.",
+                        "BaseStrategy"
+                    )
+                    final_pnl = self._convert_to_decimal(event.unrealized_pnl)
+                    commission = Decimal('0')
+
+                # ШАГ 4: Обновляем trade в БД
                 if hasattr(self, 'active_trade_db_id') and self.active_trade_db_id:
                     try:
                         from database.db_trades import db_manager
                         from datetime import timezone as tz
 
-                        # Используем mark_price как exit_price
-                        exit_price = self._convert_to_decimal(event.mark_price)
-                        unrealized_pnl = self._convert_to_decimal(event.unrealized_pnl)
-
                         await db_manager.update_trade_on_close(
                             trade_id=self.active_trade_db_id,
                             exit_price=exit_price,
-                            pnl=unrealized_pnl,
-                            commission=Decimal('0'),  # Комиссия неизвестна при ручном закрытии
+                            pnl=final_pnl,
+                            commission=commission,
                             exit_time=datetime.now(tz.utc)
                         )
                         log_info(
                             self.user_id,
-                            f"✅ Trade {self.active_trade_db_id} завершен в БД. PnL: ${unrealized_pnl:.2f}",
+                            f"✅ Trade {self.active_trade_db_id} завершен в БД. PnL: ${final_pnl:.2f}",
                             "BaseStrategy"
                         )
                     except Exception as db_error:
@@ -716,7 +833,7 @@ class BaseStrategy(ABC):
                             "BaseStrategy"
                         )
 
-                # Сбрасываем состояние стратегии
+                # ШАГ 5: Сбрасываем состояние стратегии
                 self.position_active = False
                 self.position_size = Decimal('0')
                 self.entry_price = Decimal('0')
@@ -735,10 +852,32 @@ class BaseStrategy(ABC):
 
                 log_info(
                     self.user_id,
-                    f"✅ Состояние стратегии {self.symbol} сброшено после ручного закрытия позиции",
+                    f"✅ Состояние стратегии {self.symbol} сброшено после ручного закрытия",
                     "BaseStrategy"
                 )
-                return
+
+                # ШАГ 6: ОТПРАВЛЯЕМ УВЕДОМЛЕНИЕ
+                try:
+                    await self._send_trade_close_notification(
+                        pnl=final_pnl,
+                        commission=commission,
+                        exit_price=exit_price,
+                        entry_price=entry_price_saved,
+                        entry_time=entry_time_saved
+                    )
+                    log_info(
+                        self.user_id,
+                        f"✅ Уведомление о ручном закрытии отправлено. PnL: ${final_pnl:.2f}",
+                        "BaseStrategy"
+                    )
+                except Exception as notif_error:
+                    log_error(
+                        self.user_id,
+                        f"❌ Ошибка отправки уведомления о ручном закрытии: {notif_error}",
+                        "BaseStrategy"
+                    )
+
+                return  # Обработка завершена
 
             # Обычное обновление данных позиции (когда size > 0)
             if position_size > 0:
@@ -1843,7 +1982,42 @@ class BaseStrategy(ABC):
 
             orders_to_remove = []
 
+            # КРИТИЧНО: Сортируем ордера по времени создания ПЕРЕД обработкой!
+            # Это гарантирует что OPEN обработается раньше CLOSE при recovery
+            from database.db_trades import db_manager
+
+            # Получаем данные всех ордеров из БД с timestamp
+            orders_with_time = []
             for order_id, order_data in self.active_orders.items():
+                db_order = await db_manager.get_order_by_exchange_id(order_id, self.user_id)
+                if db_order:
+                    created_at = db_order.get('created_at')
+                    orders_with_time.append({
+                        'order_id': order_id,
+                        'order_data': order_data,
+                        'created_at': created_at,
+                        'db_order': db_order
+                    })
+                else:
+                    # Если ордер не найден в БД - всё равно добавляем для обработки
+                    orders_with_time.append({
+                        'order_id': order_id,
+                        'order_data': order_data,
+                        'created_at': datetime.min,
+                        'db_order': None
+                    })
+
+            # Сортируем по времени создания (самые старые первыми)
+            orders_with_time.sort(key=lambda x: x['created_at'] if x['created_at'] else datetime.min)
+
+            log_info(self.user_id,
+                    f"📋 Обработка {len(orders_with_time)} ордеров в ХРОНОЛОГИЧЕСКОМ порядке (от старых к новым)",
+                    "BaseStrategy")
+
+            for order_info in orders_with_time:
+                order_id = order_info['order_id']
+                order_data = order_info['order_data']
+                db_order = order_info['db_order']
                 if order_id in exchange_order_ids:
                     # Ордер всё ещё активен на бирже
                     log_info(self.user_id, f"✅ Ордер {order_id} по {self.symbol} всё ещё активен, продолжаю отслеживание", "BaseStrategy")
@@ -1856,11 +2030,22 @@ class BaseStrategy(ABC):
                     db_order = await db_manager.get_order_by_exchange_id(order_id, self.user_id)
                     db_status = db_order.get('status') if db_order else None
 
-                    if db_status == 'FILLED':
-                        # Ордер УЖЕ обработан ранее - пропускаем
-                        log_info(self.user_id, f"⏭️ Ордер {order_id} уже обработан (статус в БД: FILLED), пропускаю", "BaseStrategy")
+                    # КРИТИЧНО: Проверяем был ли ордер УЖЕ ОБРАБОТАН стратегией
+                    # filled_at устанавливается в update_order_on_fill() при обработке через _handle_order_filled()
+                    filled_at = db_order.get('filled_at') if db_order else None
+
+                    if db_status == 'FILLED' and filled_at is not None:
+                        # Ордер УЖЕ обработан стратегией (filled_at != NULL) - пропускаем
+                        log_info(self.user_id,
+                                f"⏭️ Ордер {order_id} уже обработан стратегией (filled_at={filled_at}), пропускаю",
+                                "BaseStrategy")
                         orders_to_remove.append(order_id)
                         continue
+                    elif db_status == 'FILLED' and filled_at is None:
+                        # Ордер исполнен на бирже но НЕ обработан стратегией - ОБРАБАТЫВАЕМ!
+                        log_warning(self.user_id,
+                                   f"⚠️ Ордер {order_id} исполнен но НЕ обработан (filled_at=NULL). Обрабатываю...",
+                                   "BaseStrategy")
 
                     # Проверяем статус ордера через историю биржи
                     order_status = await self.api.get_order_status(order_id)

@@ -8,7 +8,6 @@ from core.logger import log_info, log_error, log_warning
 from core.functions import to_decimal
 from api.bybit_api import BybitAPI
 from cache.redis_manager import redis_manager
-from core.default_configs import DefaultConfigs
 
 getcontext().prec = 28
 
@@ -135,9 +134,18 @@ class MarketAnalyzer:
     def _analyze_timeframe(self, candles: pd.DataFrame, symbol: str) -> Optional[Dict]:
         """Анализ одного таймфрейма по технической логике."""
         try:
-            # Используем конфигурацию impulse_trailing как шаблон для технических параметров
-            # (EMA, Bollinger Bands, ATR и т.д.)
-            config = DefaultConfigs.get_impulse_trailing_config()
+            # Технические параметры для анализа рынка (независимо от стратегий)
+            config = {
+                'long_ema_len': 50,            # Длина EMA для определения тренда
+                'long_bb_len': 20,             # Период Bollinger Bands
+                'long_bb_width_thresh': 0.02,  # Порог ширины BB для консолидации (2%)
+                'long_consol_bars': 10,        # Кол-во баров для определения консолидации
+                'short_ret_lookback': 20,      # Период для расчета волатильности
+                'short_vol_ma': 20,            # MA объема для панических свечей
+                'short_panic_sigma_k': 2.0,    # Множитель сигма для панической свечи
+                'short_vol_ratio_min': 2.0,    # Минимальный рост объема для паники
+                'risk_atr_len': 14             # Период ATR для расчета рисков
+            }
 
             # Приведение типов данных к float для pandas_ta
             candles_float = candles.copy()

@@ -1730,10 +1730,16 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
         БЕЗ этого метода: если WebSocket потеряется, стратегия НЕ УЗНАЕТ о открытой позиции!
         """
-        # Защита от дубликатов
+        # КРИТИЧНО: АТОМАРНАЯ ЗАЩИТА ОТ RACE CONDITION!
+        # Добавляем ордер в set НЕМЕДЛЕННО, ПЕРЕД любыми async операциями
+        # Это предотвращает двойную обработку при одновременном приходе WebSocket + Recovery событий
         if event.order_id in self.processed_orders:
             log_debug(self.user_id, f"[ДУПЛИКАТ] Ордер {event.order_id} уже обработан, игнорируем", "FlashDropCatcher")
             return
+
+        # АТОМАРНО добавляем в set (set.add() thread-safe благодаря GIL)
+        self.processed_orders.add(event.order_id)
+        log_debug(self.user_id, f"🔒 Ордер {event.order_id} заблокирован от повторной обработки", "FlashDropCatcher")
 
         # КРИТИЧНО: Проверяем что ордер принадлежит БОТУ (есть в БД)
         from database.db_trades import db_manager
@@ -1761,9 +1767,6 @@ class FlashDropCatcherStrategy(BaseStrategy):
                      f"❌ Ошибка проверки ордера {event.order_id} в БД: {db_check_error}. ИГНОРИРУЮ!",
                      "FlashDropCatcher")
             return
-
-        # Добавляем в обработанные
-        self.processed_orders.add(event.order_id)
 
         # Определяем тип ордера (OPEN или CLOSE) по order_purpose из БД
         order_purpose = order_in_db.get('order_purpose', 'OPEN')
