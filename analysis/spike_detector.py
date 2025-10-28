@@ -259,41 +259,43 @@ class SpikeDetector:
         #     return False, main_signal, f"⏸️ Недостаточно данных для анализа ({len(recent_spikes_10min)}/6 всплесков)"
 
         # ========== МНОГОУРОВНЕВЫЙ АНАЛИЗ ИМПУЛЬСА ==========
+        # ✅ ВРЕМЕННО ЗАКОММЕНТИРОВАНО: Анализ импульса для обычных входов
+        # Раскомментируйте этот блок, чтобы вернуть полную логику проверки всплесков
         # Анализируем 3 временных окна для максимальной точности
-        momentum_3min = self.analyze_momentum(seconds=180)   # Краткосрочный (3 мин)
-        momentum_5min = self.analyze_momentum(seconds=300)   # Среднесрочный (5 мин)
-        momentum_10min = self.analyze_momentum(seconds=600)  # Долгосрочный (10 мин)
+        # momentum_3min = self.analyze_momentum(seconds=180)   # Краткосрочный (3 мин)
+        # momentum_5min = self.analyze_momentum(seconds=300)   # Среднесрочный (5 мин)
+        # momentum_10min = self.analyze_momentum(seconds=600)  # Долгосрочный (10 мин)
 
         # Используем долгосрочное окно как основное (для совместимости с текущим кодом)
-        up_spikes = momentum_10min["up_spikes"]
-        down_spikes = momentum_10min["down_spikes"]
-        consecutive_up = momentum_10min["consecutive_up"]
-        consecutive_down = momentum_10min["consecutive_down"]
-        overall_direction = momentum_10min["overall_direction"]
-        momentum = momentum_10min["momentum"]
+        # up_spikes = momentum_10min["up_spikes"]
+        # down_spikes = momentum_10min["down_spikes"]
+        # consecutive_up = momentum_10min["consecutive_up"]
+        # consecutive_down = momentum_10min["consecutive_down"]
+        # overall_direction = momentum_10min["overall_direction"]
+        # momentum = momentum_10min["momentum"]
 
         # НОВАЯ ЛОГИКА: Определяем перевес по соотношению UP/DOWN
-        total_spikes = up_spikes + down_spikes
-        if total_spikes > 0:
-            up_ratio = (up_spikes / total_spikes) * 100  # Процент всплесков ВВЕРХ
-            down_ratio = (down_spikes / total_spikes) * 100  # Процент всплесков ВНИЗ
-        else:
-            up_ratio = down_ratio = 0
+        # total_spikes = up_spikes + down_spikes
+        # if total_spikes > 0:
+        #     up_ratio = (up_spikes / total_spikes) * 100  # Процент всплесков ВВЕРХ
+        #     down_ratio = (down_spikes / total_spikes) * 100  # Процент всплесков ВНИЗ
+        # else:
+        #     up_ratio = down_ratio = 0
 
         # Определяем СИЛЬНЫЙ перевес (>60% в одну сторону)
-        strong_bullish_bias = up_ratio >= 60  # 60%+ всплесков вверх
-        strong_bearish_bias = down_ratio >= 60  # 60%+ всплесков вниз
+        # strong_bullish_bias = up_ratio >= 60  # 60%+ всплесков вверх
+        # strong_bearish_bias = down_ratio >= 60  # 60%+ всплесков вниз
 
         # Логируем детальный анализ
-        log_info(self.user_id,
-                f"📊 Spike Detector ({len(recent_spikes_10min)} свечей, {total_spikes} всплесков за 10мин): "
-                f"⬆️{up_spikes} ({up_ratio:.0f}%) vs ⬇️{down_spikes} ({down_ratio:.0f}%), "
-                f"импульс 3m/5m/10m = {momentum_3min['momentum']}/{momentum_5min['momentum']}/{momentum_10min['momentum']}",
-                "SpikeDetector")
+        # log_info(self.user_id,
+        #         f"📊 Spike Detector ({len(recent_spikes_10min)} свечей, {total_spikes} всплесков за 10мин): "
+        #         f"⬆️{up_spikes} ({up_ratio:.0f}%) vs ⬇️{down_spikes} ({down_ratio:.0f}%), "
+        #         f"импульс 3m/5m/10m = {momentum_3min['momentum']}/{momentum_5min['momentum']}/{momentum_10min['momentum']}",
+        #         "SpikeDetector")
 
         # ========== ПРИОРИТЕТ: ПРОВЕРКА СИЛЬНЫХ ПРОТИВОПОЛОЖНЫХ ВСПЛЕСКОВ ==========
         # Порог для "сильного" всплеска: 0.35% (0.0035)
-        strong_spike_threshold = Decimal('0.0035')
+        strong_spike_threshold = Decimal('0.0031')
 
         # Ищем сильные противоположные всплески за последние 10 минут
         strong_opposite_spikes = []
@@ -328,101 +330,117 @@ class SpikeDetector:
             return True, reversed_signal, (f"🔄 РАЗВОРОТ: {direction_emoji} {len(strong_opposite_spikes)} всплеска {strong_opposite_spikes[-1]['direction']} "
                           f"(последний {last_magnitude_pct:.2f}%) развернули {main_signal} → {reversed_signal}")
 
-        # Логируем анализ
-        log_debug(self.user_id,
-                 f"📊 Momentum {self.symbol}: {momentum} (⬆️{up_spikes} vs ⬇️{down_spikes}), "
-                 f"общее направление: {overall_direction}, consecutive_up={consecutive_up}, consecutive_down={consecutive_down}",
-                 "SpikeDetector")
+        # ========== ✅ ВРЕМЕННАЯ УПРОЩЕННАЯ ЛОГИКА ==========
+        # 🔧 Чтобы вернуть полную логику проверки всплесков:
+        # 1. РАСКОММЕНТИРУЙТЕ блок "МНОГОУРОВНЕВЫЙ АНАЛИЗ ИМПУЛЬСА" (строки ~265-294)
+        # 2. РАСКОММЕНТИРУЙТЕ блок "ПРОДВИНУТАЯ ЛОГИКА ДЛЯ LONG/SHORT" (строки ~334-426)
+        # 3. УДАЛИТЕ этот блок (строки ~333-340)
 
-        # ========== ПРОДВИНУТАЯ ЛОГИКА ДЛЯ LONG ==========
-        if main_signal == "LONG":
-            # 🎯 ПРИОРИТЕТ 1: Полное подтверждение на всех таймфреймах (САМЫЙ СИЛЬНЫЙ СИГНАЛ)
-            all_bullish = (momentum_3min["momentum"] == "BULLISH" and
-                          momentum_5min["momentum"] == "BULLISH" and
-                          momentum_10min["momentum"] == "BULLISH")
+        # Простая логика: разрешаем вход, если не было разворота
+        log_info(self.user_id,
+                f"✅ Spike Detector: Разрешаю вход {main_signal} (проверка импульса отключена, работает только разворот по сильным всплескам ≥0.35%)",
+                "SpikeDetector")
 
-            if all_bullish:
-                return True, "LONG", f"🚀 СИЛЬНЕЙШИЙ LONG: все таймфреймы BULLISH (3m/5m/10m согласны)"
+        return True, main_signal, f"✅ Вход {main_signal} разрешен (упрощенный режим)"
 
-            # 🎯 ПРИОРИТЕТ 2: Идеальный вход на откате в восходящем тренде
-            perfect_pullback_entry = (
-                momentum_10min["momentum"] == "BULLISH" and           # Долгосрочный тренд вверх
-                momentum_3min["down_spikes"] >= 2 and                 # Краткосрочный откат вниз
-                momentum_3min["momentum"] != "BEARISH"                # Но НЕ медвежий разворот
-            )
+        # ========== ⏸️ ВРЕМЕННО ЗАКОММЕНТИРОВАНО: Продвинутая логика проверки всплесков ==========
+        # Раскомментируйте этот блок, чтобы вернуть полную проверку импульса для входов
 
-            if perfect_pullback_entry:
-                return True, "LONG", f"🎯 ИДЕАЛЬНЫЙ ВХОД: откат вниз в восходящем тренде (10m=BULLISH, 3m откат)"
-
-            # Сценарий 3: Обнаружение раннего разворота (БЛОКИРУЕМ ВХОД)
-            early_reversal_to_bearish = (
-                momentum_3min["momentum"] == "BEARISH" and            # Краткосрочно медвежий
-                momentum_10min["momentum"] == "BULLISH"               # Долгосрочно бычий
-            )
-
-            if early_reversal_to_bearish:
-                return False, "LONG", f"⚠️ Ранний признак разворота вниз (3m=BEARISH, 10m=BULLISH)"
-
-            # Сценарий 4: Стандартное подтверждение тренда
-            if momentum == "BULLISH":
-                return True, "LONG", f"✅ Бычий импульс подтверждает LONG ({up_spikes} всплесков ВВЕРХ)"
-
-            # Сценарий 5: Резкое ускорение ВВЕРХ (цена убежала, ждем отката)
-            if consecutive_up and overall_direction == "UP" and len(self.get_recent_spikes(180)) >= 3:
-                return False, "LONG", f"⏸️ Цена резко ускорилась ВВЕРХ ({up_spikes} всплесков), ждем отката"
-
-            # Сценарий 6: Сильный медвежий импульс против LONG
-            if momentum == "BEARISH":
-                return False, "LONG", f"⏸️ Медвежий импульс против LONG ({down_spikes} всплесков ВНИЗ)"
-
-            # Нейтральный случай - входим
-            return True, "LONG", f"✅ LONG без сильных противоречий (импульс: {momentum})"
-
-        # ========== ПРОДВИНУТАЯ ЛОГИКА ДЛЯ SHORT ==========
-        elif main_signal == "SHORT":
-            # 🎯 ПРИОРИТЕТ 1: Полное подтверждение на всех таймфреймах (САМЫЙ СИЛЬНЫЙ СИГНАЛ)
-            all_bearish = (momentum_3min["momentum"] == "BEARISH" and
-                          momentum_5min["momentum"] == "BEARISH" and
-                          momentum_10min["momentum"] == "BEARISH")
-
-            if all_bearish:
-                return True, "SHORT", f"🚀 СИЛЬНЕЙШИЙ SHORT: все таймфреймы BEARISH (3m/5m/10m согласны)"
-
-            # 🎯 ПРИОРИТЕТ 2: Идеальный вход на откате в нисходящем тренде
-            perfect_pullback_entry = (
-                momentum_10min["momentum"] == "BEARISH" and           # Долгосрочный тренд вниз
-                momentum_3min["up_spikes"] >= 2 and                   # Краткосрочный откат вверх
-                momentum_3min["momentum"] != "BULLISH"                # Но НЕ бычий разворот
-            )
-
-            if perfect_pullback_entry:
-                return True, "SHORT", f"🎯 ИДЕАЛЬНЫЙ ВХОД: откат вверх в нисходящем тренде (10m=BEARISH, 3m откат)"
-
-            # Сценарий 3: Обнаружение раннего разворота (БЛОКИРУЕМ ВХОД)
-            early_reversal_to_bullish = (
-                momentum_3min["momentum"] == "BULLISH" and            # Краткосрочно бычий
-                momentum_10min["momentum"] == "BEARISH"               # Долгосрочно медвежий
-            )
-
-            if early_reversal_to_bullish:
-                return False, "SHORT", f"⚠️ Ранний признак разворота вверх (3m=BULLISH, 10m=BEARISH)"
-
-            # Сценарий 4: Стандартное подтверждение тренда
-            if momentum == "BEARISH":
-                return True, "SHORT", f"✅ Медвежий импульс подтверждает SHORT ({down_spikes} всплесков ВНИЗ)"
-
-            # Сценарий 5: Резкое ускорение ВНИЗ (цена убежала, ждем отката)
-            if consecutive_down and overall_direction == "DOWN" and len(self.get_recent_spikes(180)) >= 3:
-                return False, "SHORT", f"⏸️ Цена резко ускорилась ВНИЗ ({down_spikes} всплесков), ждем отката"
-
-            # Сценарий 6: Сильный бычий импульс против SHORT
-            if momentum == "BULLISH":
-                return False, "SHORT", f"⏸️ Бычий импульс против SHORT ({up_spikes} всплесков ВВЕРХ)"
-
-            # Нейтральный случай - входим
-            return True, "SHORT", f"✅ SHORT без сильных противоречий (импульс: {momentum})"
-
-        return False, main_signal, "Unknown signal"
+        # # Логируем анализ
+        # log_debug(self.user_id,
+        #          f"📊 Momentum {self.symbol}: {momentum} (⬆️{up_spikes} vs ⬇️{down_spikes}), "
+        #          f"общее направление: {overall_direction}, consecutive_up={consecutive_up}, consecutive_down={consecutive_down}",
+        #          "SpikeDetector")
+        #
+        # # ========== ПРОДВИНУТАЯ ЛОГИКА ДЛЯ LONG ==========
+        # if main_signal == "LONG":
+        #     # 🎯 ПРИОРИТЕТ 1: Полное подтверждение на всех таймфреймах (САМЫЙ СИЛЬНЫЙ СИГНАЛ)
+        #     all_bullish = (momentum_3min["momentum"] == "BULLISH" and
+        #                   momentum_5min["momentum"] == "BULLISH" and
+        #                   momentum_10min["momentum"] == "BULLISH")
+        #
+        #     if all_bullish:
+        #         return True, "LONG", f"🚀 СИЛЬНЕЙШИЙ LONG: все таймфреймы BULLISH (3m/5m/10m согласны)"
+        #
+        #     # 🎯 ПРИОРИТЕТ 2: Идеальный вход на откате в восходящем тренде
+        #     perfect_pullback_entry = (
+        #         momentum_10min["momentum"] == "BULLISH" and           # Долгосрочный тренд вверх
+        #         momentum_3min["down_spikes"] >= 2 and                 # Краткосрочный откат вниз
+        #         momentum_3min["momentum"] != "BEARISH"                # Но НЕ медвежий разворот
+        #     )
+        #
+        #     if perfect_pullback_entry:
+        #         return True, "LONG", f"🎯 ИДЕАЛЬНЫЙ ВХОД: откат вниз в восходящем тренде (10m=BULLISH, 3m откат)"
+        #
+        #     # Сценарий 3: Обнаружение раннего разворота (БЛОКИРУЕМ ВХОД)
+        #     early_reversal_to_bearish = (
+        #         momentum_3min["momentum"] == "BEARISH" and            # Краткосрочно медвежий
+        #         momentum_10min["momentum"] == "BULLISH"               # Долгосрочно бычий
+        #     )
+        #
+        #     if early_reversal_to_bearish:
+        #         return False, "LONG", f"⚠️ Ранний признак разворота вниз (3m=BEARISH, 10m=BULLISH)"
+        #
+        #     # Сценарий 4: Стандартное подтверждение тренда
+        #     if momentum == "BULLISH":
+        #         return True, "LONG", f"✅ Бычий импульс подтверждает LONG ({up_spikes} всплесков ВВЕРХ)"
+        #
+        #     # Сценарий 5: Резкое ускорение ВВЕРХ (цена убежала, ждем отката)
+        #     if consecutive_up and overall_direction == "UP" and len(self.get_recent_spikes(180)) >= 3:
+        #         return False, "LONG", f"⏸️ Цена резко ускорилась ВВЕРХ ({up_spikes} всплесков), ждем отката"
+        #
+        #     # Сценарий 6: Сильный медвежий импульс против LONG
+        #     if momentum == "BEARISH":
+        #         return False, "LONG", f"⏸️ Медвежий импульс против LONG ({down_spikes} всплесков ВНИЗ)"
+        #
+        #     # Нейтральный случай - входим
+        #     return True, "LONG", f"✅ LONG без сильных противоречий (импульс: {momentum})"
+        #
+        # # ========== ПРОДВИНУТАЯ ЛОГИКА ДЛЯ SHORT ==========
+        # elif main_signal == "SHORT":
+        #     # 🎯 ПРИОРИТЕТ 1: Полное подтверждение на всех таймфреймах (САМЫЙ СИЛЬНЫЙ СИГНАЛ)
+        #     all_bearish = (momentum_3min["momentum"] == "BEARISH" and
+        #                   momentum_5min["momentum"] == "BEARISH" and
+        #                   momentum_10min["momentum"] == "BEARISH")
+        #
+        #     if all_bearish:
+        #         return True, "SHORT", f"🚀 СИЛЬНЕЙШИЙ SHORT: все таймфреймы BEARISH (3m/5m/10m согласны)"
+        #
+        #     # 🎯 ПРИОРИТЕТ 2: Идеальный вход на откате в нисходящем тренде
+        #     perfect_pullback_entry = (
+        #         momentum_10min["momentum"] == "BEARISH" and           # Долгосрочный тренд вниз
+        #         momentum_3min["up_spikes"] >= 2 and                   # Краткосрочный откат вверх
+        #         momentum_3min["momentum"] != "BULLISH"                # Но НЕ бычий разворот
+        #     )
+        #
+        #     if perfect_pullback_entry:
+        #         return True, "SHORT", f"🎯 ИДЕАЛЬНЫЙ ВХОД: откат вверх в нисходящем тренде (10m=BEARISH, 3m откат)"
+        #
+        #     # Сценарий 3: Обнаружение раннего разворота (БЛОКИРУЕМ ВХОД)
+        #     early_reversal_to_bullish = (
+        #         momentum_3min["momentum"] == "BULLISH" and            # Краткосрочно бычий
+        #         momentum_10min["momentum"] == "BEARISH"               # Долгосрочно медвежий
+        #     )
+        #
+        #     if early_reversal_to_bullish:
+        #         return False, "SHORT", f"⚠️ Ранний признак разворота вверх (3m=BULLISH, 10m=BEARISH)"
+        #
+        #     # Сценарий 4: Стандартное подтверждение тренда
+        #     if momentum == "BEARISH":
+        #         return True, "SHORT", f"✅ Медвежий импульс подтверждает SHORT ({down_spikes} всплесков ВНИЗ)"
+        #
+        #     # Сценарий 5: Резкое ускорение ВНИЗ (цена убежала, ждем отката)
+        #     if consecutive_down and overall_direction == "DOWN" and len(self.get_recent_spikes(180)) >= 3:
+        #         return False, "SHORT", f"⏸️ Цена резко ускорилась ВНИЗ ({down_spikes} всплесков), ждем отката"
+        #
+        #     # Сценарий 6: Сильный бычий импульс против SHORT
+        #     if momentum == "BULLISH":
+        #         return False, "SHORT", f"⏸️ Бычий импульс против SHORT ({up_spikes} всплесков ВВЕРХ)"
+        #
+        #     # Нейтральный случай - входим
+        #     return True, "SHORT", f"✅ SHORT без сильных противоречий (импульс: {momentum})"
+        #
+        # return False, main_signal, "Unknown signal"
 
     def get_last_price(self) -> Optional[Decimal]:
         """Возвращает последнюю цену из истории."""
