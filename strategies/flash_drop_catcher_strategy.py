@@ -1760,6 +1760,14 @@ class FlashDropCatcherStrategy(BaseStrategy):
                          "FlashDropCatcher")
                 return
 
+            # КРИТИЧНО: Проверяем strategy_type - каждая стратегия работает СТРОГО со своими ордерами!
+            order_strategy_type = order_in_db.get('strategy_type')
+            if order_strategy_type != self.strategy_type.value:
+                log_debug(self.user_id,
+                         f"[НЕ НАШ ТИП] Ордер {event.order_id} принадлежит стратегии {order_strategy_type}, а это {self.strategy_type.value}",
+                         "FlashDropCatcher")
+                return
+
             log_info(self.user_id, f"✅ [НАША СДЕЛКА] Ордер {event.order_id} подтверждён в БД", "FlashDropCatcher")
 
         except Exception as db_check_error:

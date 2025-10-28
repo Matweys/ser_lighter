@@ -961,7 +961,7 @@ class BaseStrategy(ABC):
                     order_type=order_type,
                     quantity=qty,
                     price=price or Decimal('0'),
-                    order_id="PENDING",  # Временное значение, обновим после размещения
+                    order_id=client_order_id,  # КРИТИЧНО: Используем уникальный client_order_id вместо "PENDING" для избежания конфликта unique constraint
                     strategy_type=self.strategy_type.value,
                     order_purpose=order_purpose,
                     leverage=leverage,
@@ -975,7 +975,7 @@ class BaseStrategy(ABC):
                         "created_by": "base_strategy_place_order"
                     }
                 )
-                log_info(self.user_id, f"📝 Ордер сохранён в БД ПЕРЕД отправкой (DB_ID={db_id}, client={client_order_id})", module_name=__name__)
+                log_info(self.user_id, f"📝 Ордер сохранён в БД ПЕРЕД отправкой (DB_ID={db_id}, temp_order_id={client_order_id})", module_name=__name__)
             except Exception as db_error:
                 log_error(self.user_id, f"КРИТИЧЕСКАЯ ОШИБКА: не удалось сохранить ордер в БД перед отправкой: {db_error}", module_name=__name__)
                 return None

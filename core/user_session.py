@@ -460,7 +460,8 @@ class UserSession:
                     signal_data=signal_data_for_strategy,  # Передаем подготовленные данные
                     api=self.api,
                     event_bus=self.event_bus,
-                    config=None
+                    config=None,
+                    bot_priority=1  # КРИТИЧНО: Для обычного режима всегда bot_priority=1
                 )
 
                 if not strategy:
