@@ -630,6 +630,21 @@ class SignalScalperStrategy(BaseStrategy):
 
                                     log_info(self.user_id, f"💰 [FALLBACK] Начальная маржа: ${self.initial_margin_usd:.2f}", "SignalScalper")
 
+                                    # ✅ КРИТИЧНО: Устанавливаем entry_time для согласованности с WebSocket
+                                    self.entry_time = datetime.now()
+
+                                    # ✅ КРИТИЧНО: Обновляем OPEN ордер в БД (как в WebSocket обработчике)
+                                    try:
+                                        await db_manager.update_order_on_fill(
+                                            order_id=order_id,
+                                            filled_quantity=pos_size,
+                                            average_price=entry_price_from_api,
+                                            commission=Decimal('0')  # Комиссия неизвестна в FALLBACK
+                                        )
+                                        log_info(self.user_id, f"✅ [FALLBACK OPEN] Ордер {order_id} обновлён в БД", "SignalScalper")
+                                    except Exception as db_error:
+                                        log_error(self.user_id, f"❌ [FALLBACK OPEN] Ошибка обновления ордера в БД: {db_error}", "SignalScalper")
+
                                     # КРИТИЧНО: Сбрасываем флаг ожидания и устанавливаем last_known_price
                                     self.is_waiting_for_trade = False
                                     self._last_known_price = entry_price_from_api
@@ -689,50 +704,22 @@ class SignalScalperStrategy(BaseStrategy):
                                f"✅ [FALLBACK CLOSE] Позиция закрыта через API! WebSocket событие не пришло. Обрабатываю закрытие вручную.",
                                "SignalScalper")
 
-                    # Получаем данные для расчета PnL
+                    # ✅ ИСПОЛЬЗУЕМ ОБЩИЙ МЕТОД для расчета PnL (исправлен БАГ #1 - PnL=0)
+                    # Этот метод рассчитывает PnL даже если OPEN ордер не найден в БД
                     from database.db_trades import db_manager
 
-                    # Получаем OPEN ордер из БД
-                    open_order = await db_manager.get_open_order_for_position(self.user_id, self.symbol, self.account_priority)
+                    exit_price_for_calc = self._last_known_price if self._last_known_price else Decimal('0')
+                    final_pnl, exit_price, entry_price_for_pnl, position_size_for_pnl, saved_entry_time, saved_entry_price, estimated_close_fee = await self._calculate_pnl_from_db_or_memory(exit_price_for_calc)
 
-                    final_pnl = Decimal('0')
-                    exit_price = Decimal('0')
+                    # Добавляем комиссию закрытия в FALLBACK (т.к. WebSocket события не было)
+                    self.total_fees_paid += estimated_close_fee
 
-                    if open_order:
-                        entry_price_for_pnl = Decimal(str(open_order.get('average_price', '0')))
-                        position_size_for_pnl = self.total_position_size if self.total_position_size > 0 else self.position_size
-
-                        # Используем последнюю известную цену для расчета
-                        exit_price = self._last_known_price if self._last_known_price else entry_price_for_pnl
-
-                        # Расчёт PnL
-                        if self.active_direction == "LONG":
-                            pnl_gross = (exit_price - entry_price_for_pnl) * position_size_for_pnl
-                        else:  # SHORT
-                            pnl_gross = (entry_price_for_pnl - exit_price) * position_size_for_pnl
-
-                        # Добавляем комиссию (примерная, т.к. WebSocket не пришёл)
-                        from core.settings_config import EXCHANGE_FEES
-                        from core.enums import ExchangeType
-                        taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')
-                        estimated_close_fee = exit_price * position_size_for_pnl * taker_fee_rate
-                        self.total_fees_paid += estimated_close_fee
-
-                        final_pnl = pnl_gross - self.total_fees_paid
-
-                        log_info(self.user_id,
-                                f"💰 [FALLBACK CLOSE PNL] entry={entry_price_for_pnl:.4f}, exit≈{exit_price:.4f}, "
-                                f"size={position_size_for_pnl}, fees={self.total_fees_paid:.4f} | PnL≈{final_pnl:.4f}",
-                                "SignalScalper")
-
-                        # Сохраняем данные для уведомления
-                        saved_entry_time = open_order.get('filled_at')
-                        saved_entry_price = open_order.get('average_price')
+                    # Пересчитываем final_pnl с учетом добавленной комиссии
+                    if self.active_direction == "LONG":
+                        pnl_gross = (exit_price - entry_price_for_pnl) * position_size_for_pnl
                     else:
-                        # Fallback на данные из памяти
-                        saved_entry_time = self.entry_time
-                        saved_entry_price = self.entry_price
-                        log_warning(self.user_id, f"[FALLBACK CLOSE] Не найден OPEN ордер в БД", "SignalScalper")
+                        pnl_gross = (entry_price_for_pnl - exit_price) * position_size_for_pnl
+                    final_pnl = pnl_gross - self.total_fees_paid
 
                     # Обновляем trade в БД
                     if hasattr(self, 'active_trade_db_id') and self.active_trade_db_id:
@@ -767,28 +754,9 @@ class SignalScalperStrategy(BaseStrategy):
                     if self.stop_loss_order_id:
                         await self._cancel_stop_loss_order()
 
-                    # Сброс состояния
-                    self.position_active = False
-                    self.active_direction = None
-                    self.entry_price = None
-                    self.entry_time = None
-                    self.position_size = None
-                    self.peak_profit_usd = Decimal('0')
-                    self.hold_signal_counter = 0
-                    self.intermediate_averaging_executed = False
-                    self.averaging_executed = False
-                    self.averaging_count = 0
-                    self.initial_margin_usd = Decimal('0')
-                    self.current_total_margin = Decimal('0')
-                    self.total_fees_paid = Decimal('0')
-                    self.total_position_size = Decimal('0')
-                    self.average_entry_price = Decimal('0')
-                    self.stagnation_averaging_executed = False
-                    self.use_breakeven_exit = False
-
-                    # Разморозка конфигурации
-                    self.active_trade_config = None
-                    self.config_frozen = False
+                    # ✅ ИСПОЛЬЗУЕМ ОБЩИЙ МЕТОД для сброса состояния (исправлены БАГ #2, #3, #4)
+                    # Этот метод устанавливает кулдаун, сбрасывает счетчики и всё состояние
+                    self._reset_position_state_after_close(final_pnl)
 
                     # Отписываемся от price updates
                     await self.event_bus.unsubscribe(self._handle_price_update)
@@ -1259,52 +1227,27 @@ class SignalScalperStrategy(BaseStrategy):
             # Ордер на закрытие позиции
             log_info(self.user_id, f"[ЗАКРЫТИЕ] Обрабатываем ордер закрытия: {event.order_id}", "SignalScalper")
 
-            # ✅ ПРАВИЛЬНЫЙ РАСЧЕТ PnL: используем ТОЧНЫЕ данные по order_id из БД и WebSocket
-            # Источники истины:
-            # 1. OPEN ордер из БД (по order_id) → entry_price, entry_qty, entry_commission
-            # 2. CLOSE ордер из WebSocket (по order_id) → exit_price, exit_qty, exit_commission
-            # 3. Накопленные комиссии из памяти (для усреднений) → self.total_fees_paid
-
+            # ✅ ИСПОЛЬЗУЕМ ОБЩИЙ МЕТОД для получения данных из БД и расчета базового PnL
+            # ВАЖНО: В WebSocket комиссия точная (event.fee), поэтому пересчитываем PnL после
             from database.db_trades import db_manager
 
-            # Получаем данные OPEN ордера из БД (по order_id!)
-            open_order = await db_manager.get_open_order_for_position(self.user_id, self.symbol, self.account_priority)
+            # Вызываем общий метод для получения entry данных и базового расчета
+            _, exit_price_for_pnl, entry_price_for_pnl, position_size_for_pnl, saved_entry_time, saved_entry_price, _ = await self._calculate_pnl_from_db_or_memory(event.price)
 
-            if open_order:
-                # ✅ ИСТОЧНИК ИСТИНЫ #1: OPEN ордер из БД
-                entry_price_for_pnl = Decimal(str(open_order.get('average_price', '0')))
-                # Используем total_position_size (с учётом усреднений) или position_size
-                position_size_for_pnl = self.total_position_size if self.total_position_size > 0 else self.position_size
-                log_info(self.user_id,
-                        f"[БД→ORDER_ID] Используем OPEN ордер {open_order['order_id']}: "
-                        f"entry_price={entry_price_for_pnl:.4f}, size={position_size_for_pnl}",
-                        "SignalScalper")
-            else:
-                # Fallback: используем данные из памяти
-                entry_price_for_pnl = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
-                position_size_for_pnl = self.total_position_size if self.total_position_size > 0 else self.position_size
-                log_warning(self.user_id,
-                           f"⚠️ [FALLBACK] OPEN ордер не найден в БД, используем данные из памяти: "
-                           f"entry_price={entry_price_for_pnl:.4f}, size={position_size_for_pnl}",
-                           "SignalScalper")
-
-            # ✅ ИСТОЧНИК ИСТИНЫ #2: CLOSE ордер из WebSocket (event содержит данные по order_id!)
-            exit_price_for_pnl = event.price  # avgPrice от биржи для данного ордера
-
-            # Расчёт PnL
-            if self.active_direction == "LONG":
-                pnl_gross = (exit_price_for_pnl - entry_price_for_pnl) * position_size_for_pnl
-            else:  # SHORT
-                pnl_gross = (entry_price_for_pnl - exit_price_for_pnl) * position_size_for_pnl
-
-            # ✅ ИСТОЧНИК ИСТИНЫ #3: Накопление комиссии закрытия
+            # ✅ КРИТИЧНО: В WebSocket используем ТОЧНУЮ комиссию от биржи (не estimated_close_fee)
             self.total_fees_paid += event.fee  # cumExecFee от биржи для данного ордера
+
+            # Пересчитываем PnL с точной комиссией от WebSocket
+            if self.active_direction == "LONG":
+                pnl_gross = (event.price - entry_price_for_pnl) * position_size_for_pnl
+            else:  # SHORT
+                pnl_gross = (entry_price_for_pnl - event.price) * position_size_for_pnl
 
             # ФИНАЛЬНЫЙ PnL: Вычитаем ВСЕ накопленные комиссии (открытие + усреднение + закрытие)
             pnl_net = pnl_gross - self.total_fees_paid
 
             log_info(self.user_id,
-                    f"💰 [PNL РАСЧЁТ] entry={entry_price_for_pnl:.4f}, exit={exit_price_for_pnl:.4f}, "
+                    f"💰 [PNL РАСЧЁТ] entry={entry_price_for_pnl:.4f}, exit={event.price:.4f}, "
                     f"size={position_size_for_pnl}, direction={self.active_direction} | "
                     f"PnL_gross={pnl_gross:.4f}, fees={self.total_fees_paid:.4f}, PnL_net={pnl_net:.4f}",
                     "SignalScalper")
@@ -1341,80 +1284,14 @@ class SignalScalperStrategy(BaseStrategy):
             else:
                 log_warning(self.user_id, "⚠️ active_trade_db_id не найден - trade не обновлён в БД!", "SignalScalper")
 
-            self.last_closed_direction = self.active_direction
-
-            # Фиксируем время закрытия и результат сделки
-            self.last_trade_close_time = time.time()
-            self.last_trade_was_loss = pnl_net < 0
-
-            if self.last_trade_was_loss:
-                log_warning(self.user_id, f"Убыточная сделка! Следующему сигналу потребуется 2 продолжай подтверждения.", "SignalScalper")
-
-            # Сбрасываем счетчики подтверждения после закрытия сделки
-            self.signal_confirmation_count = 0
-            self.last_signal = None
-
             # Отменяем стоп-лосс перед сбросом состояния (БЫСТРО)
             if self.stop_loss_order_id:
                 await self._cancel_stop_loss_order()
 
-            # СОХРАНЯЕМ значения перед сбросом для передачи в уведомление
-            # ПОЛУЧАЕМ ИЗ БД для надёжности (работает даже после перезапуска бота)
-            from database.db_trades import db_manager
-            open_order = await db_manager.get_open_order_for_position(self.user_id, self.symbol, self.account_priority)
-            if open_order:
-                saved_entry_time = open_order.get('filled_at')  # Время из БД
-                saved_entry_price = open_order.get('average_price')  # Цена из БД
-                log_debug(self.user_id, f"[ИЗ БД] Время входа: {saved_entry_time}, Цена входа: {saved_entry_price}", "SignalScalper")
-            else:
-                # Fallback на переменные в памяти (если БД недоступна)
-                saved_entry_time = self.entry_time
-                saved_entry_price = self.entry_price
-                log_warning(self.user_id, f"[FALLBACK] Не найден OPEN ордер в БД, используем данные из памяти", "SignalScalper")
+            # ✅ ИСПОЛЬЗУЕМ ОБЩИЙ МЕТОД для сброса состояния (единообразная логика с FALLBACK)
+            self._reset_position_state_after_close(pnl_net)
 
-            # Сброс состояния (ВКЛЮЧАЯ ПЕРЕМЕННЫЕ УСРЕДНЕНИЯ)
-            self.position_active = False
-            self.active_direction = None
-            self.entry_price = None
-            self.entry_time = None  # Сбрасываем время входа
-            self.position_size = None
-
-            # СБРОС ПЕРЕМЕННЫХ ПРОМЕЖУТОЧНОГО УСРЕДНЕНИЯ
-            self.intermediate_averaging_executed = False
-
-            # СБРОС ПЕРЕМЕННЫХ ОСНОВНОГО УСРЕДНЕНИЯ (ОДИНОЧНОЕ УТРОЕНИЕ)
-            self.averaging_executed = False
-            self.averaging_count = 0  # Сброс счетчика усреднений
-            self.initial_margin_usd = Decimal('0')
-            self.current_total_margin = Decimal('0')  # Сброс текущей маржи
-            self.total_fees_paid = Decimal('0')
-            self.total_position_size = Decimal('0')
-            self.average_entry_price = Decimal('0')
-
-            # СБРОС ФЛАГА ДЕТЕКТОРА ЗАСТРЕВАНИЯ
-            self.stagnation_averaging_executed = False
-
-            # СБРОС ФЛАГА ВЫХОДА В БЕЗУБЫТОК
-            self.use_breakeven_exit = False
-
-            # СБРОС ФЛАГОВ ИНТЕЛЛЕКТУАЛЬНОГО SL
-            self.sl_extended = False
-            self.sl_extension_notified = False
-
-
-            # КРИТИЧЕСКИ ВАЖНО: СБРОС РЕЖИМА РЕВЕРСА
-            # Сбрасываем ТОЛЬКО если это НЕ реверс (при реверсе флаг уже установлен)
-            # Проверяем, был ли это обычный reason закрытия или реверс
-            if self.close_reason and not self.close_reason.startswith("reversing_to_"):
-                self.after_reversal_mode = False
-                self.last_reversal_time = None
-                log_info(self.user_id, f"🔄 Режим реверса сброшен при закрытии сделки (причина: {self.close_reason})", "SignalScalper")
-
-            # РАЗМОРОЗКА КОНФИГУРАЦИИ ПОСЛЕ ЗАКРЫТИЯ СДЕЛКИ
-            self.active_trade_config = None
-            self.config_frozen = False
-            log_info(self.user_id, f"Конфигурация разморожена после закрытия сделки по {self.symbol}", "SignalScalper")
-
+            # Отписываемся от price updates
             await self.event_bus.unsubscribe(self._handle_price_update)
             # МГНОВЕННО отправляем уведомление (используем сохраненные значения)
             await self._send_trade_close_notification(pnl_net, event.fee, exit_price=event.price, entry_price=saved_entry_price, entry_time=saved_entry_time)
@@ -1669,6 +1546,137 @@ class SignalScalperStrategy(BaseStrategy):
                     "SignalScalper")
 
         return confirmed
+
+    async def _calculate_pnl_from_db_or_memory(self, exit_price: Decimal) -> tuple:
+        """
+        ОБЩИЙ МЕТОД: Рассчитывает PnL используя данные из БД или из памяти.
+        Используется как в WebSocket обработчике, так и в FALLBACK механизме.
+
+        Returns:
+            tuple: (final_pnl, exit_price, entry_price_for_pnl, position_size_for_pnl, saved_entry_time, saved_entry_price)
+        """
+        from database.db_trades import db_manager
+        from core.settings_config import EXCHANGE_FEES
+        from core.enums import ExchangeType
+
+        # Получаем OPEN ордер из БД
+        open_order = await db_manager.get_open_order_for_position(self.user_id, self.symbol, self.account_priority)
+
+        if open_order:
+            # ✅ ИСТОЧНИК ИСТИНЫ #1: OPEN ордер из БД
+            entry_price_for_pnl = Decimal(str(open_order.get('average_price', '0')))
+            position_size_for_pnl = self.total_position_size if self.total_position_size > 0 else self.position_size
+
+            saved_entry_time = open_order.get('filled_at')
+            saved_entry_price = open_order.get('average_price')
+
+            log_info(self.user_id,
+                    f"[БД→ORDER_ID] Используем OPEN ордер {open_order['order_id']}: "
+                    f"entry_price={entry_price_for_pnl:.4f}, size={position_size_for_pnl}",
+                    "SignalScalper")
+        else:
+            # ⚠️ FALLBACK: используем данные из памяти
+            entry_price_for_pnl = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
+            position_size_for_pnl = self.total_position_size if self.total_position_size > 0 else self.position_size
+
+            # Используем последнюю известную цену если exit_price не передан
+            if not exit_price or exit_price == Decimal('0'):
+                exit_price = self._last_known_price if self._last_known_price else entry_price_for_pnl
+
+            saved_entry_time = self.entry_time
+            saved_entry_price = self.entry_price
+
+            log_warning(self.user_id,
+                       f"⚠️ [FALLBACK] OPEN ордер не найден в БД, используем данные из памяти: "
+                       f"entry_price={entry_price_for_pnl:.4f}, size={position_size_for_pnl}",
+                       "SignalScalper")
+
+        # Расчёт PnL
+        if self.active_direction == "LONG":
+            pnl_gross = (exit_price - entry_price_for_pnl) * position_size_for_pnl
+        else:  # SHORT
+            pnl_gross = (entry_price_for_pnl - exit_price) * position_size_for_pnl
+
+        # Добавляем комиссию за закрытие (если еще не добавлена)
+        taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')
+        estimated_close_fee = exit_price * position_size_for_pnl * taker_fee_rate
+
+        # Если total_fees_paid уже содержит комиссию закрытия (из WebSocket event.fee),
+        # то не добавляем её повторно. Это определяется контекстом вызова.
+        # В FALLBACK всегда добавляем, т.к. WebSocket событие не пришло.
+
+        # ФИНАЛЬНЫЙ PnL: Вычитаем ВСЕ накопленные комиссии
+        final_pnl = pnl_gross - self.total_fees_paid
+
+        log_info(self.user_id,
+                f"💰 [PNL РАСЧЁТ] entry={entry_price_for_pnl:.4f}, exit={exit_price:.4f}, "
+                f"size={position_size_for_pnl}, direction={self.active_direction} | "
+                f"PnL_gross={pnl_gross:.4f}, fees={self.total_fees_paid:.4f}, PnL_net={final_pnl:.4f}",
+                "SignalScalper")
+
+        return (final_pnl, exit_price, entry_price_for_pnl, position_size_for_pnl, saved_entry_time, saved_entry_price, estimated_close_fee)
+
+    def _reset_position_state_after_close(self, pnl_net: Decimal):
+        """
+        ОБЩИЙ МЕТОД: Сбрасывает ВСЕ переменные состояния после закрытия позиции.
+        Используется как в WebSocket обработчике, так и в FALLBACK механизме.
+        Гарантирует что кулдаун, счетчики и состояние сбрасываются одинаково.
+        """
+        # ✅ КРИТИЧНО: Фиксируем время закрытия и результат сделки (для кулдауна)
+        self.last_closed_direction = self.active_direction
+        self.last_trade_close_time = time.time()
+        self.last_trade_was_loss = pnl_net < 0
+
+        if self.last_trade_was_loss:
+            log_warning(self.user_id, f"Убыточная сделка! Следующему сигналу потребуется 2 подтверждения.", "SignalScalper")
+
+        # ✅ Сбрасываем счетчики подтверждения после закрытия сделки
+        self.signal_confirmation_count = 0
+        self.last_signal = None
+
+        # Сброс состояния позиции
+        self.position_active = False
+        self.active_direction = None
+        self.entry_price = None
+        self.entry_time = None
+        self.position_size = None
+        self.peak_profit_usd = Decimal('0')
+        self.hold_signal_counter = 0
+
+        # СБРОС ПЕРЕМЕННЫХ ПРОМЕЖУТОЧНОГО УСРЕДНЕНИЯ
+        self.intermediate_averaging_executed = False
+
+        # СБРОС ПЕРЕМЕННЫХ ОСНОВНОГО УСРЕДНЕНИЯ
+        self.averaging_executed = False
+        self.averaging_count = 0
+        self.initial_margin_usd = Decimal('0')
+        self.current_total_margin = Decimal('0')
+        self.total_fees_paid = Decimal('0')
+        self.total_position_size = Decimal('0')
+        self.average_entry_price = Decimal('0')
+
+        # СБРОС ФЛАГА ДЕТЕКТОРА ЗАСТРЕВАНИЯ
+        self.stagnation_averaging_executed = False
+
+        # СБРОС ФЛАГА ВЫХОДА В БЕЗУБЫТОК
+        self.use_breakeven_exit = False
+
+        # СБРОС ФЛАГОВ ИНТЕЛЛЕКТУАЛЬНОГО SL
+        self.sl_extended = False
+        self.sl_extension_notified = False
+
+        # КРИТИЧЕСКИ ВАЖНО: СБРОС РЕЖИМА РЕВЕРСА
+        # Сбрасываем ТОЛЬКО если это НЕ реверс (при реверсе флаг уже установлен)
+        if self.close_reason and not self.close_reason.startswith("reversing_to_"):
+            self.after_reversal_mode = False
+            self.last_reversal_time = None
+            log_info(self.user_id, f"🔄 Режим реверса сброшен при закрытии сделки (причина: {self.close_reason})", "SignalScalper")
+
+        # РАЗМОРОЗКА КОНФИГУРАЦИИ ПОСЛЕ ЗАКРЫТИЯ СДЕЛКИ
+        self.active_trade_config = None
+        self.config_frozen = False
+
+        log_info(self.user_id, f"✅ Состояние позиции полностью сброшено. Кулдаун установлен: {self.cooldown_seconds} сек", "SignalScalper")
 
     def _is_cooldown_active(self) -> bool:
         """Проверяет, активен ли кулдаун после закрытия последней сделки."""
