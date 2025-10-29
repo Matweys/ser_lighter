@@ -1079,7 +1079,7 @@ class BaseStrategy(ABC):
 
             try:
                 # Запрашиваем финальный статус с биржи
-                order_status = await self.api.get_order_status(order_id=order_id, symbol=self.symbol)
+                order_status = await self.api.get_order_status(order_id=order_id)
 
                 if not order_status:
                     log_error(self.user_id, f"❌ [API] Не удалось получить статус ордера {order_id}", module_name=__name__)

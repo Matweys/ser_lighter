@@ -621,8 +621,6 @@ class DataFeedHandler:
         в БД и синхронизируем их статус с биржей.
         """
         try:
-            log_info(self.user_id, "🔄 Синхронизация ордеров после WebSocket переподключения...", module_name=__name__)
-
             # Получаем все активные ордера из БД для этого аккаунта
             # Активные = статус NEW/FILLED и order_role = OPEN (не закрывающие)
             active_orders = await db_manager.get_active_orders_for_sync(
@@ -631,10 +629,11 @@ class DataFeedHandler:
             )
 
             if not active_orders:
-                log_info(self.user_id, f"✅ Нет активных ордеров для синхронизации (bot_priority={self.account_priority})", module_name=__name__)
+                # Нет ордеров для синхронизации - это нормально, не спамим логи
                 return
 
-            log_info(self.user_id, f"📋 Найдено {len(active_orders)} активных ордеров для синхронизации (bot_priority={self.account_priority})", module_name=__name__)
+            # КРИТИЧНО: Найдены необработанные ордера - логируем!
+            log_info(self.user_id, f"🔄 СИНХРОНИЗАЦИЯ: Найдено {len(active_orders)} необработанных ордеров после WebSocket переподключения (bot_priority={self.account_priority})", module_name=__name__)
 
             # ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ для диагностики
             for order in active_orders:
@@ -664,7 +663,7 @@ class DataFeedHandler:
                     api = BybitAPI(api_key=api_key, secret_key=api_secret, demo=demo_mode, user_id=self.user_id)
 
                     # Запрашиваем статус ордера с биржи
-                    order_info = await api.get_order_status(order_id=order_id, symbol=symbol)
+                    order_info = await api.get_order_status(order_id=order_id)
 
                     if not order_info:
                         log_warning(self.user_id, f"⚠️ Ордер {order_id} не найден на бирже (возможно уже отменён)", module_name=__name__)

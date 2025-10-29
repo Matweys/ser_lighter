@@ -1574,28 +1574,7 @@ class _DatabaseManager:
             List[Dict]: Список активных ордеров для синхронизации
         """
         try:
-            # ДИАГНОСТИКА: Проверяем сколько вообще ордеров в БД для этого пользователя
-            diagnostic_query = """
-            SELECT COUNT(*) as total,
-                   SUM(CASE WHEN bot_priority = $2 THEN 1 ELSE 0 END) as with_priority,
-                   SUM(CASE WHEN order_purpose = 'OPEN' THEN 1 ELSE 0 END) as open_purpose,
-                   SUM(CASE WHEN status IN ('NEW', 'FILLED') THEN 1 ELSE 0 END) as new_filled,
-                   SUM(CASE WHEN created_at > NOW() - INTERVAL '24 hours' THEN 1 ELSE 0 END) as recent
-            FROM orders
-            WHERE user_id = $1
-            """
-
-            diag_result = await self._execute_query(diagnostic_query, (user_id, account_priority), fetch_one=True)
-            if diag_result:
-                log_info(user_id,
-                        f"🔍 ДИАГНОСТИКА БД: Всего ордеров={diag_result['total']}, "
-                        f"с bot_priority={account_priority}: {diag_result['with_priority']}, "
-                        f"purpose=OPEN: {diag_result['open_purpose']}, "
-                        f"status=NEW/FILLED: {diag_result['new_filled']}, "
-                        f"последние 24ч: {diag_result['recent']}",
-                        module_name='database')
-
-            # ИСПРАВЛЕНО: Ищем ордера которые:
+            # Ищем ордера которые:
             # 1. Принадлежат этому пользователю и bot_priority
             # 2. Статус = NEW или FILLED (могут быть не обработаны)
             # 3. ВСЕ типы ордеров: OPEN, CLOSE, AVERAGING (НЕ только OPEN!)
@@ -1616,19 +1595,6 @@ class _DatabaseManager:
             results = await self._execute_query(query, (user_id, account_priority))
 
             if not results:
-                # ДОПОЛНИТЕЛЬНАЯ ДИАГНОСТИКА: Проверяем что есть БЕЗ фильтров
-                all_orders_query = """
-                SELECT order_id, symbol, bot_priority, order_purpose, status, created_at
-                FROM orders
-                WHERE user_id = $1
-                ORDER BY created_at DESC
-                LIMIT 10
-                """
-                all_orders = await self._execute_query(all_orders_query, (user_id,))
-                if all_orders:
-                    log_warning(user_id, f"⚠️ В БД есть {len(all_orders)} последних ордеров, но НИ ОДИН не подходит под фильтры синхронизации!", module_name='database')
-                    for order in all_orders:
-                        log_info(user_id, f"  → {order['order_id'][:8]}: {order['symbol']} bot={order['bot_priority']} purpose={order['order_purpose']} status={order['status']} created={order['created_at']}", module_name='database')
                 return []
 
             orders = [dict(row) for row in results]
