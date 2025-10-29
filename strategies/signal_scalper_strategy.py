@@ -554,7 +554,87 @@ class SignalScalperStrategy(BaseStrategy):
 
         if order_id:
             self.current_order_id = order_id  # Сохраняем ID ожидаемого ордера
-            # WebSocket обработает исполнение ордера и вызовет _handle_order_filled()
+
+            # ВРЕМЕННЫЙ FALLBACK: Если WebSocket событие не придёт, обработаем через API
+            # Ждём 1.5 сек для исполнения Market ордера
+            log_info(self.user_id, f"[FALLBACK] Ожидаю 1.5 сек исполнения ордера {order_id}...", "SignalScalper")
+            await asyncio.sleep(1.5)
+
+            # Проверяем позицию через API
+            try:
+                log_info(self.user_id, f"[FALLBACK] Проверяю позицию через get_positions()...", "SignalScalper")
+                positions = await self.api.get_positions(symbol=self.symbol)
+
+                log_info(self.user_id, f"[FALLBACK] Получено {len(positions) if positions else 0} позиций из API", "SignalScalper")
+
+                if positions and isinstance(positions, list):
+                    for pos in positions:
+                        if pos["symbol"] == self.symbol:
+                            pos_size = abs(self._convert_to_decimal(pos.get("size", "0")))
+                            log_info(self.user_id, f"[FALLBACK] Найдена позиция {self.symbol}: size={pos_size}, avgPrice={pos.get('avgPrice')}", "SignalScalper")
+
+                            if pos_size > 0:
+                                # Позиция открыта! Создаём trade и уведомление если ещё не создали
+                                if not self.position_active:
+                                    entry_price_from_api = self._convert_to_decimal(pos.get("avgPrice", "0"))
+
+                                    log_info(self.user_id,
+                                            f"✅ [FALLBACK] Позиция открыта через API: {entry_price_from_api:.4f} USDT",
+                                            "SignalScalper")
+
+                                    # Устанавливаем флаги
+                                    self.position_active = True
+                                    self.entry_price = entry_price_from_api
+                                    self.position_size = pos_size
+                                    self.active_direction = direction
+
+                                    # Подписываемся на price_update
+                                    await self.event_bus.subscribe(EventType.PRICE_UPDATE, self.handle_price_update, user_id=self.user_id)
+
+                                    # Создаём trade в БД
+                                    from database.db_trades import db_manager, TradeRecord
+                                    from datetime import timezone as tz
+                                    try:
+                                        new_trade = TradeRecord(
+                                            user_id=self.user_id,
+                                            symbol=self.symbol,
+                                            side=side,
+                                            entry_price=entry_price_from_api,
+                                            quantity=pos_size,
+                                            leverage=int(float(self.get_config_value("leverage", 1))),
+                                            status="ACTIVE",
+                                            strategy_type=self.strategy_type.value,
+                                            entry_time=datetime.now(tz.utc),
+                                            profit=Decimal('0'),
+                                            commission=Decimal('0')
+                                        )
+                                        trade_id = await db_manager.save_trade(new_trade)
+                                        if trade_id:
+                                            self.active_trade_db_id = trade_id
+                                            await db_manager.update_order_trade_id(order_id, trade_id)
+                                            log_info(self.user_id, f"✅ [FALLBACK] Trade создан в БД: trade_id={trade_id}", "SignalScalper")
+                                    except Exception as trade_error:
+                                        log_error(self.user_id, f"❌ [FALLBACK] Ошибка создания trade: {trade_error}", "SignalScalper")
+
+                                    # Отправляем уведомление
+                                    signal_price = getattr(self, 'signal_price', None)
+                                    await self._send_trade_open_notification(side, entry_price_from_api, pos_size, self.intended_order_amount, signal_price)
+
+                                    # Инициализируем переменные усреднения
+                                    self.averaging_executed = False
+                                    self.total_position_size = Decimal('0')
+                                    self.average_entry_price = Decimal('0')
+                                    self.total_fees_paid = Decimal('0')
+                                    self.initial_margin_usd = self.intended_order_amount
+                                    self.current_total_margin = self.intended_order_amount
+
+                                    log_info(self.user_id, f"💰 [FALLBACK] Начальная маржа: ${self.initial_margin_usd:.2f}", "SignalScalper")
+                                break
+
+            except Exception as api_error:
+                log_error(self.user_id, f"❌ [FALLBACK] Ошибка проверки позиции через API: {api_error}", "SignalScalper")
+
+            # WebSocket всё ещё может прислать событие и обновить entry_price
         else:
             self.is_waiting_for_trade = False
 
