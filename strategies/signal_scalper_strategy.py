@@ -737,14 +737,22 @@ class SignalScalperStrategy(BaseStrategy):
             log_info(self.user_id, f"✅ [НАША СДЕЛКА] Ордер {event.order_id} подтверждён в БД, обрабатываем.", "SignalScalper")
 
             # КРИТИЧНО: Защита от двойной обработки (FALLBACK + WebSocket)
-            # Если ордер уже связан с trade (FALLBACK обработал его), пропускаем WebSocket обработку
             order_trade_id = order_in_db.get('trade_id')
             order_purpose = order_in_db.get('order_purpose', 'UNKNOWN')
 
+            # Проверка 1: Ордер уже связан с trade (trade_id установлен)
             if order_trade_id and order_purpose == 'OPEN':
                 log_warning(self.user_id,
                            f"⚠️ [УЖЕ ОБРАБОТАН] Ордер {event.order_id} уже связан с trade_id={order_trade_id}. "
                            f"FALLBACK механизм уже создал сделку. ПРОПУСКАЮ WebSocket обработку.",
+                           "SignalScalper")
+                return
+
+            # Проверка 2: Позиция уже активна И это OPEN ордер (FALLBACK уже обработал, но trade_id еще не установлен)
+            if self.position_active and order_purpose == 'OPEN':
+                log_warning(self.user_id,
+                           f"⚠️ [УЖЕ ОБРАБОТАН] Позиция уже активна (position_active=True) и это OPEN ордер {event.order_id}. "
+                           f"FALLBACK механизм уже открыл позицию. ПРОПУСКАЮ WebSocket обработку.",
                            "SignalScalper")
                 return
 
