@@ -629,6 +629,11 @@ class SignalScalperStrategy(BaseStrategy):
                                     self.current_total_margin = self.intended_order_amount
 
                                     log_info(self.user_id, f"💰 [FALLBACK] Начальная маржа: ${self.initial_margin_usd:.2f}", "SignalScalper")
+
+                                    # КРИТИЧНО: Сбрасываем флаг ожидания и устанавливаем last_known_price
+                                    self.is_waiting_for_trade = False
+                                    self._last_known_price = entry_price_from_api
+                                    log_info(self.user_id, f"✅ [FALLBACK] is_waiting_for_trade=False, _last_known_price={entry_price_from_api:.4f}", "SignalScalper")
                                 break
 
             except Exception as api_error:
