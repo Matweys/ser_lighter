@@ -661,7 +661,156 @@ class SignalScalperStrategy(BaseStrategy):
 
         if order_id:
             self.current_order_id = order_id  # Сохраняем ID ожидаемого ордера
-            # WebSocket обработает исполнение ордера и вызовет _handle_order_filled()
+
+            # ВРЕМЕННЫЙ FALLBACK: Если WebSocket событие не придёт, обработаем через API
+            log_info(self.user_id, f"[FALLBACK CLOSE] Ожидаю 1.5 сек исполнения ордера закрытия {order_id}...", "SignalScalper")
+            await asyncio.sleep(1.5)
+
+            # Проверяем позицию через API
+            try:
+                log_info(self.user_id, f"[FALLBACK CLOSE] Проверяю позицию через get_positions()...", "SignalScalper")
+                positions = await self.api.get_positions(symbol=self.symbol)
+
+                log_info(self.user_id, f"[FALLBACK CLOSE] Получено {len(positions) if positions else 0} позиций из API", "SignalScalper")
+
+                position_closed = True  # По умолчанию считаем что закрыта
+                if positions and isinstance(positions, list):
+                    for pos in positions:
+                        if pos["symbol"] == self.symbol:
+                            pos_size = abs(self._convert_to_decimal(pos.get("size", "0")))
+                            log_info(self.user_id, f"[FALLBACK CLOSE] Найдена позиция {self.symbol}: size={pos_size}", "SignalScalper")
+                            if pos_size > 0:
+                                position_closed = False
+                            break
+
+                # Если позиция закрыта И всё ещё активна в стратегии - значит WebSocket не пришёл
+                if position_closed and self.position_active:
+                    log_warning(self.user_id,
+                               f"✅ [FALLBACK CLOSE] Позиция закрыта через API! WebSocket событие не пришло. Обрабатываю закрытие вручную.",
+                               "SignalScalper")
+
+                    # Получаем данные для расчета PnL
+                    from database.db_trades import db_manager
+
+                    # Получаем OPEN ордер из БД
+                    open_order = await db_manager.get_open_order_for_position(self.user_id, self.symbol, self.account_priority)
+
+                    final_pnl = Decimal('0')
+                    exit_price = Decimal('0')
+
+                    if open_order:
+                        entry_price_for_pnl = Decimal(str(open_order.get('average_price', '0')))
+                        position_size_for_pnl = self.total_position_size if self.total_position_size > 0 else self.position_size
+
+                        # Используем последнюю известную цену для расчета
+                        exit_price = self._last_known_price if self._last_known_price else entry_price_for_pnl
+
+                        # Расчёт PnL
+                        if self.active_direction == "LONG":
+                            pnl_gross = (exit_price - entry_price_for_pnl) * position_size_for_pnl
+                        else:  # SHORT
+                            pnl_gross = (entry_price_for_pnl - exit_price) * position_size_for_pnl
+
+                        # Добавляем комиссию (примерная, т.к. WebSocket не пришёл)
+                        from core.settings_config import EXCHANGE_FEES
+                        from core.enums import ExchangeType
+                        taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')
+                        estimated_close_fee = exit_price * position_size_for_pnl * taker_fee_rate
+                        self.total_fees_paid += estimated_close_fee
+
+                        final_pnl = pnl_gross - self.total_fees_paid
+
+                        log_info(self.user_id,
+                                f"💰 [FALLBACK CLOSE PNL] entry={entry_price_for_pnl:.4f}, exit≈{exit_price:.4f}, "
+                                f"size={position_size_for_pnl}, fees={self.total_fees_paid:.4f} | PnL≈{final_pnl:.4f}",
+                                "SignalScalper")
+
+                        # Сохраняем данные для уведомления
+                        saved_entry_time = open_order.get('filled_at')
+                        saved_entry_price = open_order.get('average_price')
+                    else:
+                        # Fallback на данные из памяти
+                        saved_entry_time = self.entry_time
+                        saved_entry_price = self.entry_price
+                        log_warning(self.user_id, f"[FALLBACK CLOSE] Не найден OPEN ордер в БД", "SignalScalper")
+
+                    # Обновляем trade в БД
+                    if hasattr(self, 'active_trade_db_id') and self.active_trade_db_id:
+                        try:
+                            from datetime import timezone as tz
+                            await db_manager.update_trade_on_close(
+                                trade_id=self.active_trade_db_id,
+                                exit_price=exit_price,
+                                pnl=final_pnl,
+                                commission=self.total_fees_paid,
+                                exit_time=datetime.now(tz.utc)
+                            )
+                            log_info(self.user_id, f"✅ [FALLBACK CLOSE] Trade {self.active_trade_db_id} обновлён в БД", "SignalScalper")
+                            self.active_trade_db_id = None
+                        except Exception as trade_error:
+                            log_error(self.user_id, f"❌ [FALLBACK CLOSE] Ошибка обновления trade: {trade_error}", "SignalScalper")
+
+                    # Обновляем CLOSE ордер в БД
+                    try:
+                        await db_manager.update_order_on_fill(
+                            order_id=order_id,
+                            filled_quantity=position_size_to_close,
+                            average_price=exit_price,
+                            commission=estimated_close_fee if 'estimated_close_fee' in locals() else Decimal('0'),
+                            profit=final_pnl
+                        )
+                        log_info(self.user_id, f"✅ [FALLBACK CLOSE] Ордер {order_id} обновлён в БД", "SignalScalper")
+                    except Exception as db_error:
+                        log_error(self.user_id, f"❌ [FALLBACK CLOSE] Ошибка обновления ордера: {db_error}", "SignalScalper")
+
+                    # Отменяем стоп-лосс
+                    if self.stop_loss_order_id:
+                        await self._cancel_stop_loss_order()
+
+                    # Сброс состояния
+                    self.position_active = False
+                    self.active_direction = None
+                    self.entry_price = None
+                    self.entry_time = None
+                    self.position_size = None
+                    self.peak_profit_usd = Decimal('0')
+                    self.hold_signal_counter = 0
+                    self.intermediate_averaging_executed = False
+                    self.averaging_executed = False
+                    self.averaging_count = 0
+                    self.initial_margin_usd = Decimal('0')
+                    self.current_total_margin = Decimal('0')
+                    self.total_fees_paid = Decimal('0')
+                    self.total_position_size = Decimal('0')
+                    self.average_entry_price = Decimal('0')
+                    self.stagnation_averaging_executed = False
+                    self.use_breakeven_exit = False
+
+                    # Разморозка конфигурации
+                    self.active_trade_config = None
+                    self.config_frozen = False
+
+                    # Отписываемся от price updates
+                    await self.event_bus.unsubscribe(self._handle_price_update)
+
+                    # Отправляем уведомление
+                    await self._send_trade_close_notification(
+                        pnl=final_pnl,
+                        commission=self.total_fees_paid if 'self' in locals() else Decimal('0'),
+                        exit_price=exit_price if exit_price > Decimal('0') else None,
+                        entry_price=saved_entry_price,
+                        entry_time=saved_entry_time
+                    )
+
+                    log_info(self.user_id, f"✅ [FALLBACK CLOSE] Позиция закрыта через FALLBACK. PnL: ${final_pnl:.2f}", "SignalScalper")
+
+                    # Сбрасываем флаг ожидания
+                    self.is_waiting_for_trade = False
+
+            except Exception as api_error:
+                log_error(self.user_id, f"❌ [FALLBACK CLOSE] Ошибка проверки позиции через API: {api_error}", "SignalScalper")
+
+            # WebSocket всё ещё может прислать событие и обновить данные
         else:
             self.is_waiting_for_trade = False
 
