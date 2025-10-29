@@ -798,36 +798,16 @@ class SignalScalperStrategy(BaseStrategy):
             self.peak_profit_usd = Decimal('0')
             self.hold_signal_counter = 0
 
-            # КРИТИЧНО: Получаем РЕАЛЬНУЮ среднюю цену входа с биржи (avgPrice)
-            # WebSocket может дать неточную цену, поэтому ВСЕГДА запрашиваем с биржи!
-            real_entry_price = event.price  # Fallback на цену из WebSocket
-            try:
-                await asyncio.sleep(0.5)  # Даём бирже время обработать ордер
-                positions = await self.api.get_positions(symbol=self.symbol)
-                if positions and len(positions) > 0:
-                    real_avg_price = self._convert_to_decimal(positions[0].get("avgPrice", 0))
-                    if real_avg_price > 0:
-                        real_entry_price = real_avg_price
-                        # Рассчитываем проскальзывание для логирования
-                        slippage = ((real_entry_price - event.price) / event.price) * Decimal('100')
-                        log_info(self.user_id,
-                                f"✅ РЕАЛЬНАЯ цена входа с биржи: {real_entry_price:.4f} "
-                                f"(WebSocket: {event.price:.4f}, проскальзывание: {float(slippage):.3f}%)",
-                                "SignalScalper")
-                    else:
-                        log_warning(self.user_id,
-                                   f"⚠️ avgPrice=0 с биржи, используем цену WebSocket: {event.price:.4f}",
-                                   "SignalScalper")
-                else:
-                    log_warning(self.user_id,
-                               f"⚠️ Позиция не найдена на бирже, используем цену WebSocket: {event.price:.4f}",
-                               "SignalScalper")
-            except Exception as e:
-                log_error(self.user_id,
-                         f"❌ Ошибка получения avgPrice с биржи: {e}, используем цену WebSocket: {event.price:.4f}",
-                         "SignalScalper")
+            # КРИТИЧНО: Используем avgPrice из WebSocket (ТОЧНАЯ цена исполнения!)
+            # WebSocket получает avgPrice напрямую от биржи - это та же цена что в get_positions()
+            # Убрали лишний API запрос get_positions() - он возвращает ту же avgPrice что и WebSocket!
+            real_entry_price = event.price  # avgPrice из OrderFilledEvent
 
-            # Сохраняем РЕАЛЬНУЮ цену входа для всех расчетов
+            log_info(self.user_id,
+                    f"✅ Цена входа из WebSocket: {real_entry_price:.4f} USDT",
+                    "SignalScalper")
+
+            # Сохраняем цену входа для всех расчетов
             self.entry_price = real_entry_price
 
             # КРИТИЧЕСКИ ВАЖНО: Подписываемся на события цены для усреднения и трейлинга

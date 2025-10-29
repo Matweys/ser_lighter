@@ -809,43 +809,13 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
                 log_info(self.user_id, f"✅ Ордер успешно размещен, self.symbol остается {self.symbol}", "FlashDropCatcher")
 
-                # КРИТИЧНО: Получаем РЕАЛЬНУЮ цену исполнения с биржи (не используем цену сигнала!)
-                try:
-                    # Даём бирже время обработать ордер
-                    await asyncio.sleep(0.5)
-
-                    # Получаем реальную позицию с биржи (теперь можем использовать self.symbol)
-                    positions = await self.api.get_positions(symbol=self.symbol)
-                    if positions and isinstance(positions, list) and len(positions) > 0:
-                        # avgPrice - это РЕАЛЬНАЯ средняя цена исполнения ордера
-                        real_entry_price = self._convert_to_decimal(positions[0].get("avgPrice", entry_price))
-
-                        if real_entry_price > Decimal('0'):
-                            self.entry_price = real_entry_price
-
-                            # Рассчитываем проскальзывание для логирования
-                            slippage = ((real_entry_price - entry_price) / entry_price) * Decimal('100')
-
-                            log_info(self.user_id,
-                                    f"✅ РЕАЛЬНАЯ цена исполнения: {real_entry_price:.8f} "
-                                    f"(сигнал: {entry_price:.8f}, проскальзывание: {float(slippage):.2f}%)",
-                                    "FlashDropCatcher")
-                        else:
-                            log_warning(self.user_id,
-                                       f"⚠️ Не удалось получить avgPrice с биржи, используем цену сигнала {entry_price}",
-                                       "FlashDropCatcher")
-                            self.entry_price = entry_price
-                    else:
-                        log_warning(self.user_id,
-                                   f"⚠️ Позиция не найдена на бирже, используем цену сигнала {entry_price}",
-                                   "FlashDropCatcher")
-                        self.entry_price = entry_price
-
-                except Exception as price_fetch_error:
-                    log_error(self.user_id,
-                             f"❌ Ошибка получения реальной цены с биржи: {price_fetch_error}, используем цену сигнала {entry_price}",
-                             "FlashDropCatcher")
-                    self.entry_price = entry_price
+                # КРИТИЧНО: Используем avgPrice из WebSocket (ТОЧНАЯ цена исполнения!)
+                # WebSocket получает avgPrice напрямую от биржи через OrderFilledEvent
+                # Убрали лишний API запрос get_positions() - он возвращает ту же avgPrice что и WebSocket!
+                # ВНИМАНИЕ: self.entry_price будет установлена в _handle_order_filled() из event.price
+                log_info(self.user_id,
+                        f"⏳ Ожидаю WebSocket событие с точной ценой исполнения...",
+                        "FlashDropCatcher")
 
                 # КРИТИЧНО: Создаём trade в БД СРАЗУ после исполнения OPEN ордера (НЕ в уведомлении!)
                 from database.db_trades import db_manager, TradeRecord

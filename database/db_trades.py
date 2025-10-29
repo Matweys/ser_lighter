@@ -1577,6 +1577,9 @@ class _DatabaseManager:
             # КРИТИЧНО: Ищем ТОЛЬКО необработанные ордера!
             # filled_at IS NULL → ордер НЕ обработан стратегией (событие потеряно)
             # filled_at NOT NULL → ордер обработан, пропускаем!
+            #
+            # ИСПРАВЛЕНО: Добавлен PENDING статус!
+            # Market ордера могут остаться в PENDING если WebSocket событие потеряно
             query = """
             SELECT
                 order_id, symbol, side, status, quantity, average_price,
@@ -1586,10 +1589,10 @@ class _DatabaseManager:
               AND bot_priority = $2
               AND order_purpose IN ('OPEN', 'CLOSE', 'AVERAGING')
               AND (
-                  status = 'NEW'
+                  status IN ('PENDING', 'NEW')
                   OR (status = 'FILLED' AND filled_at IS NULL)
               )
-              AND created_at > NOW() - INTERVAL '24 hours'
+              AND created_at > NOW() - INTERVAL '5 minutes'
             ORDER BY created_at ASC
             """
 

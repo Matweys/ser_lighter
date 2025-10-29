@@ -383,9 +383,10 @@ class DataFeedHandler:
     async def start(self):
         """Запуск DataFeedHandler"""
         if self.running:
+            log_warning(self.user_id, "⚠️ DataFeedHandler.start() вызван но уже running=True! Пропускаю.", module_name=__name__)
             return
 
-        log_info(self.user_id, "Запуск DataFeedHandler...", module_name=__name__)
+        log_info(self.user_id, f"🚀 ЗАПУСК DataFeedHandler (account_priority={self.account_priority})...", module_name=__name__)
 
         try:
             await self._load_api_credentials()
@@ -396,11 +397,15 @@ class DataFeedHandler:
             await self.event_bus.subscribe(EventType.POSITION_UPDATE, self._handle_position_activity, user_id=self.user_id)
             # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
+            # КРИТИЧНО: Проверяем загрузились ли API ключи
             if self.api_key and self.api_secret:
+                log_info(self.user_id, f"✅ API ключи найдены! Запускаю приватный WebSocket (Bot_{self.account_priority})...", module_name=__name__)
                 self._private_task = asyncio.create_task(self._private_websocket_loop())
+            else:
+                log_error(self.user_id, f"❌ КРИТИЧНО: API ключи НЕ загружены для account_priority={self.account_priority}! Приватный WebSocket НЕ будет запущен! Ордера НЕ будут отслеживаться!", module_name=__name__)
 
             self.running = True
-            log_info(self.user_id, "DataFeedHandler запущен", module_name=__name__)
+            log_info(self.user_id, f"✅ DataFeedHandler запущен (Bot_{self.account_priority}) | Приватный WS: {'ДА' if self._private_task else 'НЕТ'}", module_name=__name__)
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка запуска DataFeedHandler: {e}", module_name=__name__)
@@ -593,7 +598,26 @@ class DataFeedHandler:
         try:
             data = json.loads(message)
 
-            # Игнорируем системные сообщения (auth, subscribe) без логирования
+            # КРИТИЧНО: Логируем ответы на auth/subscribe для диагностики!
+            if "op" in data:
+                op_type = data.get("op")
+                success = data.get("success", False)
+
+                if op_type == "auth":
+                    if success:
+                        log_info(self.user_id, f"✅ Аутентификация в приватном WebSocket УСПЕШНА (Bot_{self.account_priority})", module_name=__name__)
+                    else:
+                        log_error(self.user_id, f"❌ КРИТИЧНО: Аутентификация ПРОВАЛИЛАСЬ! Приватные события НЕ будут приходить! Ответ: {data}", module_name=__name__)
+
+                elif op_type == "subscribe":
+                    if success:
+                        log_info(self.user_id, f"✅ Подписка на приватные каналы подтверждена (Bot_{self.account_priority})", module_name=__name__)
+                    else:
+                        log_error(self.user_id, f"❌ КРИТИЧНО: Подписка ПРОВАЛИЛАСЬ! Ответ: {data}", module_name=__name__)
+
+                return  # Обработали системное сообщение
+
+            # Игнорируем сообщения без topic (heartbeat, pong, etc)
             if "topic" not in data:
                 return
 
