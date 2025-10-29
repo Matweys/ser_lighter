@@ -322,22 +322,27 @@ class BybitAPI:
     async def get_order_status(self, order_id: str) -> Optional[Dict[str, Any]]:
         """
         Получает статус конкретного ордера по его ID.
-        Использует эндпоинт истории ордеров для получения самых свежих данных.
+        Проверяет ОБА эндпоинта: realtime (активные) и history (завершённые).
+        Для Market ордеров использует retry логику из-за задержки попадания в историю.
         """
         try:
-            endpoint = "/v5/order/history"
-            params = {
+            # ПОПЫТКА 1: Проверяем активные ордера (если ордер еще обрабатывается)
+            realtime_params = {
                 "category": "linear",
                 "orderId": order_id,
                 "limit": 1
             }
 
-            # ИСПРАВЛЕНИЕ: Используем правильный метод _make_request
-            # Запрос к истории ордеров является приватным
-            response_data = await self._make_request(method="GET", endpoint=endpoint, params=params, private=True, return_full_response=True)
+            realtime_response = await self._make_request(
+                method="GET",
+                endpoint="/v5/order/realtime",
+                params=realtime_params,
+                private=True,
+                return_full_response=True
+            )
 
-            if response_data and response_data.get("retCode") == 0 and response_data.get('result', {}).get('list'):
-                order_details = response_data['result']['list'][0]
+            if realtime_response and realtime_response.get("retCode") == 0 and realtime_response.get('result', {}).get('list'):
+                order_details = realtime_response['result']['list'][0]
                 return {
                     "orderId": order_details.get("orderId"),
                     "orderStatus": order_details.get("orderStatus"),
@@ -346,10 +351,37 @@ class BybitAPI:
                     "cumExecQty": order_details.get("cumExecQty", '0'),
                     "cumExecFee": order_details.get("cumExecFee", '0')
                 }
-            else:
-                # Это может произойти, если ордер еще не попал в историю. Не считаем это ошибкой.
-                log_debug(self.user_id, f"Статус для ордера {order_id} пока не найден в истории.", module_name=__name__)
-                return None
+
+            # ПОПЫТКА 2: Проверяем историю (если ордер уже исполнен/отменён)
+            # Market ордера попадают сюда через 100-500ms после исполнения
+            history_params = {
+                "category": "linear",
+                "orderId": order_id,
+                "limit": 1
+            }
+
+            history_response = await self._make_request(
+                method="GET",
+                endpoint="/v5/order/history",
+                params=history_params,
+                private=True,
+                return_full_response=True
+            )
+
+            if history_response and history_response.get("retCode") == 0 and history_response.get('result', {}).get('list'):
+                order_details = history_response['result']['list'][0]
+                return {
+                    "orderId": order_details.get("orderId"),
+                    "orderStatus": order_details.get("orderStatus"),
+                    "side": order_details.get("side"),
+                    "avgPrice": order_details.get("avgPrice", '0'),
+                    "cumExecQty": order_details.get("cumExecQty", '0'),
+                    "cumExecFee": order_details.get("cumExecFee", '0')
+                }
+
+            # Ордер не найден ни в активных, ни в истории (временной разрыв для Market ордеров)
+            return None
+
         except Exception as e:
             log_error(self.user_id, f"Критическая ошибка при получении статуса ордера {order_id}: {e}", module_name=__name__)
             return None

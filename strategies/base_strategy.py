@@ -964,28 +964,30 @@ class BaseStrategy(ABC):
                            reduce_only: bool = False) -> Optional[str]:
         """
         ═══════════════════════════════════════════════════════════════════════════════
-        ЕДИНСТВЕННОЕ МЕСТО ОБРАБОТКИ FILLED СТАТУСОВ В СИСТЕМЕ!
+        РАЗМЕЩЕНИЕ ОРДЕРА НА БИРЖЕ И СОХРАНЕНИЕ В БД
         ═══════════════════════════════════════════════════════════════════════════════
 
-        АРХИТЕКТУРА СИСТЕМЫ РАБОТЫ С ОРДЕРАМИ:
-        =======================================
-        ✅ ВСЯ обработка Filled → ТОЛЬКО ЧЕРЕЗ API (этот метод!)
-        ⚠️ WebSocket НЕ обрабатывает Filled (только Cancelled/Rejected для ручных действий)
+        НОВАЯ АРХИТЕКТУРА СИСТЕМЫ РАБОТЫ С ОРДЕРАМИ:
+        =============================================
+        ✅ Размещение ордера → ТОЛЬКО через этот метод (единая точка входа)
+        ✅ Обработка Filled → ТОЛЬКО через WebSocket (событийная архитектура)
+        ⚠️ НЕТ API polling после размещения (надёжнее WebSocket!)
 
         АЛГОРИТМ (СТРОГО ПО ПОРЯДКУ):
         =============================
         1. Создать ордер через API → получить order_id от биржи
         2. Сохранить в БД с order_id (статус NEW)
-        3. Ждать 300ms (биржа обрабатывает Market ордер)
-        4. Проверить статус через API (get_order_status)
-        5. Если Filled → обновить БД (filled_at=NOW) + опубликовать OrderFilledEvent
-        6. Вернуть order_id
+        3. Добавить в active_orders для отслеживания
+        4. WebSocket получит Filled событие → генерирует OrderFilledEvent
+        5. Стратегия обработает через _handle_order_filled()
 
-        КРИТИЧНО:
-        - Market ордера исполняются < 100ms
-        - Bybit НЕ всегда отправляет WebSocket события для быстрых ордеров
-        - API polling гарантирует 100% обработку
-        - WebSocket игнорирует Filled (см. websocket_manager.py:788-794)
+        ПОЧЕМУ WEBSOCKET (НЕ API POLLING):
+        ===================================
+        ✅ WebSocket получает события в реальном времени (< 100ms)
+        ✅ НЕТ временных разрывов между /realtime и /history API
+        ✅ НЕТ ложных ошибок "статус не найден"
+        ✅ Меньше нагрузка на API Bybit
+        ✅ Проще и надёжнее архитектура
 
         ПРИМЕНЯЕТСЯ ДЛЯ:
         - Обычное открытие позиции (OPEN)
@@ -1067,63 +1069,20 @@ class BaseStrategy(ABC):
             # ШАГ 3: Готово! Добавляем в активные ордера
             self.active_orders[order_id] = {"order_id": order_id, "status": "New"}
 
-            log_info(self.user_id, f"Ордер {order_id} ({side} {qty} {self.symbol}) размещен на бирже и сохранен в БД.",
+            log_info(self.user_id, f"✅ Ордер {order_id} ({side} {qty} {self.symbol}) размещен на бирже и сохранен в БД.",
                      module_name=__name__)
 
-            # ШАГ 4: КРИТИЧНО! ВСЕГДА проверяем статус через API (работаем ТОЛЬКО Market ордера!)
-            # Market ордер исполняется < 100ms → СРАЗУ получаем результат через API
-            # НИКАКИХ WebSocket, НИКАКИХ фоновых задач - ТОЛЬКО прямой API!
+            # ШАГ 4: Ордер размещён → WebSocket обработает исполнение
+            # Market ордер исполняется < 100ms → WebSocket получит execution event
+            # WebSocket генерирует OrderFilledEvent → стратегия обрабатывает через _handle_order_filled()
+            # Это НАДЁЖНЕЕ чем API polling (избегаем временных разрывов между /realtime и /history)
 
-            # Даём бирже 300ms на гарантированную обработку
-            await asyncio.sleep(0.3)
+            log_info(self.user_id,
+                    f"⏳ Ордер {order_id} отслеживается. Ожидаю события исполнения от биржи...",
+                    module_name=__name__)
 
-            try:
-                # Запрашиваем финальный статус с биржи
-                order_status = await self.api.get_order_status(order_id=order_id)
-
-                if not order_status:
-                    log_error(self.user_id, f"❌ [API] Не удалось получить статус ордера {order_id}", module_name=__name__)
-                    return order_id
-
-                status = order_status.get("orderStatus")
-
-                if status == "Filled":
-                    log_info(self.user_id,
-                            f"✅ [API] Ордер {order_id} исполнен! Обрабатываем СРАЗУ через API",
-                            module_name=__name__)
-
-                    # Обновляем статус в БД
-                    await db_manager.update_order_on_fill(
-                        order_id=order_id,
-                        filled_quantity=self._convert_to_decimal(order_status.get("cumExecQty", "0")),
-                        average_price=self._convert_to_decimal(order_status.get("avgPrice", "0")),
-                        commission=self._convert_to_decimal(order_status.get("cumExecFee", "0"))
-                    )
-
-                    # Генерируем OrderFilledEvent для обработки в стратегии
-                    filled_event = OrderFilledEvent(
-                        user_id=self.user_id,
-                        order_id=order_id,
-                        symbol=self.symbol,
-                        side=order_status.get("side"),
-                        qty=self._convert_to_decimal(order_status.get("cumExecQty", "0")),
-                        price=self._convert_to_decimal(order_status.get("avgPrice", "0")),
-                        fee=self._convert_to_decimal(order_status.get("cumExecFee", "0"))
-                    )
-                    await self.event_bus.publish(filled_event)
-                    log_info(self.user_id, f"✅ [API] OrderFilledEvent отправлено в EventBus", module_name=__name__)
-                else:
-                    log_warning(self.user_id,
-                               f"⚠️ [API] Неожиданный статус Market ордера {order_id}: {status}",
-                               module_name=__name__)
-
-            except Exception as api_error:
-                log_error(self.user_id,
-                         f"❌ [API] Критическая ошибка проверки статуса ордера {order_id}: {api_error}",
-                         module_name=__name__)
-
-            # Сохраняем состояние стратегии ПОСЛЕ обработки
-            await self.save_strategy_state({"last_action": "order_placed_and_processed", "order_id": order_id})
+            # Сохраняем состояние стратегии ПОСЛЕ размещения
+            await self.save_strategy_state({"last_action": "order_placed", "order_id": order_id})
 
             return order_id
 

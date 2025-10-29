@@ -1561,24 +1561,22 @@ class _DatabaseManager:
 
     async def get_active_orders_for_sync(self, user_id: int, account_priority: int) -> List[Dict[str, Any]]:
         """
-        Получает все активные открывающие ордера для синхронизации после WebSocket переподключения.
+        Получает только НЕОБРАБОТАННЫЕ ордера для синхронизации после WebSocket переподключения.
 
-        КРИТИЧНО: Возвращает только OPEN ордера (не CLOSE), которые могут быть не синхронизированы
-        после потери WebSocket соединения.
+        КРИТИЧНО: Возвращает только ордера которые НЕ были обработаны стратегией (filled_at IS NULL).
+        Это предотвращает повторную генерацию событий для уже обработанных ордеров!
 
         Args:
             user_id: ID пользователя
             account_priority: Приоритет аккаунта (1, 2, 3)
 
         Returns:
-            List[Dict]: Список активных ордеров для синхронизации
+            List[Dict]: Список необработанных ордеров для синхронизации
         """
         try:
-            # Ищем ордера которые:
-            # 1. Принадлежат этому пользователю и bot_priority
-            # 2. Статус = NEW или FILLED (могут быть не обработаны)
-            # 3. ВСЕ типы ордеров: OPEN, CLOSE, AVERAGING (НЕ только OPEN!)
-            # 4. Созданы недавно (последние 24 часа, на случай долгих отключений)
+            # КРИТИЧНО: Ищем ТОЛЬКО необработанные ордера!
+            # filled_at IS NULL → ордер НЕ обработан стратегией (событие потеряно)
+            # filled_at NOT NULL → ордер обработан, пропускаем!
             query = """
             SELECT
                 order_id, symbol, side, status, quantity, average_price,
@@ -1587,9 +1585,12 @@ class _DatabaseManager:
             WHERE user_id = $1
               AND bot_priority = $2
               AND order_purpose IN ('OPEN', 'CLOSE', 'AVERAGING')
-              AND status IN ('NEW', 'FILLED')
+              AND (
+                  status = 'NEW'
+                  OR (status = 'FILLED' AND filled_at IS NULL)
+              )
               AND created_at > NOW() - INTERVAL '24 hours'
-            ORDER BY created_at DESC
+            ORDER BY created_at ASC
             """
 
             results = await self._execute_query(query, (user_id, account_priority))
