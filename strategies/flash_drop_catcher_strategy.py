@@ -807,14 +807,18 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 self.position_size = position_size
                 self.active_direction = "LONG"
 
+                # КРИТИЧНО: Инициализируем entry_price из сигнала ДО создания trade записи!
+                # Позже WebSocket обновит её точной ценой исполнения в _handle_order_filled()
+                self.entry_price = entry_price
+
                 log_info(self.user_id, f"✅ Ордер успешно размещен, self.symbol остается {self.symbol}", "FlashDropCatcher")
 
                 # КРИТИЧНО: Используем avgPrice из WebSocket (ТОЧНАЯ цена исполнения!)
                 # WebSocket получает avgPrice напрямую от биржи через OrderFilledEvent
                 # Убрали лишний API запрос get_positions() - он возвращает ту же avgPrice что и WebSocket!
-                # ВНИМАНИЕ: self.entry_price будет установлена в _handle_order_filled() из event.price
+                # entry_price инициализирована из сигнала, будет обновлена в _handle_order_filled()
                 log_info(self.user_id,
-                        f"⏳ Ожидаю WebSocket событие с точной ценой исполнения...",
+                        f"✅ Цена входа из сигнала: {self.entry_price:.4f} (будет обновлена из WebSocket)",
                         "FlashDropCatcher")
 
                 # КРИТИЧНО: Создаём trade в БД СРАЗУ после исполнения OPEN ордера (НЕ в уведомлении!)
@@ -1763,11 +1767,22 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
         if order_purpose == 'OPEN':
             # Это ОТКРЫТИЕ позиции
-            # Проверяем, есть ли уже позиция по этому символу (защита от дубликатов)
+
+            # КРИТИЧНО: Обновляем entry_price из WebSocket avgPrice (ТОЧНАЯ цена исполнения!)
+            # WebSocket получает avgPrice напрямую от биржи - это та же цена что и в БД
+            real_entry_price = event.price if event.price else Decimal(str(order_in_db.get('average_price', '0')))
+
+            # Проверяем, есть ли уже позиция по этому символу
             if symbol in self.active_flash_positions:
-                log_warning(self.user_id,
-                           f"⚠️ Позиция {symbol} УЖЕ существует в active_flash_positions, пропускаем дубликат OPEN события",
-                           "FlashDropCatcher")
+                # Позиция уже существует (была создана в _open_long_position)
+                # Обновляем entry_price точной ценой исполнения от WebSocket
+                old_entry_price = self.active_flash_positions[symbol]['entry_price']
+                self.active_flash_positions[symbol]['entry_price'] = real_entry_price
+
+                log_info(self.user_id,
+                        f"✅ [WebSocket] Ордер {event.order_id} исполнен! "
+                        f"Обновлена цена входа {symbol}: {old_entry_price:.4f} → {real_entry_price:.4f} USDT",
+                        "FlashDropCatcher")
                 return
 
             # Восстанавливаем состояние позиции из БД
