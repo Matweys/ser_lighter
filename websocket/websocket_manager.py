@@ -725,74 +725,73 @@ class DataFeedHandler:
 
     async def _handle_order_update(self, data: List[Dict]):
         """
-        ФИНАЛЬНАЯ ВЕРСИЯ С ФИЛЬТРАЦИЕЙ.
-        Анализирует статус ордера и публикует правильное событие ТОЛЬКО для ордеров бота.
+        МОНИТОРИНГ РУЧНЫХ ДЕЙСТВИЙ ПОЛЬЗОВАТЕЛЯ НА БИРЖЕ.
 
-        КРИТИЧНО: Игнорируем ордера, которых НЕТ в базе данных (ручные ордера пользователя).
-        Бот работает ТОЛЬКО со своими ордерами, записанными в БД.
+        АРХИТЕКТУРА СИСТЕМЫ:
+        =====================
+        ✅ Filled статусы → ТОЛЬКО через API (в _place_order() после 300ms)
+        ⚠️ Cancelled/Rejected → ТОЛЬКО через WebSocket (ручная отмена пользователем)
+
+        РОЛЬ ЭТОГО МЕТОДА:
+        - Отслеживает когда пользователь ВРУЧНУЮ отменил/отклонил ордер бота на бирже
+        - Обновляет статус в БД
+        - Отправляет уведомление через Strategy handler
+
+        КРИТИЧНО: НЕ обрабатывает Filled! Это создаёт дублирование с API polling!
         """
         try:
             for order_data in data:
                 order_id = order_data.get("orderId")
                 status = order_data.get("orderStatus")
 
-                # КРИТИЧЕСКАЯ ПРОВЕРКА: Это ордер бота?
-                # Проверяем наличие ордера в БД - если его нет, это ручной ордер пользователя
-                db_order = await db_manager.get_order_by_exchange_id(order_id)
+                # ШАГ 1: Проверяем что это ордер БОТА (есть в БД)
+                db_order = await db_manager.get_order_by_exchange_id(order_id, self.user_id)
 
                 if not db_order:
-                    # Это не наш ордер - игнорируем полностью
+                    # Это НЕ ордер бота - игнорируем (пользователь создал вручную)
                     log_debug(self.user_id,
-                             f"⏭️ Пропускаю WebSocket событие для ордера {order_id} - не найден в БД (ручной ордер)",
+                             f"⏭️ Пропускаю WebSocket событие для ордера {order_id} - не найден в БД (ручной ордер пользователя)",
                              "DataFeedHandler")
                     continue
 
-                log_info(self.user_id,
-                         f"✅ WebSocket: Ордер {order_id} найден в БД - обрабатываю (статус: {status})",
-                         "DataFeedHandler")
-
-                # ГЛАВНОЕ УСЛОВИЕ: если ордер исполнен, создаем событие-действие
-                if status == "Filled":
+                # ШАГ 2: КРИТИЧНО! Обрабатываем ТОЛЬКО ручную отмену/отклонение
+                # Filled статусы обрабатываются через API в _place_order()!
+                if status in ["Cancelled", "Rejected"]:
                     log_info(self.user_id,
-                             f"WebSocket: Ордер {order_id} исполнен. Создаю OrderFilledEvent.",
+                             f"⚠️ [WebSocket] Ордер {order_id} {status} ВРУЧНУЮ пользователем на бирже!",
                              "DataFeedHandler")
 
-                    # ✅ КРИТИЧНО: Обновляем статус в БД ПЕРЕД публикацией события
-                    # Это позволяет API-polling немедленно обнаружить исполненный ордер
-                    # ИСПРАВЛЕНО: Используем update_order_on_fill вместо update_order_status
-                    # чтобы filled_at устанавливался корректно!
+                    # Обновляем статус в БД
                     try:
-                        await db_manager.update_order_on_fill(
+                        status_map = {"Cancelled": "CANCELLED", "Rejected": "REJECTED"}
+                        await db_manager.update_order_status(
                             order_id=order_id,
+                            status=status_map[status],
                             filled_quantity=to_decimal(order_data.get("cumExecQty", "0")),
-                            average_price=to_decimal(order_data.get("avgPrice", "0")),
-                            commission=to_decimal(order_data.get("cumExecFee", "0"))
+                            average_price=to_decimal(order_data.get("avgPrice", "0")) if order_data.get("avgPrice") else None
                         )
-                        log_debug(self.user_id,
-                                 f"✅ WebSocket: Статус ордера {order_id} обновлён в БД: FILLED",
-                                 "DataFeedHandler")
+                        log_info(self.user_id,
+                                f"✅ [WebSocket] Статус ордера {order_id} обновлён в БД: {status_map[status]}",
+                                "DataFeedHandler")
                     except Exception as db_error:
                         log_error(self.user_id,
                                  f"❌ Ошибка обновления статуса ордера {order_id} в БД: {db_error}",
                                  "DataFeedHandler")
 
-                    filled_event = OrderFilledEvent(
+                    # Публикуем событие для Strategy handler (он отправит уведомление)
+                    update_event = OrderUpdateEvent(
                         user_id=self.user_id,
-                        order_id=order_id,
-                        symbol=order_data.get("symbol"),
-                        side=order_data.get("side"),
-                        qty=to_decimal(order_data.get("cumExecQty", "0")),
-                        price=to_decimal(order_data.get("avgPrice", "0")),
-                        fee=to_decimal(order_data.get("cumExecFee", "0"))
+                        order_data=order_data
                     )
-                    await self.event_bus.publish(filled_event)
+                    await self.event_bus.publish(update_event)
 
-                # Для всех статусов (включая Filled) публикуем общее событие для информации
-                update_event = OrderUpdateEvent(
-                    user_id=self.user_id,
-                    order_data=order_data
-                )
-                await self.event_bus.publish(update_event)
+                elif status == "Filled":
+                    # Filled обрабатывается ТОЛЬКО через API в _place_order()!
+                    # Игнорируем WebSocket Filled события для избежания дублирования
+                    log_debug(self.user_id,
+                             f"⏭️ [WebSocket] Игнорирую Filled для ордера {order_id} - обрабатывается через API",
+                             "DataFeedHandler")
+                    continue
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки обновления ордера: {e}", module_name=__name__)

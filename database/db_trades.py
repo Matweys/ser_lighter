@@ -1283,54 +1283,6 @@ class _DatabaseManager:
     # МЕТОДЫ ДЛЯ РАБОТЫ С ОРДЕРАМИ (для системы восстановления)
     # ===============================================================================
 
-    async def save_order(self, user_id: int, symbol: str, side: str, order_type: str,
-                        quantity: Decimal, price: Decimal, order_id: str,
-                        strategy_type: str = None, client_order_id: str = None,
-                        metadata: Dict[str, Any] = None) -> Optional[int]:
-        """
-        Сохраняет ордер в базу данных
-
-        Args:
-            user_id: ID пользователя
-            symbol: Символ
-            side: Сторона (BUY/SELL)
-            order_type: Тип ордера (LIMIT/MARKET/STOP)
-            quantity: Количество
-            price: Цена
-            order_id: ID ордера на бирже
-            strategy_type: Тип стратегии
-            client_order_id: Клиентский ID ордера
-            metadata: Дополнительные данные
-
-        Returns:
-            Optional[int]: ID записи в БД или None при ошибке
-        """
-        try:
-            query = """
-            INSERT INTO orders (user_id, symbol, side, order_type, quantity, price,
-                              order_id, client_order_id, strategy_type, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            RETURNING id
-            """
-
-            metadata_json = json.dumps(metadata or {}, cls=DecimalEncoder)
-
-            result = await self._execute_query(
-                query,
-                (user_id, symbol, side, order_type, quantity, price,
-                 order_id, client_order_id, strategy_type, metadata_json),
-                fetch_one=True
-            )
-
-            if result:
-                log_debug(user_id, f"Ордер {order_id} сохранён в БД с ID {result['id']}", module_name='database')
-                return result['id']
-            return None
-
-        except Exception as e:
-            log_error(user_id, f"Ошибка сохранения ордера {order_id}: {e}", module_name='database')
-            return None
-
     async def get_active_orders_by_user(self, user_id: int, symbol: str = None,
                                       strategy_type: str = None) -> List[Dict[str, Any]]:
         """

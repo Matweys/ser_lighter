@@ -993,6 +993,13 @@ class FlashDropCatcherStrategy(BaseStrategy):
             position_size = position_data['position_size']
             current_pnl = (current_price - entry_price) * position_size
 
+            # ДИАГНОСТИКА: Логируем расчет PnL для отладки
+            log_debug(self.user_id,
+                     f"💰 PnL расчёт для {event.symbol}: price={current_price:.4f}, entry={entry_price:.4f}, "
+                     f"size={position_size}, pnl={current_pnl:.2f}$, "
+                     f"highest={position_data['highest_pnl']:.2f}$, level={position_data['current_trailing_level']}",
+                     "FlashDropCatcher")
+
             # Проверка 1: Hard stop loss при -500$
             if current_pnl <= self.HARD_STOP_LOSS_USDT:
                 log_warning(self.user_id,

@@ -105,6 +105,10 @@ class BaseStrategy(ABC):
         self.active_orders: Dict[str, Dict] = {}  # order_id -> order_data
         self.active_positions: Dict[str, Dict] = {}  # position_key -> position_data
 
+        # КРИТИЧНО: Последняя известная цена из WebSocket для точного расчета PnL
+        # Обновляется дочерними стратегиями в handle_price_update()
+        self._last_known_price: Optional[Decimal] = None
+
         # Система отложенной остановки
         self.deferred_stop_marked: bool = False
         self.deferred_stop_reason: Optional[str] = None
@@ -765,48 +769,87 @@ class BaseStrategy(ABC):
                     "BaseStrategy"
                 )
 
-                # ШАГ 3: Получаем ТОЧНЫЙ PnL с биржи
-                final_pnl = Decimal('0')
-                commission = Decimal('0')
-                exit_price = self._convert_to_decimal(event.mark_price)
+                # ШАГ 3: Получаем данные для расчёта PnL
                 entry_price_saved = getattr(self, 'entry_price', Decimal('0'))
                 entry_time_saved = getattr(self, 'entry_time', None)
+                position_size_saved = getattr(self, 'position_size', Decimal('0'))
+                side = getattr(self, 'position_side', None)
+
+                # Определяем лучшую доступную цену выхода
+                # Приоритет: _last_known_price (WebSocket) > mark_price (событие)
+                if hasattr(self, '_last_known_price') and self._last_known_price:
+                    exit_price = self._last_known_price
+                else:
+                    exit_price = self._convert_to_decimal(event.mark_price)
+
+                final_pnl = Decimal('0')
+                commission = Decimal('0')
 
                 try:
-                    # Запрашиваем closedPnL с биржи (ТОЧНЫЙ результат с комиссиями)
+                    # УРОВЕНЬ 1: Пытаемся получить closedPnL с биржи (САМЫЙ ТОЧНЫЙ!)
                     closed_pnl_data = await self.api.get_closed_pnl(symbol=self.symbol, limit=1)
 
                     if closed_pnl_data:
-                        # Используем РЕАЛЬНЫЙ closedPnl от биржи
+                        # ✅ API вернул данные - используем их (самая точная информация)
                         final_pnl = closed_pnl_data['closedPnl']
                         exit_price = closed_pnl_data['avgExitPrice']
-                        # Комиссии УЖЕ учтены в closedPnl
                         commission = closed_pnl_data['openFee'] + closed_pnl_data['closeFee']
 
                         log_info(
                             self.user_id,
-                            f"✅ [BYBIT API] closedPnl={final_pnl:.2f}$, "
-                            f"avgExitPrice={exit_price:.4f}, комиссии={commission:.2f}$",
+                            f"✅ [API] closedPnl={final_pnl:.2f}$, avgExitPrice={exit_price:.4f}, комиссии={commission:.2f}$",
                             "BaseStrategy"
                         )
                     else:
-                        # Fallback: используем unrealisedPnl из события
-                        final_pnl = self._convert_to_decimal(event.unrealized_pnl)
-                        commission = Decimal('0')
-                        log_warning(
-                            self.user_id,
-                            f"⚠️ [FALLBACK] closedPnl недоступен, используем unrealisedPnl={final_pnl:.2f}$",
-                            "BaseStrategy"
-                        )
+                        # ⚠️ API не вернул данные - УРОВЕНЬ 2: ручной расчёт
+                        if entry_price_saved > 0 and position_size_saved > 0 and side:
+                            # Расчёт PnL вручную
+                            if side == "Buy":
+                                price_diff = exit_price - entry_price_saved  # Long: прибыль когда цена растёт
+                            else:
+                                price_diff = entry_price_saved - exit_price  # Short: прибыль когда цена падает
+
+                            final_pnl = price_diff * position_size_saved
+
+                            log_warning(
+                                self.user_id,
+                                f"⚠️ [FALLBACK] API не вернул данные. PnL рассчитан вручную: {final_pnl:.2f}$ "
+                                f"(Entry: {entry_price_saved:.4f}, Exit: {exit_price:.4f}, Size: {position_size_saved}, {side})",
+                                "BaseStrategy"
+                            )
+                        else:
+                            # ❌ Нет данных для расчёта
+                            log_error(
+                                self.user_id,
+                                f"❌ КРИТИЧЕСКАЯ ОШИБКА: Невозможно рассчитать PnL! "
+                                f"entry={entry_price_saved}, size={position_size_saved}, side={side}",
+                                "BaseStrategy"
+                            )
 
                 except Exception as api_error:
-                    log_error(
-                        self.user_id,
-                        f"❌ Ошибка получения closedPnL: {api_error}. Используем unrealisedPnl.",
-                        "BaseStrategy"
-                    )
-                    final_pnl = self._convert_to_decimal(event.unrealized_pnl)
-                    commission = Decimal('0')
+                    # ⚠️ Ошибка API - УРОВЕНЬ 2: ручной расчёт
+                    log_error(self.user_id, f"❌ Ошибка API closedPnL: {api_error}", "BaseStrategy")
+
+                    if entry_price_saved > 0 and position_size_saved > 0 and side:
+                        if side == "Buy":
+                            price_diff = exit_price - entry_price_saved
+                        else:
+                            price_diff = entry_price_saved - exit_price
+
+                        final_pnl = price_diff * position_size_saved
+
+                        log_warning(
+                            self.user_id,
+                            f"⚠️ [FALLBACK] PnL рассчитан вручную: {final_pnl:.2f}$ "
+                            f"(Entry: {entry_price_saved:.4f}, Exit: {exit_price:.4f}, Size: {position_size_saved})",
+                            "BaseStrategy"
+                        )
+                    else:
+                        log_error(
+                            self.user_id,
+                            f"❌ КРИТИЧЕСКАЯ ОШИБКА: Невозможно рассчитать PnL!",
+                            "BaseStrategy"
+                        )
 
                 # ШАГ 4: Обновляем trade в БД
                 if hasattr(self, 'active_trade_db_id') and self.active_trade_db_id:
@@ -920,12 +963,35 @@ class BaseStrategy(ABC):
                            stop_loss: Optional[Decimal] = None, take_profit: Optional[Decimal] = None,
                            reduce_only: bool = False) -> Optional[str]:
         """
-        Универсальное размещение ордера через API. Возвращает orderId или None.
+        ═══════════════════════════════════════════════════════════════════════════════
+        ЕДИНСТВЕННОЕ МЕСТО ОБРАБОТКИ FILLED СТАТУСОВ В СИСТЕМЕ!
+        ═══════════════════════════════════════════════════════════════════════════════
 
-        ПРАВИЛЬНАЯ ПОСЛЕДОВАТЕЛЬНОСТЬ:
-        1. Создать ордер через API → получить order_id
-        2. Сохранить в БД ОДИН РАЗ с правильным order_id
-        3. Готово! Никаких UPDATE, никаких race conditions
+        АРХИТЕКТУРА СИСТЕМЫ РАБОТЫ С ОРДЕРАМИ:
+        =======================================
+        ✅ ВСЯ обработка Filled → ТОЛЬКО ЧЕРЕЗ API (этот метод!)
+        ⚠️ WebSocket НЕ обрабатывает Filled (только Cancelled/Rejected для ручных действий)
+
+        АЛГОРИТМ (СТРОГО ПО ПОРЯДКУ):
+        =============================
+        1. Создать ордер через API → получить order_id от биржи
+        2. Сохранить в БД с order_id (статус NEW)
+        3. Ждать 300ms (биржа обрабатывает Market ордер)
+        4. Проверить статус через API (get_order_status)
+        5. Если Filled → обновить БД (filled_at=NOW) + опубликовать OrderFilledEvent
+        6. Вернуть order_id
+
+        КРИТИЧНО:
+        - Market ордера исполняются < 100ms
+        - Bybit НЕ всегда отправляет WebSocket события для быстрых ордеров
+        - API polling гарантирует 100% обработку
+        - WebSocket игнорирует Filled (см. websocket_manager.py:788-794)
+
+        ПРИМЕНЯЕТСЯ ДЛЯ:
+        - Обычное открытие позиции (OPEN)
+        - Усреднение (AVERAGING)
+        - Закрытие позиции (CLOSE)
+        - Восстановление после перезапуска
         """
         try:
             if not self.api:
@@ -1001,10 +1067,64 @@ class BaseStrategy(ABC):
             # ШАГ 3: Готово! Добавляем в активные ордера
             self.active_orders[order_id] = {"order_id": order_id, "status": "New"}
 
-            # Сохраняем состояние стратегии
-            await self.save_strategy_state({"last_action": "order_placed", "order_id": order_id})
             log_info(self.user_id, f"Ордер {order_id} ({side} {qty} {self.symbol}) размещен на бирже и сохранен в БД.",
                      module_name=__name__)
+
+            # ШАГ 4: КРИТИЧНО! ВСЕГДА проверяем статус через API (работаем ТОЛЬКО Market ордера!)
+            # Market ордер исполняется < 100ms → СРАЗУ получаем результат через API
+            # НИКАКИХ WebSocket, НИКАКИХ фоновых задач - ТОЛЬКО прямой API!
+
+            # Даём бирже 300ms на гарантированную обработку
+            await asyncio.sleep(0.3)
+
+            try:
+                # Запрашиваем финальный статус с биржи
+                order_status = await self.api.get_order_status(order_id=order_id, symbol=self.symbol)
+
+                if not order_status:
+                    log_error(self.user_id, f"❌ [API] Не удалось получить статус ордера {order_id}", module_name=__name__)
+                    return order_id
+
+                status = order_status.get("orderStatus")
+
+                if status == "Filled":
+                    log_info(self.user_id,
+                            f"✅ [API] Ордер {order_id} исполнен! Обрабатываем СРАЗУ через API",
+                            module_name=__name__)
+
+                    # Обновляем статус в БД
+                    await db_manager.update_order_on_fill(
+                        order_id=order_id,
+                        filled_quantity=self._convert_to_decimal(order_status.get("cumExecQty", "0")),
+                        average_price=self._convert_to_decimal(order_status.get("avgPrice", "0")),
+                        commission=self._convert_to_decimal(order_status.get("cumExecFee", "0"))
+                    )
+
+                    # Генерируем OrderFilledEvent для обработки в стратегии
+                    filled_event = OrderFilledEvent(
+                        user_id=self.user_id,
+                        order_id=order_id,
+                        symbol=self.symbol,
+                        side=order_status.get("side"),
+                        qty=self._convert_to_decimal(order_status.get("cumExecQty", "0")),
+                        price=self._convert_to_decimal(order_status.get("avgPrice", "0")),
+                        fee=self._convert_to_decimal(order_status.get("cumExecFee", "0"))
+                    )
+                    await self.event_bus.publish(filled_event)
+                    log_info(self.user_id, f"✅ [API] OrderFilledEvent отправлено в EventBus", module_name=__name__)
+                else:
+                    log_warning(self.user_id,
+                               f"⚠️ [API] Неожиданный статус Market ордера {order_id}: {status}",
+                               module_name=__name__)
+
+            except Exception as api_error:
+                log_error(self.user_id,
+                         f"❌ [API] Критическая ошибка проверки статуса ордера {order_id}: {api_error}",
+                         module_name=__name__)
+
+            # Сохраняем состояние стратегии ПОСЛЕ обработки
+            await self.save_strategy_state({"last_action": "order_placed_and_processed", "order_id": order_id})
+
             return order_id
 
         except Exception as e:
@@ -1062,24 +1182,28 @@ class BaseStrategy(ABC):
             log_error(self.user_id, f"Ошибка отмены всех ордеров: {e}", module_name=__name__)
             
     async def _close_all_positions(self):
-        """Закрытие всех позиций"""
+        """
+        Закрытие всех позиций.
+
+        КРИТИЧНО: Использует _place_order() для гарантированного API polling и уведомлений!
+        """
         try:
             if not self.api:
                 return
-                
+
             for position_key, position in self.active_positions.items():
                 if position["size"] > 0:
-                    # Закрытие позиции рыночным ордером
+                    # Закрытие позиции рыночным ордером через _place_order()
+                    # Это обеспечит API polling + OrderFilledEvent + уведомления
                     close_side = "Sell" if position["side"] == "Buy" else "Buy"
-                    
-                    await self.api.place_order(
-                        symbol=position["symbol"],
+
+                    await self._place_order(
                         side=close_side,
                         order_type="Market",
                         qty=position["size"],
                         reduce_only=True
                     )
-                    
+
             log_info(self.user_id, "Все позиции закрыты", module_name=__name__)
             
         except Exception as e:
@@ -2056,15 +2180,16 @@ class BaseStrategy(ABC):
                             order_purpose = db_order.get('order_purpose') if db_order else 'UNKNOWN'
                             log_info(self.user_id, f"🔄 Восстановление {order_purpose} ордера {order_id}", "BaseStrategy")
 
-                            # КРИТИЧЕСКИ ВАЖНО: Обновляем статус ордера в БД
+                            # КРИТИЧНО: Используем update_order_on_fill чтобы установить filled_at!
+                            # Это предотвращает повторную обработку при следующем recovery
                             try:
-                                await db_manager.update_order_status(
+                                await db_manager.update_order_on_fill(
                                     order_id=order_id,
-                                    status="FILLED",
                                     filled_quantity=Decimal(str(order_status.get("cumExecQty", "0"))),
-                                    average_price=Decimal(str(order_status.get("avgPrice", "0")))
+                                    average_price=Decimal(str(order_status.get("avgPrice", "0"))),
+                                    commission=Decimal(str(order_status.get("cumExecFee", "0")))
                                 )
-                                log_debug(self.user_id, f"Статус ордера {order_id} обновлён в БД: FILLED", "BaseStrategy")
+                                log_debug(self.user_id, f"✅ Ордер {order_id} обновлён в БД: FILLED (filled_at установлен)", "BaseStrategy")
                             except Exception as db_error:
                                 log_error(self.user_id, f"Ошибка обновления статуса ордера {order_id} в БД: {db_error}", "BaseStrategy")
 
