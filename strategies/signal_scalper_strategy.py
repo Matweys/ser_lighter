@@ -192,8 +192,8 @@ class SignalScalperStrategy(BaseStrategy):
         """Остановка стратегии и отписка от событий."""
         # КРИТИЧНО: Сначала останавливаем стратегию (is_running=False), затем отписываемся
         await super().stop(reason)
-        await self.event_bus.unsubscribe(self._handle_new_candle)
-        await self.event_bus.unsubscribe(self._handle_manual_close)
+        await self.event_bus.unsubscribe(self.handle_new_candle)
+        await self.event_bus.unsubscribe(self.handle_manual_close)
 
     async def _handle_new_candle(self, event: NewCandleEvent):
         """Внутренний метод обработки новой свечи (вызывается из BaseStrategy)"""
