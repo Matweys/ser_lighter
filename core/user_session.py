@@ -1287,10 +1287,6 @@ class UserSession:
                                  module_name=__name__)
                         return False
 
-                if not success:
-                    log_error(self.user_id, f"Не удалось восстановить состояние Бота {bot_with_position} для {symbol}", module_name=__name__)
-                    return False
-
                 # Создаём координатор с 3 стратегиями
                 coordinator = MultiAccountCoordinator(
                     user_id=self.user_id,
