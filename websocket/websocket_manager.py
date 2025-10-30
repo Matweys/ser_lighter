@@ -276,6 +276,7 @@ class GlobalWebSocketManager:
         """
         try:
             if not trade_data:
+                log_debug(0, f"⚠️ _handle_public_trade: {symbol} - пустые данные", module_name=__name__)
                 return
 
             # Берем последнюю сделку из массива (самая свежая цена)
@@ -283,17 +284,27 @@ class GlobalWebSocketManager:
             price = Decimal(str(latest_trade.get("p", "0")))
 
             if price <= 0:
+                log_debug(0, f"⚠️ _handle_public_trade: {symbol} - некорректная цена {price}", module_name=__name__)
+                return
+
+            # ДИАГНОСТИКА: Проверяем наличие подписчиков
+            if symbol not in self.symbol_subscribers:
+                log_warning(0, f"⚠️ PRICE: {symbol} price={price} - НЕТ подписчиков! Available: {list(self.symbol_subscribers.keys())}", module_name=__name__)
+                return
+
+            if not self.symbol_subscribers[symbol]:
+                log_warning(0, f"⚠️ PRICE: {symbol} price={price} - подписчики = пустое множество", module_name=__name__)
                 return
 
             # Отправка события всем подписчикам символа
-            if symbol in self.symbol_subscribers:
-                for user_id in self.symbol_subscribers[symbol]:
-                    price_event = PriceUpdateEvent(
-                        user_id=user_id,
-                        symbol=symbol,
-                        price=price
-                    )
-                    await self.event_bus.publish(price_event)
+            log_info(0, f"💹 PRICE: {symbol} = ${price} → {len(self.symbol_subscribers[symbol])} подписчиков", module_name=__name__)
+            for user_id in self.symbol_subscribers[symbol]:
+                price_event = PriceUpdateEvent(
+                    user_id=user_id,
+                    symbol=symbol,
+                    price=price
+                )
+                await self.event_bus.publish(price_event)
 
         except Exception as e:
             log_error(0, f"Ошибка обработки публичной сделки {symbol}: {e}", module_name=__name__)
@@ -327,13 +338,17 @@ class GlobalWebSocketManager:
         """Обработка обновления свечи"""
         try:
             if not candle_data:
+                log_debug(0, f"⚠️ _handle_candle_update: {symbol} - пустые данные", module_name=__name__)
                 return
 
             candle = candle_data[0]
 
             # Проверяем, что свеча закрыта
             if not candle.get("confirm", False):
+                # Не логируем незакрытые свечи - их много
                 return
+
+            log_info(0, f"🕯️ CANDLE: {symbol} {interval}m ЗАКРЫТА - обрабатываю...", module_name=__name__)
 
             # Конвертация данных свечи в Decimal
             candle_decimal = {
@@ -345,18 +360,27 @@ class GlobalWebSocketManager:
                 "volume": Decimal(str(candle["volume"]))
             }
 
+            # ДИАГНОСТИКА: Проверяем наличие подписчиков
+            if symbol not in self.symbol_subscribers:
+                log_warning(0, f"⚠️ CANDLE: {symbol} {interval}m - НЕТ подписчиков! Available: {list(self.symbol_subscribers.keys())}", module_name=__name__)
+                return
+
+            if not self.symbol_subscribers[symbol]:
+                log_warning(0, f"⚠️ CANDLE: {symbol} {interval}m - подписчики = пустое множество", module_name=__name__)
+                return
+
             # Отправка события всем подписчикам символа
-            if symbol in self.symbol_subscribers:
-                for user_id in self.symbol_subscribers[symbol]:
-                    # Bybit присылает интервал как "5", нужно конвертировать в "5m"
-                    interval_formatted = f"{interval}m"
-                    candle_event = NewCandleEvent(
-                        user_id=user_id,
-                        symbol=symbol,
-                        interval=interval_formatted,
-                        candle_data=candle_decimal
-                    )
-                    await self.event_bus.publish(candle_event)
+            log_info(0, f"🕯️ CANDLE: {symbol} {interval}m close=${candle_decimal['close']} → {len(self.symbol_subscribers[symbol])} подписчиков", module_name=__name__)
+            for user_id in self.symbol_subscribers[symbol]:
+                # Bybit присылает интервал как "5", нужно конвертировать в "5m"
+                interval_formatted = f"{interval}m"
+                candle_event = NewCandleEvent(
+                    user_id=user_id,
+                    symbol=symbol,
+                    interval=interval_formatted,
+                    candle_data=candle_decimal
+                )
+                await self.event_bus.publish(candle_event)
 
         except Exception as e:
             log_error(0, f"Ошибка обработки свечи {symbol}: {e}", module_name=__name__)
