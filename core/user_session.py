@@ -1221,7 +1221,7 @@ class UserSession:
                                 f"ℹ️ Бот {priority} ({symbol}): активных ордеров не найдено",
                                 module_name=__name__)
 
-                # КРИТИЧНО: Определяем КАКОЙ бот реально в позиции
+                # КРИТИЧНО: Определяем КАКИЕ боты реально в позиции
                 # ✅ ИСПОЛЬЗУЕМ get_all_open_positions - он находит FILLED OPEN ордера!
                 all_open_positions = await db_manager.get_all_open_positions(user_id=self.user_id)
 
@@ -1232,20 +1232,47 @@ class UserSession:
                 ]
 
                 if symbol_positions:
-                    # ✅ Есть открытая позиция в БД - определяем какой бот
-                    # В норме должна быть только 1 позиция (только 1 бот активен одновременно)
+                    # ✅ Есть открытые позиции в БД
+                    # В multi-account режиме может быть несколько ботов с позициями одновременно
                     if len(symbol_positions) > 1:
+                        bot_priorities = [p['bot_priority'] for p in symbol_positions]
                         log_warning(self.user_id,
-                                   f"⚠️ Найдено {len(symbol_positions)} открытых позиций для {symbol}! "
-                                   f"Ожидается только 1. Использую первую.",
+                                   f"⚠️ Найдено {len(symbol_positions)} открытых позиций для {symbol} в ботах {bot_priorities}. "
+                                   f"Восстанавливаю все позиции. Координатор активирует последний бот.",
                                    module_name=__name__)
 
-                    # Берем bot_priority из первой позиции
-                    bot_with_position = symbol_positions[0]['bot_priority']
-                    log_info(self.user_id,
-                            f"🎯 Определен бот с позицией: Бот {bot_with_position} "
-                            f"(найдена открытая позиция в БД для {symbol})",
-                            module_name=__name__)
+                    # КРИТИЧНО: Восстанавливаем КАЖДЫЙ бот с открытой позицией
+                    bots_recovered = []
+                    for pos in symbol_positions:
+                        bot_priority = pos['bot_priority']
+                        log_info(self.user_id,
+                                f"🔄 Восстанавливаю состояние Бота {bot_priority} для {symbol}",
+                                module_name=__name__)
+
+                        success = await bot_strategies[bot_priority - 1].recover_after_restart(saved_state)
+
+                        if success:
+                            bots_recovered.append(bot_priority)
+                            log_info(self.user_id,
+                                    f"✅ Бот {bot_priority} успешно восстановлен для {symbol}",
+                                    module_name=__name__)
+                        else:
+                            log_error(self.user_id,
+                                     f"❌ Не удалось восстановить Бот {bot_priority} для {symbol}",
+                                     module_name=__name__)
+
+                    # Берем последний восстановленный бот для активации в координаторе
+                    # (предполагается что он самый актуальный)
+                    if bots_recovered:
+                        bot_with_position = bots_recovered[-1]
+                        log_info(self.user_id,
+                                f"🎯 Координатор активирует Бот {bot_with_position} как последний восстановленный для {symbol}",
+                                module_name=__name__)
+                    else:
+                        log_error(self.user_id,
+                                 f"❌ Ни один бот не был восстановлен для {symbol}!",
+                                 module_name=__name__)
+                        return False
                 else:
                     # Нет открытой позиции в БД - восстанавливаем Бота 1 (дефолт)
                     bot_with_position = 1
@@ -1253,16 +1280,12 @@ class UserSession:
                             f"ℹ️ Открытая позиция для {symbol} не найдена в БД, восстанавливаю Бот 1",
                             module_name=__name__)
 
-                # Восстанавливаем состояние ПРАВИЛЬНОГО бота
-                # ЗАЩИТА: Проверяем что bot_with_position определён (не должно случиться, но для безопасности)
-                if bot_with_position is None:
-                    log_error(self.user_id,
-                             f"❌ КРИТИЧЕСКАЯ ОШИБКА: bot_with_position остался None после анализа позиций для {symbol}!",
-                             module_name=__name__)
-                    bot_with_position = 1  # Fallback на Бот 1
-
-                log_info(self.user_id, f"🔄 Восстанавливаю состояние Бота {bot_with_position} для {symbol}", module_name=__name__)
-                success = await bot_strategies[bot_with_position - 1].recover_after_restart(saved_state)
+                    success = await bot_strategies[0].recover_after_restart(saved_state)
+                    if not success:
+                        log_error(self.user_id,
+                                 f"❌ Не удалось восстановить Бот 1 для {symbol}",
+                                 module_name=__name__)
+                        return False
 
                 if not success:
                     log_error(self.user_id, f"Не удалось восстановить состояние Бота {bot_with_position} для {symbol}", module_name=__name__)

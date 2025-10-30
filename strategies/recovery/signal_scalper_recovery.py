@@ -225,8 +225,9 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
             )
 
     async def restore_event_subscriptions(self) -> bool:
-        """Восстанавливает подписки на события цен."""
+        """Восстанавливает подписки на события цен и свечей."""
         try:
+            # КРИТИЧНО: Восстанавливаем подписку на PRICE_UPDATE (мониторинг позиции)
             await self.event_bus.subscribe(
                 EventType.PRICE_UPDATE,
                 self.strategy.handle_price_update,
@@ -234,9 +235,34 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
             )
             log_info(
                 self.user_id,
-                f"✅ Восстановлена подписка на обновления цен для {self.symbol}",
+                f"✅ Восстановлена подписка на PRICE_UPDATE для {self.symbol}",
                 "SignalScalperRecovery"
             )
+
+            # КРИТИЧНО: Восстанавливаем подписку на NEW_CANDLE (основная логика стратегии!)
+            await self.event_bus.subscribe(
+                EventType.NEW_CANDLE,
+                self.strategy._handle_new_candle,
+                user_id=self.user_id
+            )
+            log_info(
+                self.user_id,
+                f"✅ Восстановлена подписка на NEW_CANDLE для {self.symbol}",
+                "SignalScalperRecovery"
+            )
+
+            # КРИТИЧНО: Восстанавливаем подписку на POSITION_CLOSED (ручное закрытие)
+            await self.event_bus.subscribe(
+                EventType.POSITION_CLOSED,
+                self.strategy._handle_manual_close,
+                user_id=self.user_id
+            )
+            log_info(
+                self.user_id,
+                f"✅ Восстановлена подписка на POSITION_CLOSED для {self.symbol}",
+                "SignalScalperRecovery"
+            )
+
             return True
 
         except Exception as e:
