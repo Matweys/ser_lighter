@@ -147,7 +147,9 @@ class GlobalWebSocketManager:
                         await self._subscribe_to_symbol(symbol)
 
                     # Обработка сообщений
+                    log_info(0, "🔄 Начинаю чтение сообщений из публичного WebSocket...", module_name=__name__)
                     async for message in websocket:
+                        log_debug(0, f"📨 PUBLIC WebSocket: {message[:200]}", module_name=__name__)
                         if not self.running:
                             break
 
