@@ -1006,12 +1006,12 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
         # Проценты для уровней трейлинга
         level_percentages = {
-            1: Decimal('0.0025'),   # 0.25%
-            2: Decimal('0.0045'),   # 0.45%
-            3: Decimal('0.0065'),   # 0.65%
-            4: Decimal('0.0095'),   # 0.95%
-            5: Decimal('0.015'),   # 1.5%
-            6: Decimal('0.025')    # 2.5%
+            1: Decimal('0.004'),   # 0.4%
+            2: Decimal('0.007'),   # 0.7%
+            3: Decimal('0.009'),   # 0.9%
+            4: Decimal('0.0125'),   # 1.25%
+            5: Decimal('0.025'),   # 2.5%
+            6: Decimal('0.035')    # 3.5%
         }
 
         # Рассчитываем пороги в USDT
@@ -1049,12 +1049,12 @@ class FlashDropCatcherStrategy(BaseStrategy):
         levels = self._calculate_dynamic_levels()
 
         level_names = {
-            1: f"МГНОВЕННЫЙ УРОВЕНЬ (${levels[1]:.2f}+, 0.25%)",
-            2: f"РАННИЙ УРОВЕНЬ (${levels[2]:.2f}+, 0.45%)",
-            3: f"СРЕДНИЙ УРОВЕНЬ (${levels[3]:.2f}+, 0.65%)",
-            4: f"ХОРОШИЙ УРОВЕНЬ (${levels[4]:.2f}+, 0.95%)",
-            5: f"ОТЛИЧНЫЙ УРОВЕНЬ (${levels[5]:.2f}+, 1.5%)",
-            6: f"МАКСИМАЛЬНЫЙ УРОВЕНЬ (${levels[6]:.2f}+, 2.5%)"
+            1: f"МГНОВЕННЫЙ УРОВЕНЬ (${levels[1]:.2f}+, 0.4%)",
+            2: f"РАННИЙ УРОВЕНЬ (${levels[2]:.2f}+, 0.7%)",
+            3: f"СРЕДНИЙ УРОВЕНЬ (${levels[3]:.2f}+, 0.9%)",
+            4: f"ХОРОШИЙ УРОВЕНЬ (${levels[4]:.2f}+, 1.25%)",
+            5: f"ОТЛИЧНЫЙ УРОВЕНЬ (${levels[5]:.2f}+, 2.5%)",
+            6: f"МАКСИМАЛЬНЫЙ УРОВЕНЬ (${levels[6]:.2f}+, 3.5%)"
         }
         return level_names.get(level, "НЕИЗВЕСТНЫЙ УРОВЕНЬ")
 
@@ -1500,9 +1500,9 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
                 # Формируем текст сообщения
                 message_text = (
-                    f"{'='*40}\n"
+                    f"{'='*30}\n"
                     f"💓 {hbold('HEARTBEAT - FLASH DROP АКТИВНА')}\n"
-                    f"{'='*40}\n\n"
+                    f"{'='*30}\n\n"
                     f"📊 {hbold('Отслеживается символов:')} {len(self._liquid_symbols)}"
                     f"{drops_detail}\n"
                     f"📌 {hbold('Статус:')} {position_status}\n\n"
@@ -1510,7 +1510,7 @@ class FlashDropCatcherStrategy(BaseStrategy):
                     f"  ▫️ Интервал анализа: {hcode(f'{self.TIMEFRAME_INTERVAL}m')}\n"
                     f"  ▫️ Базовый порог: {hcode(f'{float(self.BASE_DROP_PCT)*100:.1f}%')} (для BTC/ETH: {hcode(f'{float(self.MIN_DROP_PCT)*100:.1f}%')}, макс: {hcode(f'{float(self.MAX_DROP_PCT)*100:.1f}%')})\n"
                     f"  ▫️ Мин. всплеск объёма: {hcode(f'{self.VOLUME_SPIKE_MIN}x')}\n"
-                    f"{'='*40}"
+                    f"{'='*30}"
                 )
 
                 # Отправляем в Telegram если включено
@@ -1772,6 +1772,23 @@ class FlashDropCatcherStrategy(BaseStrategy):
             # WebSocket получает avgPrice напрямую от биржи - это та же цена что и в БД
             real_entry_price = event.price if event.price else Decimal(str(order_in_db.get('average_price', '0')))
 
+            # ✅ КРИТИЧНО: Обновляем ордер в БД с точными данными от WebSocket
+            try:
+                await db_manager.update_order_on_fill(
+                    order_id=event.order_id,
+                    filled_quantity=event.qty,
+                    average_price=real_entry_price,
+                    commission=event.fee
+                )
+                log_info(self.user_id,
+                        f"✅ [WebSocket→БД] OPEN ордер {event.order_id} обновлён: "
+                        f"price={real_entry_price:.4f}, qty={event.qty}, fee={event.fee:.4f}",
+                        "FlashDropCatcher")
+            except Exception as db_update_error:
+                log_error(self.user_id,
+                         f"❌ Ошибка обновления OPEN ордера {event.order_id} в БД: {db_update_error}",
+                         "FlashDropCatcher")
+
             # Проверяем, есть ли уже позиция по этому символу
             if symbol in self.active_flash_positions:
                 # Позиция уже существует (была создана в _open_long_position)
@@ -1815,6 +1832,24 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
         elif order_purpose == 'CLOSE':
             # Это ЗАКРЫТИЕ позиции
+
+            # ✅ КРИТИЧНО: Обновляем CLOSE ордер в БД с точными данными от WebSocket
+            try:
+                await db_manager.update_order_on_fill(
+                    order_id=event.order_id,
+                    filled_quantity=event.qty,
+                    average_price=event.price,
+                    commission=event.fee
+                )
+                log_info(self.user_id,
+                        f"✅ [WebSocket→БД] CLOSE ордер {event.order_id} обновлён: "
+                        f"price={event.price:.4f}, qty={event.qty}, fee={event.fee:.4f}",
+                        "FlashDropCatcher")
+            except Exception as db_update_error:
+                log_error(self.user_id,
+                         f"❌ Ошибка обновления CLOSE ордера {event.order_id} в БД: {db_update_error}",
+                         "FlashDropCatcher")
+
             # Позиция уже должна быть удалена из active_flash_positions в методе _close_position
             # Но на всякий случай проверяем и удаляем если еще есть
             if symbol in self.active_flash_positions:

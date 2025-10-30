@@ -1657,6 +1657,72 @@ class _DatabaseManager:
             log_error(user_id, f"Ошибка получения OPEN ордера для {symbol} Bot_{bot_priority}: {e}", module_name='database')
             return None
 
+    async def get_total_fees_for_position(self, user_id: int, symbol: str, bot_priority: int = 1) -> float:
+        """
+        Получает сумму всех комиссий для текущей открытой позиции.
+        Суммирует комиссии ВСЕХ ордеров: OPEN + AVERAGING + CLOSE (если есть).
+
+        Args:
+            user_id: ID пользователя
+            symbol: Символ торговли
+            bot_priority: Приоритет бота (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
+
+        Returns:
+            float: Сумма всех комиссий в USDT
+        """
+        try:
+            # Получаем последний OPEN ордер для определения trade_id
+            open_order = await self.get_open_order_for_position(user_id, symbol, bot_priority)
+            if not open_order:
+                log_warning(user_id, f"Не найден OPEN ордер для {symbol} Bot_{bot_priority} при расчете комиссий", module_name='database')
+                return 0.0
+
+            trade_id = open_order.get('trade_id')
+
+            # Если есть trade_id, получаем все ордера для этого trade
+            if trade_id:
+                query = """
+                SELECT COALESCE(SUM(commission), 0) as total_fees
+                FROM orders
+                WHERE trade_id = $1
+                  AND status = 'FILLED'
+                """
+                result = await self._execute_query(query, (trade_id,), fetch_one=True)
+            else:
+                # Fallback: если trade_id нет, суммируем по symbol и bot_priority
+                # Берем все FILLED ордера после последнего OPEN ордера
+                query = """
+                SELECT COALESCE(SUM(commission), 0) as total_fees
+                FROM orders
+                WHERE user_id = $1
+                  AND symbol = $2
+                  AND bot_priority = $3
+                  AND status = 'FILLED'
+                  AND filled_at >= (
+                      SELECT filled_at
+                      FROM orders
+                      WHERE user_id = $1
+                        AND symbol = $2
+                        AND bot_priority = $3
+                        AND order_purpose = 'OPEN'
+                        AND status = 'FILLED'
+                      ORDER BY filled_at DESC
+                      LIMIT 1
+                  )
+                """
+                result = await self._execute_query(query, (user_id, symbol, bot_priority), fetch_one=True)
+
+            if result:
+                total_fees = float(result['total_fees']) if result['total_fees'] else 0.0
+                log_debug(user_id, f"Общая сумма комиссий для {symbol} Bot_{bot_priority}: ${total_fees:.4f}", module_name='database')
+                return total_fees
+
+            return 0.0
+
+        except Exception as e:
+            log_error(user_id, f"Ошибка получения суммы комиссий для {symbol} Bot_{bot_priority}: {e}", module_name='database')
+            return 0.0
+
     async def has_pending_close_order(self, user_id: int, symbol: str, bot_priority: int = 1) -> bool:
         """
         ПРАВИЛЬНЫЙ МЕТОД для WebSocket: Проверяет наличие ЛЮБОГО CLOSE ордера (активного или недавно исполненного).

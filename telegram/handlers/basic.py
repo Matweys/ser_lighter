@@ -328,10 +328,22 @@ async def cmd_trade_details(message: Message, state: FSMContext):
             )
             return
 
-        # ШАГ 5: Форматируем вывод для каждой ПРОВЕРЕННОЙ позиции
+        # ШАГ 5: Сортируем позиции для красивого отображения
+        # Сначала Bot 1, потом Bot 2, потом Bot 3
+        # Внутри каждого бота: сначала SignalScalper, потом FlashDropCatcher
+        verified_positions.sort(key=lambda x: (
+            x["db_position"]["bot_priority"],  # Сортировка по боту
+            0 if x["db_position"]["strategy_type"] == "signal_scalper" else 1,  # Сортировка по стратегии
+            x["db_position"]["symbol"]  # Сортировка по символу
+        ))
+
+        # ШАГ 6: Форматируем вывод для каждой ПРОВЕРЕННОЙ позиции
         status_text = "📊 <b>ДЕТАЛЬНАЯ ИНФОРМАЦИЯ О ПОЗИЦИЯХ</b>\n"
         status_text += "✅ <b>Проверено: БД + Реальное состояние биржи</b>\n"
         status_text += "═" * 40 + "\n\n"
+
+        current_bot_priority = None
+        current_strategy_type = None
 
         for verified_pos in verified_positions:
             db_pos = verified_pos["db_position"]
@@ -398,9 +410,37 @@ async def cmd_trade_details(message: Message, state: FSMContext):
                 except:
                     pass
 
-            # ФОРМАТИРУЕМ ВЫВОД
-            status_text += f"{priority_emoji} <b>{symbol_short}</b> | {direction_emoji} {direction} | {strategy_name}\n"
-            status_text += "─" * 35 + "\n"
+            # Добавляем заголовок при смене бота
+            if current_bot_priority != bot_priority:
+                if current_bot_priority is not None:
+                    # Разделитель между ботами
+                    status_text += "═" * 40 + "\n\n"
+
+                # Заголовок бота
+                bot_names = {1: "BOT #1", 2: "BOT #2", 3: "BOT #3"}
+                bot_name = bot_names.get(bot_priority, f"BOT #{bot_priority}")
+                status_text += f"{priority_emoji} <b>{bot_name}</b>\n"
+                status_text += "─" * 35 + "\n\n"
+                current_bot_priority = bot_priority
+                current_strategy_type = None  # Сбрасываем стратегию при смене бота
+
+            # Добавляем заголовок при смене стратегии
+            if current_strategy_type != strategy_type:
+                if current_strategy_type is not None:
+                    status_text += "\n"
+
+                # Заголовок стратегии
+                strategy_headers = {
+                    "signal_scalper": "📊 Signal Scalper",
+                    "flash_drop_catcher": "⚡ Flash Drop Catcher"
+                }
+                strategy_header = strategy_headers.get(strategy_type, strategy_type)
+                status_text += f"<b>{strategy_header}</b>\n"
+                status_text += "┈" * 35 + "\n"
+                current_strategy_type = strategy_type
+
+            # ФОРМАТИРУЕМ ВЫВОД ПОЗИЦИИ
+            status_text += f"▸ <b>{symbol_short}</b> | {direction_emoji} {direction}\n"
 
             # ЦЕНЫ
             status_text += f"💵 <b>Цены:</b>\n"

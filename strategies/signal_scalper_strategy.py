@@ -624,7 +624,22 @@ class SignalScalperStrategy(BaseStrategy):
                                     self.averaging_executed = False
                                     self.total_position_size = Decimal('0')
                                     self.average_entry_price = Decimal('0')
-                                    self.total_fees_paid = Decimal('0')
+                                    # ИСПРАВЛЕНО: НЕ перезаписываем total_fees_paid, если WebSocket уже установил комиссию
+                                    # self.total_fees_paid сохраняет значение из WebSocket события (если оно пришло)
+                                    if self.total_fees_paid == Decimal('0'):
+                                        # WebSocket НЕ установил комиссию, получаем из БД
+                                        try:
+                                            order_from_db = await db_manager.get_order_by_id(order_id)
+                                            if order_from_db and order_from_db.get('commission'):
+                                                self.total_fees_paid = self._convert_to_decimal(order_from_db['commission'])
+                                                log_info(self.user_id, f"💰 [FALLBACK] Комиссия получена из БД: ${self.total_fees_paid:.4f}", "SignalScalper")
+                                            else:
+                                                log_warning(self.user_id, "⚠️ [FALLBACK] Комиссия не найдена в БД, используем 0", "SignalScalper")
+                                        except Exception as fee_error:
+                                            log_error(self.user_id, f"❌ [FALLBACK] Ошибка получения комиссии из БД: {fee_error}", "SignalScalper")
+                                    else:
+                                        log_info(self.user_id, f"💰 [FALLBACK] Используем комиссию из памяти (WebSocket): ${self.total_fees_paid:.4f}", "SignalScalper")
+
                                     self.initial_margin_usd = self.intended_order_amount
                                     self.current_total_margin = self.intended_order_amount
 
@@ -634,14 +649,32 @@ class SignalScalperStrategy(BaseStrategy):
                                     self.entry_time = datetime.now()
 
                                     # ✅ КРИТИЧНО: Обновляем OPEN ордер в БД (как в WebSocket обработчике)
+                                    # ИСПРАВЛЕНО: НЕ перезаписываем комиссию если она уже установлена
                                     try:
-                                        await db_manager.update_order_on_fill(
-                                            order_id=order_id,
-                                            filled_quantity=pos_size,
-                                            average_price=entry_price_from_api,
-                                            commission=Decimal('0')  # Комиссия неизвестна в FALLBACK
-                                        )
-                                        log_info(self.user_id, f"✅ [FALLBACK OPEN] Ордер {order_id} обновлён в БД", "SignalScalper")
+                                        # Проверяем текущую комиссию в БД
+                                        order_from_db = await db_manager.get_order_by_id(order_id)
+                                        existing_commission = Decimal('0')
+                                        if order_from_db and order_from_db.get('commission'):
+                                            existing_commission = self._convert_to_decimal(order_from_db['commission'])
+
+                                        # Обновляем ТОЛЬКО если комиссия еще не установлена
+                                        if existing_commission == Decimal('0'):
+                                            await db_manager.update_order_on_fill(
+                                                order_id=order_id,
+                                                filled_quantity=pos_size,
+                                                average_price=entry_price_from_api,
+                                                commission=self.total_fees_paid  # Используем комиссию из памяти
+                                            )
+                                            log_info(self.user_id, f"✅ [FALLBACK OPEN] Ордер {order_id} обновлён в БД с комиссией ${self.total_fees_paid:.4f}", "SignalScalper")
+                                        else:
+                                            # Только обновляем qty и price, не трогая комиссию
+                                            await db_manager.update_order_on_fill(
+                                                order_id=order_id,
+                                                filled_quantity=pos_size,
+                                                average_price=entry_price_from_api,
+                                                commission=existing_commission  # Сохраняем существующую комиссию
+                                            )
+                                            log_info(self.user_id, f"✅ [FALLBACK OPEN] Ордер {order_id} обновлён в БД (комиссия сохранена: ${existing_commission:.4f})", "SignalScalper")
                                     except Exception as db_error:
                                         log_error(self.user_id, f"❌ [FALLBACK OPEN] Ошибка обновления ордера в БД: {db_error}", "SignalScalper")
 
@@ -711,10 +744,19 @@ class SignalScalperStrategy(BaseStrategy):
                     exit_price_for_calc = self._last_known_price if self._last_known_price else Decimal('0')
                     final_pnl, exit_price, entry_price_for_pnl, position_size_for_pnl, saved_entry_time, saved_entry_price, estimated_close_fee = await self._calculate_pnl_from_db_or_memory(exit_price_for_calc)
 
-                    # Добавляем комиссию закрытия в FALLBACK (т.к. WebSocket события не было)
-                    self.total_fees_paid += estimated_close_fee
+                    # ✅ ИСПРАВЛЕНО: Получаем сумму ВСЕХ комиссий из БД вместо расчета
+                    # Это гарантирует точность: OPEN + AVERAGING + CLOSE (расчетная)
+                    try:
+                        total_fees_from_db = Decimal(str(await db_manager.get_total_fees_for_position(self.user_id, self.symbol, self.account_priority)))
+                        # Добавляем расчетную комиссию закрытия (т.к. ордер еще не исполнен в БД)
+                        self.total_fees_paid = total_fees_from_db + estimated_close_fee
+                        log_info(self.user_id, f"💰 [FALLBACK CLOSE] Комиссии из БД: ${total_fees_from_db:.4f} + расчетная закрытия: ${estimated_close_fee:.4f} = ${self.total_fees_paid:.4f}", "SignalScalper")
+                    except Exception as fee_error:
+                        log_error(self.user_id, f"❌ [FALLBACK CLOSE] Ошибка получения комиссий из БД: {fee_error}. Используем расчетную", "SignalScalper")
+                        # Fallback: используем только расчетную комиссию
+                        self.total_fees_paid += estimated_close_fee
 
-                    # Пересчитываем final_pnl с учетом добавленной комиссии
+                    # Пересчитываем final_pnl с учетом всех комиссий
                     if self.active_direction == "LONG":
                         pnl_gross = (exit_price - entry_price_for_pnl) * position_size_for_pnl
                     else:
