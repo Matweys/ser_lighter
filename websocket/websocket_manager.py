@@ -239,6 +239,10 @@ class GlobalWebSocketManager:
         try:
             data = json.loads(message)
 
+            # Логируем системные сообщения (subscribe/pong/etc)
+            if "op" in data:
+                log_info(0, f"🔔 PUBLIC WebSocket системное сообщение: op={data.get('op')}, success={data.get('success')}, ret_msg={data.get('ret_msg', '')}", module_name=__name__)
+
             if "topic" not in data:
                 return
 
