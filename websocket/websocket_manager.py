@@ -143,6 +143,7 @@ class GlobalWebSocketManager:
                     log_info(0, "Подключен к публичному WebSocket", module_name=__name__)
 
                     # Переподписка на все символы
+                    log_info(0, f"📋 Состояние подписок: subscribed_symbols={list(self.subscribed_symbols)}, symbol_subscribers={dict(self.symbol_subscribers)}", module_name=__name__)
                     for symbol in list(self.subscribed_symbols):
                         await self._subscribe_to_symbol(symbol)
 
@@ -284,15 +285,24 @@ class GlobalWebSocketManager:
             if price <= 0:
                 return
 
+            # ДИАГНОСТИКА: Проверяем наличие подписчиков
+            if symbol not in self.symbol_subscribers:
+                log_warning(0, f"⚠️ MARKET DATA: Получена сделка {symbol} price={price}, НО symbol_subscribers НЕ содержит этот символ! Доступные символы: {list(self.symbol_subscribers.keys())}", module_name=__name__)
+                return
+
+            if not self.symbol_subscribers[symbol]:
+                log_warning(0, f"⚠️ MARKET DATA: Получена сделка {symbol} price={price}, НО нет подписчиков! symbol_subscribers[{symbol}] = пустое множество", module_name=__name__)
+                return
+
             # Отправка события всем подписчикам символа
-            if symbol in self.symbol_subscribers:
-                for user_id in self.symbol_subscribers[symbol]:
-                    price_event = PriceUpdateEvent(
-                        user_id=user_id,
-                        symbol=symbol,
-                        price=price
-                    )
-                    await self.event_bus.publish(price_event)
+            log_info(0, f"📈 MARKET DATA: {symbol} price={price} -> публикую {len(self.symbol_subscribers[symbol])} подписчикам: {self.symbol_subscribers[symbol]}", module_name=__name__)
+            for user_id in self.symbol_subscribers[symbol]:
+                price_event = PriceUpdateEvent(
+                    user_id=user_id,
+                    symbol=symbol,
+                    price=price
+                )
+                await self.event_bus.publish(price_event)
 
         except Exception as e:
             log_error(0, f"Ошибка обработки публичной сделки {symbol}: {e}", module_name=__name__)
@@ -344,18 +354,27 @@ class GlobalWebSocketManager:
                 "volume": Decimal(str(candle["volume"]))
             }
 
+            # ДИАГНОСТИКА: Проверяем наличие подписчиков
+            if symbol not in self.symbol_subscribers:
+                log_warning(0, f"⚠️ CANDLE DATA: Получена свеча {symbol} interval={interval}m, НО symbol_subscribers НЕ содержит этот символ! Доступные символы: {list(self.symbol_subscribers.keys())}", module_name=__name__)
+                return
+
+            if not self.symbol_subscribers[symbol]:
+                log_warning(0, f"⚠️ CANDLE DATA: Получена свеча {symbol} interval={interval}m, НО нет подписчиков! symbol_subscribers[{symbol}] = пустое множество", module_name=__name__)
+                return
+
             # Отправка события всем подписчикам символа
-            if symbol in self.symbol_subscribers:
-                for user_id in self.symbol_subscribers[symbol]:
-                    # Bybit присылает интервал как "5", нужно конвертировать в "5m"
-                    interval_formatted = f"{interval}m"
-                    candle_event = NewCandleEvent(
-                        user_id=user_id,
-                        symbol=symbol,
-                        interval=interval_formatted,
-                        candle_data=candle_decimal
-                    )
-                    await self.event_bus.publish(candle_event)
+            log_info(0, f"📊 CANDLE DATA: {symbol} interval={interval}m close={candle_decimal['close']} -> публикую {len(self.symbol_subscribers[symbol])} подписчикам: {self.symbol_subscribers[symbol]}", module_name=__name__)
+            for user_id in self.symbol_subscribers[symbol]:
+                # Bybit присылает интервал как "5", нужно конвертировать в "5m"
+                interval_formatted = f"{interval}m"
+                candle_event = NewCandleEvent(
+                    user_id=user_id,
+                    symbol=symbol,
+                    interval=interval_formatted,
+                    candle_data=candle_decimal
+                )
+                await self.event_bus.publish(candle_event)
 
         except Exception as e:
             log_error(0, f"Ошибка обработки свечи {symbol}: {e}", module_name=__name__)
