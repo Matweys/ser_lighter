@@ -285,24 +285,15 @@ class GlobalWebSocketManager:
             if price <= 0:
                 return
 
-            # ДИАГНОСТИКА: Проверяем наличие подписчиков
-            if symbol not in self.symbol_subscribers:
-                log_warning(0, f"⚠️ MARKET DATA: Получена сделка {symbol} price={price}, НО symbol_subscribers НЕ содержит этот символ! Доступные символы: {list(self.symbol_subscribers.keys())}", module_name=__name__)
-                return
-
-            if not self.symbol_subscribers[symbol]:
-                log_warning(0, f"⚠️ MARKET DATA: Получена сделка {symbol} price={price}, НО нет подписчиков! symbol_subscribers[{symbol}] = пустое множество", module_name=__name__)
-                return
-
             # Отправка события всем подписчикам символа
-            log_info(0, f"📈 MARKET DATA: {symbol} price={price} -> публикую {len(self.symbol_subscribers[symbol])} подписчикам: {self.symbol_subscribers[symbol]}", module_name=__name__)
-            for user_id in self.symbol_subscribers[symbol]:
-                price_event = PriceUpdateEvent(
-                    user_id=user_id,
-                    symbol=symbol,
-                    price=price
-                )
-                await self.event_bus.publish(price_event)
+            if symbol in self.symbol_subscribers:
+                for user_id in self.symbol_subscribers[symbol]:
+                    price_event = PriceUpdateEvent(
+                        user_id=user_id,
+                        symbol=symbol,
+                        price=price
+                    )
+                    await self.event_bus.publish(price_event)
 
         except Exception as e:
             log_error(0, f"Ошибка обработки публичной сделки {symbol}: {e}", module_name=__name__)
@@ -354,27 +345,18 @@ class GlobalWebSocketManager:
                 "volume": Decimal(str(candle["volume"]))
             }
 
-            # ДИАГНОСТИКА: Проверяем наличие подписчиков
-            if symbol not in self.symbol_subscribers:
-                log_warning(0, f"⚠️ CANDLE DATA: Получена свеча {symbol} interval={interval}m, НО symbol_subscribers НЕ содержит этот символ! Доступные символы: {list(self.symbol_subscribers.keys())}", module_name=__name__)
-                return
-
-            if not self.symbol_subscribers[symbol]:
-                log_warning(0, f"⚠️ CANDLE DATA: Получена свеча {symbol} interval={interval}m, НО нет подписчиков! symbol_subscribers[{symbol}] = пустое множество", module_name=__name__)
-                return
-
             # Отправка события всем подписчикам символа
-            log_info(0, f"📊 CANDLE DATA: {symbol} interval={interval}m close={candle_decimal['close']} -> публикую {len(self.symbol_subscribers[symbol])} подписчикам: {self.symbol_subscribers[symbol]}", module_name=__name__)
-            for user_id in self.symbol_subscribers[symbol]:
-                # Bybit присылает интервал как "5", нужно конвертировать в "5m"
-                interval_formatted = f"{interval}m"
-                candle_event = NewCandleEvent(
-                    user_id=user_id,
-                    symbol=symbol,
-                    interval=interval_formatted,
-                    candle_data=candle_decimal
-                )
-                await self.event_bus.publish(candle_event)
+            if symbol in self.symbol_subscribers:
+                for user_id in self.symbol_subscribers[symbol]:
+                    # Bybit присылает интервал как "5", нужно конвертировать в "5m"
+                    interval_formatted = f"{interval}m"
+                    candle_event = NewCandleEvent(
+                        user_id=user_id,
+                        symbol=symbol,
+                        interval=interval_formatted,
+                        candle_data=candle_decimal
+                    )
+                    await self.event_bus.publish(candle_event)
 
         except Exception as e:
             log_error(0, f"Ошибка обработки свечи {symbol}: {e}", module_name=__name__)
@@ -709,49 +691,55 @@ class DataFeedHandler:
                     # Создаем временный API клиент
                     # ИСПРАВЛЕНО: demo режим определяется через system_config
                     demo_mode = system_config.DEMO_MODE
-                    api = BybitAPI(api_key=api_key, secret_key=api_secret, demo=demo_mode, user_id=self.user_id)
 
-                    # Запрашиваем статус ордера с биржи
-                    order_info = await api.get_order_status(order_id=order_id)
+                    # Используем async with для автоматического закрытия сессии
+                    async with BybitAPI(
+                        user_id=self.user_id,
+                        api_key=api_key,
+                        api_secret=api_secret,
+                        demo=demo_mode
+                    ) as api:
+                        # Запрашиваем статус ордера с биржи
+                        order_info = await api.get_order_status(order_id=order_id)
 
-                    if not order_info:
-                        log_warning(self.user_id, f"⚠️ Ордер {order_id} не найден на бирже (возможно уже отменён)", module_name=__name__)
-                        continue
+                        if not order_info:
+                            log_warning(self.user_id, f"⚠️ Ордер {order_id} не найден на бирже (возможно уже отменён)", module_name=__name__)
+                            continue
 
-                    exchange_status = order_info.get("orderStatus", "")
+                        exchange_status = order_info.get("orderStatus", "")
 
-                    # КРИТИЧНО: Если ордер исполнен на бирже - генерируем событие!
-                    # БД уже отфильтровала обработанные ордера (filled_at IS NULL)
-                    if exchange_status == "Filled":
-                        log_warning(self.user_id,
-                                   f"🔔 ПРОПУЩЕННОЕ СОБЫТИЕ: Ордер {order_id} исполнен на бирже, обновляю БД и генерирую OrderFilledEvent...",
-                                   module_name=__name__)
+                        # КРИТИЧНО: Если ордер исполнен на бирже - генерируем событие!
+                        # БД уже отфильтровала обработанные ордера (filled_at IS NULL)
+                        if exchange_status == "Filled":
+                            log_warning(self.user_id,
+                                       f"🔔 ПРОПУЩЕННОЕ СОБЫТИЕ: Ордер {order_id} исполнен на бирже, обновляю БД и генерирую OrderFilledEvent...",
+                                       module_name=__name__)
 
-                        # Обновляем статус в БД и устанавливаем filled_at
-                        await db_manager.update_order_on_fill(
-                            order_id=order_id,
-                            filled_quantity=to_decimal(order_info.get("cumExecQty", "0")),
-                            average_price=to_decimal(order_info.get("avgPrice", "0")),
-                            commission=to_decimal(order_info.get("cumExecFee", "0"))
-                        )
+                            # Обновляем статус в БД и устанавливаем filled_at
+                            await db_manager.update_order_on_fill(
+                                order_id=order_id,
+                                filled_quantity=to_decimal(order_info.get("cumExecQty", "0")),
+                                average_price=to_decimal(order_info.get("avgPrice", "0")),
+                                commission=to_decimal(order_info.get("cumExecFee", "0"))
+                            )
 
-                        # Генерируем событие для стратегии
-                        # processed_orders в стратегии защитит от race condition
-                        filled_event = OrderFilledEvent(
-                            user_id=self.user_id,
-                            order_id=order_id,
-                            symbol=symbol,
-                            side=order_info.get("side"),
-                            qty=to_decimal(order_info.get("cumExecQty", "0")),
-                            price=to_decimal(order_info.get("avgPrice", "0")),
-                            fee=to_decimal(order_info.get("cumExecFee", "0"))
-                        )
-                        await self.event_bus.publish(filled_event)
+                            # Генерируем событие для стратегии
+                            # processed_orders в стратегии защитит от race condition
+                            filled_event = OrderFilledEvent(
+                                user_id=self.user_id,
+                                order_id=order_id,
+                                symbol=symbol,
+                                side=order_info.get("side"),
+                                qty=to_decimal(order_info.get("cumExecQty", "0")),
+                                price=to_decimal(order_info.get("avgPrice", "0")),
+                                fee=to_decimal(order_info.get("cumExecFee", "0"))
+                            )
+                            await self.event_bus.publish(filled_event)
 
-                        synced_count += 1
-                        log_info(self.user_id, f"✅ Ордер {order_id} ({symbol}) - OrderFilledEvent отправлено в EventBus для восстановления", module_name=__name__)
-                    else:
-                        log_debug(self.user_id, f"○ Ордер {order_id} еще не исполнен (статус: {exchange_status})", module_name=__name__)
+                            synced_count += 1
+                            log_info(self.user_id, f"✅ Ордер {order_id} ({symbol}) - OrderFilledEvent отправлено в EventBus для восстановления", module_name=__name__)
+                        else:
+                            log_debug(self.user_id, f"○ Ордер {order_id} еще не исполнен (статус: {exchange_status})", module_name=__name__)
 
                 except Exception as order_error:
                     log_error(self.user_id, f"❌ Ошибка синхронизации ордера {order_id}: {order_error}", module_name=__name__)
