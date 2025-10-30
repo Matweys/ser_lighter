@@ -133,14 +133,19 @@ class BaseStrategy(ABC):
         return f"{emoji} Bot {self.account_priority}"
 
     @staticmethod
-    def _convert_to_decimal( value: Any) -> Decimal:
-        """Безопасное преобразование в Decimal"""
+    def convert_to_decimal(value: Any) -> Decimal:
+        """Публичный метод: Безопасное преобразование в Decimal"""
         if isinstance(value, Decimal):
             return value
         try:
             return Decimal(str(value))
         except (ValueError, TypeError):
             return Decimal('0')
+
+    @staticmethod
+    def _convert_to_decimal(value: Any) -> Decimal:
+        """Защищенный метод-обертка для обратной совместимости"""
+        return BaseStrategy.convert_to_decimal(value)
 
     async def _has_recent_bot_close_orders(self, seconds: int = 10) -> bool:
         """

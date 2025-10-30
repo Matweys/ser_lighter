@@ -63,9 +63,6 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
                 # Восстанавливаем стоп-лосс
                 await self._restore_stop_loss()
 
-                # Восстанавливаем мониторинг позиции
-                await self._restore_position_monitoring()
-
                 log_info(
                     self.user_id,
                     f"✅ Активная позиция SignalScalper для {self.symbol} полностью восстановлена",
@@ -179,28 +176,6 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
                 "SignalScalperRecovery"
             )
 
-    async def _restore_position_monitoring(self):
-        """Восстанавливает мониторинг активной позиции."""
-        try:
-            # Проверяем, нужно ли запустить монитор позиции
-            if not self.strategy._position_monitor_task or self.strategy._position_monitor_task.done():
-                if hasattr(self.strategy, 'position_size') and getattr(self.strategy, 'position_size', 0) > 0:
-                    self.strategy._position_monitor_task = asyncio.create_task(
-                        self.strategy._monitor_active_position()
-                    )
-                    log_info(
-                        self.user_id,
-                        f"🔍 Запущен монитор позиции для {self.symbol}",
-                        "SignalScalperRecovery"
-                    )
-
-        except Exception as e:
-            log_error(
-                self.user_id,
-                f"Ошибка восстановления мониторинга позиции: {e}",
-                "SignalScalperRecovery"
-            )
-
     async def _init_signal_analyzer(self):
         """Инициализирует анализатор сигналов."""
         try:
@@ -240,11 +215,7 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
             )
 
             # КРИТИЧНО: Восстанавливаем подписку на NEW_CANDLE (основная логика стратегии!)
-            await self.event_bus.subscribe(
-                EventType.NEW_CANDLE,
-                self.strategy._handle_new_candle,
-                user_id=self.user_id
-            )
+            await self.event_bus.subscribe(EventType.NEW_CANDLE, self.strategy.handle_new_candle, user_id=self.user_id)
             log_info(
                 self.user_id,
                 f"✅ Восстановлена подписка на NEW_CANDLE для {self.symbol}",
@@ -252,11 +223,7 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
             )
 
             # КРИТИЧНО: Восстанавливаем подписку на POSITION_CLOSED (ручное закрытие)
-            await self.event_bus.subscribe(
-                EventType.POSITION_CLOSED,
-                self.strategy._handle_manual_close,
-                user_id=self.user_id
-            )
+            await self.event_bus.subscribe(EventType.POSITION_CLOSED, self.strategy.handle_manual_close, user_id=self.user_id)
             log_info(
                 self.user_id,
                 f"✅ Восстановлена подписка на POSITION_CLOSED для {self.symbol}",
@@ -401,7 +368,8 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
             await self._restore_active_trade_db_id()
 
             # КРИТИЧНО: Восстанавливаем initial_margin_usd для координатора
-            leverage = self.strategy._convert_to_decimal(self.strategy.get_config_value("leverage", 1.0))
+            from strategies.base_strategy import BaseStrategy
+            leverage = BaseStrategy.convert_to_decimal(self.strategy.get_config_value("leverage", 1.0))
             position_value = entry_price * position_size
             self.strategy.initial_margin_usd = position_value / leverage
             log_info(
@@ -410,10 +378,10 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
                 "SignalScalperRecovery"
             )
 
-            # КРИТИЧНО: Восстанавливаем _last_known_price для координатора
+            # КРИТИЧНО: Восстанавливаем last_known_price для координатора
             current_price = await self._get_current_market_price()
             if current_price:
-                self.strategy._last_known_price = current_price
+                self.strategy.last_known_price = current_price
                 log_info(
                     self.user_id,
                     f"📊 Восстановлена последняя цена для расчета PnL: ${current_price:.4f}",
@@ -421,7 +389,7 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
                 )
             else:
                 # Fallback: используем entry_price если не удалось получить текущую
-                self.strategy._last_known_price = entry_price
+                self.strategy.last_known_price = entry_price
                 log_warning(
                     self.user_id,
                     f"⚠️ Не удалось получить текущую цену, используем entry_price=${entry_price:.4f}",
@@ -519,7 +487,8 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
             # ✅ КРИТИЧНО: Восстанавливаем initial_margin_usd для координатора
             # Это поле НЕОБХОДИМО для расчета PnL% и активации следующего бота!
             if not hasattr(self.strategy, 'initial_margin_usd') or self.strategy.initial_margin_usd == 0:
-                leverage = self.strategy._convert_to_decimal(self.strategy.get_config_value("leverage", 1.0))
+                from strategies.base_strategy import BaseStrategy
+                leverage = BaseStrategy.convert_to_decimal(self.strategy.get_config_value("leverage", 1.0))
                 entry_price = self.strategy.entry_price if self.strategy.entry_price > 0 else self.strategy.average_entry_price
                 position_size = self.strategy.total_position_size if self.strategy.total_position_size > 0 else self.strategy.position_size
 
@@ -533,12 +502,12 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
                         "SignalScalperRecovery"
                     )
 
-            # ✅ КРИТИЧНО: Восстанавливаем _last_known_price для координатора
+            # ✅ КРИТИЧНО: Восстанавливаем last_known_price для координатора
             # Координатор использует это поле для расчета текущего PnL%!
-            if not hasattr(self.strategy, '_last_known_price') or not self.strategy._last_known_price:
+            if not self.strategy.last_known_price:
                 current_price = await self._get_current_market_price()
                 if current_price:
-                    self.strategy._last_known_price = current_price
+                    self.strategy.last_known_price = current_price
                     log_info(
                         self.user_id,
                         f"📊 Восстановлена последняя цена для расчета PnL: ${current_price:.4f}",
@@ -547,7 +516,7 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
                 else:
                     # Fallback: используем entry_price если не удалось получить текущую
                     entry_price = self.strategy.entry_price if self.strategy.entry_price > 0 else self.strategy.average_entry_price
-                    self.strategy._last_known_price = entry_price
+                    self.strategy.last_known_price = entry_price
                     log_warning(
                         self.user_id,
                         f"⚠️ Не удалось получить текущую цену, используем entry_price=${entry_price:.4f}",
@@ -567,12 +536,9 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
     async def _estimate_base_position_size(self) -> Optional[Decimal]:
         """Оценивает размер базовой позиции на основе текущих настроек."""
         try:
-            order_amount = self.strategy._convert_to_decimal(
-                self.strategy.get_config_value("order_amount", 50.0)
-            )
-            leverage = self.strategy._convert_to_decimal(
-                self.strategy.get_config_value("leverage", 1.0)
-            )
+            from strategies.base_strategy import BaseStrategy
+            order_amount = BaseStrategy.convert_to_decimal(self.strategy.get_config_value("order_amount", 50.0))
+            leverage = BaseStrategy.convert_to_decimal(self.strategy.get_config_value("leverage", 1.0))
 
             current_price = await self._get_current_market_price()
             if current_price:
@@ -711,7 +677,10 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
             self.strategy.stop_loss_price = None
 
             # Отписываемся от событий цены
-            await self.event_bus.unsubscribe(self.strategy._handle_price_update)
+            await self.event_bus.unsubscribe(self.strategy.handle_price_update)
+            # Отписываемся от событий свечей и ручного закрытия
+            await self.event_bus.unsubscribe(self.strategy.handle_new_candle)
+            await self.event_bus.unsubscribe(self.strategy.handle_manual_close)
 
             log_info(
                 self.user_id,

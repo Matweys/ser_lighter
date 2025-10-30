@@ -106,6 +106,10 @@ class SignalScalperStrategy(BaseStrategy):
         self.stagnation_averaging_executed = False  # Флаг: было ли выполнено усреднение
         # ============================================================
 
+        # Интеллектуальный стоп-лосс (расширение SL)
+        self.sl_extended = False  # Флаг: был ли продлен стоп-лосс
+        self.sl_extension_notified = False  # Флаг: было ли отправлено уведомление о продлении
+
         # Recovery Handler для восстановления после перезагрузки сервера
         from strategies.recovery import SignalScalperRecoveryHandler
         self.recovery_handler = SignalScalperRecoveryHandler(self)
@@ -123,6 +127,16 @@ class SignalScalperStrategy(BaseStrategy):
             return self.active_trade_config.get(key, default)
         else:
             return self.get_config_value(key, default)
+
+    @property
+    def last_known_price(self) -> Optional[Decimal]:
+        """Публичное свойство для доступа к последней известной цене."""
+        return self._last_known_price
+
+    @last_known_price.setter
+    def last_known_price(self, value: Decimal):
+        """Установка последней известной цены."""
+        self._last_known_price = value
 
     async def _load_strategy_config(self):
         """Переопределяем для инициализации SignalAnalyzer и SpikeDetector."""
@@ -169,9 +183,9 @@ class SignalScalperStrategy(BaseStrategy):
         is_started = await super().start()
         if is_started:
             # Основной триггер стратегии - новая 5-минутная свеча
-            await self.event_bus.subscribe(EventType.NEW_CANDLE, self._handle_new_candle, user_id=self.user_id)
+            await self.event_bus.subscribe(EventType.NEW_CANDLE, self.handle_new_candle, user_id=self.user_id)
             # КРИТИЧНО: Подписываемся на ручное закрытие позиции через WebSocket
-            await self.event_bus.subscribe(EventType.POSITION_CLOSED, self._handle_manual_close, user_id=self.user_id)
+            await self.event_bus.subscribe(EventType.POSITION_CLOSED, self.handle_manual_close, user_id=self.user_id)
         return is_started
 
     async def stop(self, reason: str = "Manual stop"):
@@ -181,8 +195,12 @@ class SignalScalperStrategy(BaseStrategy):
         await self.event_bus.unsubscribe(self._handle_new_candle)
         await self.event_bus.unsubscribe(self._handle_manual_close)
 
-    @strategy_locked
     async def _handle_new_candle(self, event: NewCandleEvent):
+        """Внутренний метод обработки новой свечи (вызывается из BaseStrategy)"""
+        await self.handle_new_candle(event)
+
+    @strategy_locked
+    async def handle_new_candle(self, event: NewCandleEvent):
         """
         Главный обработчик логики на каждой новой свече.
 
@@ -801,7 +819,7 @@ class SignalScalperStrategy(BaseStrategy):
                     self._reset_position_state_after_close(final_pnl)
 
                     # Отписываемся от price updates
-                    await self.event_bus.unsubscribe(self._handle_price_update)
+                    await self.event_bus.unsubscribe(self.handle_price_update)
 
                     # Отправляем уведомление
                     await self._send_trade_close_notification(
@@ -1334,7 +1352,7 @@ class SignalScalperStrategy(BaseStrategy):
             self._reset_position_state_after_close(pnl_net)
 
             # Отписываемся от price updates
-            await self.event_bus.unsubscribe(self._handle_price_update)
+            await self.event_bus.unsubscribe(self.handle_price_update)
             # МГНОВЕННО отправляем уведомление (используем сохраненные значения)
             await self._send_trade_close_notification(pnl_net, event.fee, exit_price=event.price, entry_price=saved_entry_price, entry_time=saved_entry_time)
             log_info(self.user_id, f"[УСПЕХ] Позиция {self.symbol} закрыта быстро! PnL: {pnl_net:.2f}$", "SignalScalper")
@@ -1656,7 +1674,7 @@ class SignalScalperStrategy(BaseStrategy):
                 f"PnL_gross={pnl_gross:.4f}, fees={self.total_fees_paid:.4f}, PnL_net={final_pnl:.4f}",
                 "SignalScalper")
 
-        return (final_pnl, exit_price, entry_price_for_pnl, position_size_for_pnl, saved_entry_time, saved_entry_price, estimated_close_fee)
+        return final_pnl, exit_price, entry_price_for_pnl, position_size_for_pnl, saved_entry_time, saved_entry_price, estimated_close_fee
 
     def _reset_position_state_after_close(self, pnl_net: Decimal):
         """
@@ -2253,8 +2271,12 @@ class SignalScalperStrategy(BaseStrategy):
                 "error": str(e)
             }
 
-    @strategy_locked
     async def _handle_manual_close(self, event):
+        """Внутренний метод обработки ручного закрытия (вызывается из BaseStrategy)"""
+        await self.handle_manual_close(event)
+
+    @strategy_locked
+    async def handle_manual_close(self, event):
         """
         МГНОВЕННЫЙ обработчик ручного закрытия позиции через WebSocket.
         Вызывается когда пользователь вручную закрыл позицию на бирже.
@@ -2385,7 +2407,7 @@ class SignalScalperStrategy(BaseStrategy):
 
             # Отписываемся от обновлений цены
             try:
-                await self.event_bus.unsubscribe(self._handle_price_update)
+                await self.event_bus.unsubscribe(self.handle_price_update)
             except Exception as unsub_error:
                 log_debug(self.user_id, f"Не удалось отписаться от price_update: {unsub_error}", "SignalScalper")
 

@@ -293,9 +293,21 @@ class EventBus:
                         if sub.user_id is None or sub.user_id == event_user_id:
                             handlers_to_run.append(sub.handler)
 
+                # ДИАГНОСТИКА: Показываем доставку событий
+                if event_type in [EventType.PRICE_UPDATE, EventType.NEW_CANDLE]:
+                    symbol = getattr(event, 'symbol', 'N/A')
+                    log_info(event_user_id or 0,
+                            f"📮 EventBus: {event_type.value} для {symbol} → найдено {len(handlers_to_run)} обработчиков (user_id={event_user_id})",
+                            "EventBus")
+
                 for handler in handlers_to_run:
                     try:
                         await handler(event)
+                        # ДИАГНОСТИКА: Логируем успешный вызов handler
+                        if event_type in [EventType.PRICE_UPDATE, EventType.NEW_CANDLE]:
+                            log_info(event_user_id or 0,
+                                    f"✅ EventBus: handler {handler.__name__} вызван успешно",
+                                    "EventBus")
                     except Exception as e:
                         log_error(getattr(event, 'user_id', 0), f"Ошибка в обработчике {handler.__name__}: {e}",
                                   "EventBus")
