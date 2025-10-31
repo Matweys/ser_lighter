@@ -387,7 +387,7 @@ class UserSession:
                         api=api_client,  # Каждая стратегия использует свой API клиент
                         event_bus=self.event_bus,
                         config=None,
-                        bot_priority=priority,  # КРИТИЧНО: Передаём приоритет для уникального ID
+                        account_priority=priority,  # КРИТИЧНО: Передаём приоритет для уникального ID
                         data_feed=data_feed  # IN-MEMORY tracking CLOSE операций
                     )
 
@@ -464,7 +464,7 @@ class UserSession:
                     api=self.api,
                     event_bus=self.event_bus,
                     config=None,
-                    bot_priority=1,  # КРИТИЧНО: Для обычного режима всегда bot_priority=1
+                    account_priority=1,  # КРИТИЧНО: Для обычного режима всегда account_priority=1
                     data_feed=self.data_feed_handler  # IN-MEMORY tracking CLOSE операций
                 )
 
@@ -1172,7 +1172,7 @@ class UserSession:
                         api=api_client,  # Каждая стратегия использует свой API клиент
                         event_bus=self.event_bus,
                         config=None,
-                        bot_priority=priority  # КРИТИЧНО: Передаём приоритет для уникального ID
+                        account_priority=priority  # КРИТИЧНО: Передаём приоритет для уникального ID
                     )
 
                     if not strategy:
@@ -1195,7 +1195,7 @@ class UserSession:
                     bot_orders = await db_manager.get_active_orders_by_bot_priority(
                         user_id=self.user_id,
                         symbol=symbol,
-                        bot_priority=priority,
+                        account_priority=priority,
                         strategy_type=strategy_type.value
                     )
 
