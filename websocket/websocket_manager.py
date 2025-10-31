@@ -952,7 +952,7 @@ class DataFeedHandler:
                         has_our_close = await db_manager.has_pending_close_order(
                             self.user_id,
                             symbol,
-                            bot_priority=self.account_priority
+                            account_priority=self.account_priority
                         )
 
                         if has_our_close:
@@ -966,7 +966,7 @@ class DataFeedHandler:
                             has_unclosed = await db_manager.has_unclosed_position(
                                 self.user_id,
                                 symbol,
-                                bot_priority=self.account_priority
+                                account_priority=self.account_priority
                             )
 
                             if has_unclosed:
@@ -980,7 +980,7 @@ class DataFeedHandler:
                                 closed_event = PositionClosedEvent(
                                     user_id=self.user_id,
                                     symbol=symbol,
-                                    bot_priority=self.account_priority,
+                                    account_priority=self.account_priority,
                                     closed_manually=True
                                 )
                                 await self.event_bus.publish(closed_event)

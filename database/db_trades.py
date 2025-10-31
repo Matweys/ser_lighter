@@ -1337,7 +1337,7 @@ class _DatabaseManager:
             return []
 
     async def get_active_orders_by_bot_priority(self, user_id: int, symbol: str,
-                                                bot_priority: int,
+                                                account_priority: int,
                                                 strategy_type: str = None) -> List[Dict[str, Any]]:
         """
         Получает активные ордера конкретного бота в Multi-Account режиме.
@@ -1347,7 +1347,7 @@ class _DatabaseManager:
         Args:
             user_id: ID пользователя
             symbol: Символ
-            bot_priority: Приоритет бота (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
+            account_priority: Приоритет бота (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
             strategy_type: Тип стратегии (опционально)
 
         Returns:
@@ -1360,7 +1360,7 @@ class _DatabaseManager:
                 "bot_priority = $3",
                 "status IN ('PENDING', 'PARTIALLY_FILLED', 'NEW')"
             ]
-            params = [user_id, symbol, bot_priority]
+            params = [user_id, symbol, account_priority]
             param_count = 3
 
             if strategy_type:
@@ -1386,11 +1386,11 @@ class _DatabaseManager:
                     order_dict['metadata'] = json.loads(order_dict['metadata'])
                 orders.append(order_dict)
 
-            log_debug(user_id, f"Найдено {len(orders)} активных ордеров для Bot{bot_priority} ({symbol})", module_name='database')
+            log_debug(user_id, f"Найдено {len(orders)} активных ордеров для Bot{account_priority} ({symbol})", module_name='database')
             return orders
 
         except Exception as e:
-            log_error(user_id, f"Ошибка получения ордеров для Bot{bot_priority}: {e}", module_name='database')
+            log_error(user_id, f"Ошибка получения ордеров для Bot{account_priority}: {e}", module_name='database')
             return []
 
     async def update_order_status(self, order_id: str, status: str,
@@ -1613,7 +1613,7 @@ class _DatabaseManager:
         """Алиас для get_order_by_exchange_id"""
         return await self.get_order_by_exchange_id(order_id, user_id)
 
-    async def get_open_order_for_position(self, user_id: int, symbol: str, bot_priority: int = 1) -> Optional[Dict[str, Any]]:
+    async def get_open_order_for_position(self, user_id: int, symbol: str, account_priority: int = 1) -> Optional[Dict[str, Any]]:
         """
         Получает последний FILLED ордер открытия позиции (order_purpose='OPEN') для расчёта entry_time.
 
@@ -1644,7 +1644,7 @@ class _DatabaseManager:
             LIMIT 1
             """
 
-            result = await self._execute_query(query, (user_id, symbol, bot_priority), fetch_one=True)
+            result = await self._execute_query(query, (user_id, symbol, account_priority), fetch_one=True)
 
             if result:
                 order_dict = dict(result)
@@ -1654,10 +1654,10 @@ class _DatabaseManager:
             return None
 
         except Exception as e:
-            log_error(user_id, f"Ошибка получения OPEN ордера для {symbol} Bot_{bot_priority}: {e}", module_name='database')
+            log_error(user_id, f"Ошибка получения OPEN ордера для {symbol} Bot_{account_priority}: {e}", module_name='database')
             return None
 
-    async def get_total_fees_for_position(self, user_id: int, symbol: str, bot_priority: int = 1) -> float:
+    async def get_total_fees_for_position(self, user_id: int, symbol: str, account_priority: int = 1) -> float:
         """
         Получает сумму всех комиссий для текущей открытой позиции.
         Суммирует комиссии ВСЕХ ордеров: OPEN + AVERAGING + CLOSE (если есть).
@@ -1672,9 +1672,9 @@ class _DatabaseManager:
         """
         try:
             # Получаем последний OPEN ордер для определения trade_id
-            open_order = await self.get_open_order_for_position(user_id, symbol, bot_priority)
+            open_order = await self.get_open_order_for_position(user_id, symbol, account_priority)
             if not open_order:
-                log_warning(user_id, f"Не найден OPEN ордер для {symbol} Bot_{bot_priority} при расчете комиссий", module_name='database')
+                log_warning(user_id, f"Не найден OPEN ордер для {symbol} Bot_{account_priority} при расчете комиссий", module_name='database')
                 return 0.0
 
             trade_id = open_order.get('trade_id')
@@ -1710,20 +1710,20 @@ class _DatabaseManager:
                       LIMIT 1
                   )
                 """
-                result = await self._execute_query(query, (user_id, symbol, bot_priority), fetch_one=True)
+                result = await self._execute_query(query, (user_id, symbol, account_priority), fetch_one=True)
 
             if result:
                 total_fees = float(result['total_fees']) if result['total_fees'] else 0.0
-                log_debug(user_id, f"Общая сумма комиссий для {symbol} Bot_{bot_priority}: ${total_fees:.4f}", module_name='database')
+                log_debug(user_id, f"Общая сумма комиссий для {symbol} Bot_{account_priority}: ${total_fees:.4f}", module_name='database')
                 return total_fees
 
             return 0.0
 
         except Exception as e:
-            log_error(user_id, f"Ошибка получения суммы комиссий для {symbol} Bot_{bot_priority}: {e}", module_name='database')
+            log_error(user_id, f"Ошибка получения суммы комиссий для {symbol} Bot_{account_priority}: {e}", module_name='database')
             return 0.0
 
-    async def has_pending_close_order(self, user_id: int, symbol: str, bot_priority: int = 1) -> bool:
+    async def has_pending_close_order(self, user_id: int, symbol: str, account_priority: int = 1) -> bool:
         """
         ПРАВИЛЬНЫЙ МЕТОД для WebSocket: Проверяет наличие ЛЮБОГО CLOSE ордера (активного или недавно исполненного).
 
@@ -1754,14 +1754,14 @@ class _DatabaseManager:
             LIMIT 1
             """
 
-            result = await self._execute_query(query, (user_id, symbol, bot_priority), fetch_one=True)
+            result = await self._execute_query(query, (user_id, symbol, account_priority), fetch_one=True)
             return result is not None
 
         except Exception as e:
-            log_error(user_id, f"Ошибка проверки CLOSE ордера для {symbol} Bot_{bot_priority}: {e}", module_name='database')
+            log_error(user_id, f"Ошибка проверки CLOSE ордера для {symbol} Bot_{account_priority}: {e}", module_name='database')
             return False
 
-    async def has_unclosed_position(self, user_id: int, symbol: str, bot_priority: int = 1) -> bool:
+    async def has_unclosed_position(self, user_id: int, symbol: str, account_priority: int = 1) -> bool:
         """
         Проверяет наличие незакрытой позиции: есть OPEN FILLED, но нет CLOSE FILLED.
 
@@ -1796,11 +1796,11 @@ class _DatabaseManager:
             LIMIT 1
             """
 
-            result = await self._execute_query(query, (user_id, symbol, bot_priority), fetch_one=True)
+            result = await self._execute_query(query, (user_id, symbol, account_priority), fetch_one=True)
             return result is not None
 
         except Exception as e:
-            log_error(user_id, f"Ошибка проверки незакрытой позиции для {symbol} Bot_{bot_priority}: {e}", module_name='database')
+            log_error(user_id, f"Ошибка проверки незакрытой позиции для {symbol} Bot_{account_priority}: {e}", module_name='database')
             return False
 
     async def get_all_open_positions(self, user_id: int) -> List[Dict[str, Any]]:
