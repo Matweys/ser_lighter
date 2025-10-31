@@ -376,6 +376,8 @@ class UserSession:
                 # Создаём 3 стратегии (по одной для каждого API клиента)
                 bot_strategies = []
                 for priority, api_client in enumerate(self.api_clients, start=1):
+                    # КРИТИЧНО: Каждая стратегия получает свой DataFeedHandler (решает race condition)
+                    data_feed = self.data_feed_handlers[priority - 1] if self.data_feed_handlers else None
                     strategy = create_strategy(
                         strategy_type=strategy_type,
                         bot=self.bot,
@@ -385,7 +387,8 @@ class UserSession:
                         api=api_client,  # Каждая стратегия использует свой API клиент
                         event_bus=self.event_bus,
                         config=None,
-                        bot_priority=priority  # КРИТИЧНО: Передаём приоритет для уникального ID
+                        bot_priority=priority,  # КРИТИЧНО: Передаём приоритет для уникального ID
+                        data_feed=data_feed  # IN-MEMORY tracking CLOSE операций
                     )
 
                     if not strategy:
@@ -461,7 +464,8 @@ class UserSession:
                     api=self.api,
                     event_bus=self.event_bus,
                     config=None,
-                    bot_priority=1  # КРИТИЧНО: Для обычного режима всегда bot_priority=1
+                    bot_priority=1,  # КРИТИЧНО: Для обычного режима всегда bot_priority=1
+                    data_feed=self.data_feed_handler  # IN-MEMORY tracking CLOSE операций
                 )
 
                 if not strategy:

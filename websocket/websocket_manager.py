@@ -393,6 +393,10 @@ class DataFeedHandler:
         self.api_key: Optional[str] = None
         self.api_secret: Optional[str] = None
 
+        # IN-MEMORY TRACKING активных CLOSE операций (решает race condition с БД)
+        # symbol -> timestamp когда была инициирована CLOSE операция
+        self._pending_closes: Dict[str, float] = {}
+
     async def start(self):
         """Запуск DataFeedHandler"""
         if self.running:
@@ -423,6 +427,52 @@ class DataFeedHandler:
         except Exception as e:
             log_error(self.user_id, f"Ошибка запуска DataFeedHandler: {e}", module_name=__name__)
             raise
+
+    def register_close_operation(self, symbol: str):
+        """
+        Регистрирует начало CLOSE операции для символа (IN-MEMORY tracking).
+        Решает race condition: WebSocket может получить position:size=0 ДО записи ордера в БД.
+
+        КРИТИЧНО: Вызывается из base_strategy СРАЗУ при размещении CLOSE ордера (до отправки на биржу)!
+
+        Args:
+            symbol: Символ торговли
+        """
+        self._pending_closes[symbol] = time.time()
+        log_debug(self.user_id,
+                 f"🔒 [IN-MEMORY] Зарегистрирована CLOSE операция для {symbol} (Bot_{self.account_priority})",
+                 module_name=__name__)
+
+    def clear_close_operation(self, symbol: str):
+        """
+        Удаляет регистрацию CLOSE операции для символа.
+        Вызывается после обработки закрытия позиции.
+
+        Args:
+            symbol: Символ торговли
+        """
+        if symbol in self._pending_closes:
+            del self._pending_closes[symbol]
+            log_debug(self.user_id,
+                     f"🔓 [IN-MEMORY] Удалена регистрация CLOSE операции для {symbol} (Bot_{self.account_priority})",
+                     module_name=__name__)
+
+    def _cleanup_stale_close_operations(self):
+        """
+        Очищает "застрявшие" CLOSE операции (старше 60 секунд).
+        Защита от утечки памяти.
+        """
+        current_time = time.time()
+        stale_symbols = [
+            symbol for symbol, timestamp in self._pending_closes.items()
+            if current_time - timestamp > 60  # TTL = 60 секунд
+        ]
+
+        for symbol in stale_symbols:
+            log_warning(self.user_id,
+                       f"⏳ [IN-MEMORY] Очистка застрявшей CLOSE операции для {symbol} (Bot_{self.account_priority})",
+                       module_name=__name__)
+            del self._pending_closes[symbol]
 
     async def _handle_position_activity(self, event: PositionUpdateEvent):
         """
@@ -884,47 +934,61 @@ class DataFeedHandler:
                 if size == Decimal('0'):
                     # Позиция закрыта! Проверяем: это МЫ или ПОЛЬЗОВАТЕЛЬ?
 
-                    # Шаг 1: Проверяем наличие НАШИХ CLOSE ордеров
-                    has_our_close = await db_manager.has_pending_close_order(
-                        self.user_id,
-                        symbol,
-                        bot_priority=self.account_priority
-                    )
+                    # Очистка застрявших CLOSE операций
+                    self._cleanup_stale_close_operations()
 
-                    if has_our_close:
-                        # Это ОЖИДАЕМОЕ ЗАКРЫТИЕ - мы сами создали CLOSE ордер
+                    # Шаг 0: Проверяем IN-MEMORY трекер (САМЫЙ БЫСТРЫЙ!)
+                    # Решает race condition: WebSocket position update приходит ДО записи ордера в БД
+                    if symbol in self._pending_closes:
                         log_debug(self.user_id,
-                                 f"✅ [ОЖИДАЕМОЕ ЗАКРЫТИЕ] Позиция {symbol} закрыта нашим CLOSE ордером (Bot_{self.account_priority})",
+                                 f"✅ [IN-MEMORY] Позиция {symbol} закрыта нашим CLOSE ордером (зарегистрирован в памяти) (Bot_{self.account_priority})",
                                  module_name=__name__)
+                        # Удаляем регистрацию - закрытие обработано
+                        self.clear_close_operation(symbol)
                         # НЕ публикуем событие ручного закрытия - это наш ордер!
+                        # Переходим к публикации обычного position event
                     else:
-                        # Шаг 2: Нет наших CLOSE ордеров, проверяем есть ли незакрытая позиция
-                        has_unclosed = await db_manager.has_unclosed_position(
+                        # Шаг 1: Проверяем наличие НАШИХ CLOSE ордеров в БД
+                        has_our_close = await db_manager.has_pending_close_order(
                             self.user_id,
                             symbol,
                             bot_priority=self.account_priority
                         )
 
-                        if has_unclosed:
-                            # РУЧНОЕ ЗАКРЫТИЕ - есть OPEN без CLOSE, пользователь закрыл на бирже!
-                            log_warning(self.user_id,
-                                       f"⚠️ ОБНАРУЖЕНО РУЧНОЕ ЗАКРЫТИЕ через WebSocket (Bot_{self.account_priority}): "
-                                       f"Позиция {symbol} закрыта (size=0), есть незакрытый OPEN ордер в БД!",
-                                       module_name=__name__)
-
-                            # Публикуем событие ручного закрытия
-                            closed_event = PositionClosedEvent(
-                                user_id=self.user_id,
-                                symbol=symbol,
-                                bot_priority=self.account_priority,
-                                closed_manually=True
-                            )
-                            await self.event_bus.publish(closed_event)
-                        else:
-                            # Нет ни CLOSE ни незакрытого OPEN - позиция уже обработана
+                        if has_our_close:
+                            # Это ОЖИДАЕМОЕ ЗАКРЫТИЕ - мы сами создали CLOSE ордер
                             log_debug(self.user_id,
-                                     f"ℹ️ Позиция {symbol} закрыта (size=0), позиция уже полностью обработана в БД (Bot_{self.account_priority})",
+                                     f"✅ [БД] Позиция {symbol} закрыта нашим CLOSE ордером (Bot_{self.account_priority})",
                                      module_name=__name__)
+                            # НЕ публикуем событие ручного закрытия - это наш ордер!
+                        else:
+                            # Шаг 2: Нет наших CLOSE ордеров, проверяем есть ли незакрытая позиция
+                            has_unclosed = await db_manager.has_unclosed_position(
+                                self.user_id,
+                                symbol,
+                                bot_priority=self.account_priority
+                            )
+
+                            if has_unclosed:
+                                # РУЧНОЕ ЗАКРЫТИЕ - есть OPEN без CLOSE, пользователь закрыл на бирже!
+                                log_warning(self.user_id,
+                                           f"⚠️ ОБНАРУЖЕНО РУЧНОЕ ЗАКРЫТИЕ через WebSocket (Bot_{self.account_priority}): "
+                                           f"Позиция {symbol} закрыта (size=0), есть незакрытый OPEN ордер в БД!",
+                                           module_name=__name__)
+
+                                # Публикуем событие ручного закрытия
+                                closed_event = PositionClosedEvent(
+                                    user_id=self.user_id,
+                                    symbol=symbol,
+                                    bot_priority=self.account_priority,
+                                    closed_manually=True
+                                )
+                                await self.event_bus.publish(closed_event)
+                            else:
+                                # Нет ни CLOSE ни незакрытого OPEN - позиция уже обработана
+                                log_debug(self.user_id,
+                                         f"ℹ️ Позиция {symbol} закрыта (size=0), позиция уже полностью обработана в БД (Bot_{self.account_priority})",
+                                         module_name=__name__)
 
                 # Публикуем обычное событие обновления позиции (для управления подписками)
                 position_event = PositionUpdateEvent(

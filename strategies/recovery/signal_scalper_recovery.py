@@ -210,7 +210,7 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
             )
             log_info(
                 self.user_id,
-                f"✅ Восстановлена подписка на PRICE_UPDATE для {self.symbol}",
+                f"✅ Восстановлена подписка на PRICE_UPDATE для {self.symbol} (метод: {self.strategy.handle_price_update.__name__}, is_running={self.strategy.is_running})",
                 "SignalScalperRecovery"
             )
 

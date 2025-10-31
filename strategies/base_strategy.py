@@ -40,7 +40,7 @@ class BaseStrategy(ABC):
     - Мониторинг состояния и статистики
     """
     
-    def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, event_bus: EventBus, bot: "Bot", config: Optional[Dict] = None, account_priority: int = 1):
+    def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, event_bus: EventBus, bot: "Bot", config: Optional[Dict] = None, account_priority: int = 1, data_feed=None):
         """
         Инициализация базовой стратегии
 
@@ -49,6 +49,7 @@ class BaseStrategy(ABC):
             symbol: Торговый символ
             signal_data: Данные сигнала от MetaStrategist
             account_priority: Приоритет аккаунта (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
+            data_feed: DataFeedHandler для регистрации CLOSE операций (решает race condition)
         """
         self.user_id = user_id
         self.symbol = symbol
@@ -58,6 +59,7 @@ class BaseStrategy(ABC):
         self.bot = bot
         self.config: Dict[str, Any] = config or {}
         self.account_priority = account_priority  # Multi-Account Support
+        self.data_feed = data_feed  # Для IN-MEMORY tracking CLOSE операций
 
         # КРИТИЧНО: Флаг восстановления после перезапуска бота
         # True = бот перезапущен, проверка БД/биржи РАЗРЕШЕНА
@@ -806,7 +808,7 @@ class BaseStrategy(ABC):
                             "BaseStrategy"
                         )
                     else:
-                        # ⚠️ API не вернул данные - УРОВЕНЬ 2: ручной расчёт
+                        # ⚠️ API не вернул данные - УРОВЕНЬ 2: ручной расчёт + комиссии из БД
                         if entry_price_saved > 0 and position_size_saved > 0 and side:
                             # Расчёт PnL вручную
                             if side == "Buy":
@@ -814,14 +816,30 @@ class BaseStrategy(ABC):
                             else:
                                 price_diff = entry_price_saved - exit_price  # Short: прибыль когда цена падает
 
-                            final_pnl = price_diff * position_size_saved
+                            pnl_gross = price_diff * position_size_saved
 
-                            log_warning(
-                                self.user_id,
-                                f"⚠️ [FALLBACK] API не вернул данные. PnL рассчитан вручную: {final_pnl:.2f}$ "
-                                f"(Entry: {entry_price_saved:.4f}, Exit: {exit_price:.4f}, Size: {position_size_saved}, {side})",
-                                "BaseStrategy"
-                            )
+                            # КРИТИЧНО: Получаем ТОЧНЫЕ комиссии из БД (openFee + closeFee)
+                            try:
+                                from database.db_trades import db_manager
+                                total_fees_from_db = Decimal(str(await db_manager.get_total_fees_for_position(self.user_id, self.symbol, self.account_priority)))
+                                commission = total_fees_from_db
+                                final_pnl = pnl_gross - commission
+
+                                log_warning(
+                                    self.user_id,
+                                    f"⚠️ [FALLBACK] API не вернул данные. PnL={final_pnl:.2f}$ (gross={pnl_gross:.2f}$ - комиссии={commission:.2f}$) "
+                                    f"(Entry: {entry_price_saved:.4f}, Exit: {exit_price:.4f}, Size: {position_size_saved}, {side})",
+                                    "BaseStrategy"
+                                )
+                            except Exception as db_fee_error:
+                                # УРОВЕНЬ 3: Ошибка получения комиссий из БД - используем PnL без комиссий
+                                log_error(
+                                    self.user_id,
+                                    f"❌ [FALLBACK] Ошибка получения комиссий из БД: {db_fee_error}. PnL без комиссий: {pnl_gross:.2f}$",
+                                    "BaseStrategy"
+                                )
+                                final_pnl = pnl_gross
+                                commission = Decimal('0')
                         else:
                             # ❌ Нет данных для расчёта
                             log_error(
@@ -832,7 +850,7 @@ class BaseStrategy(ABC):
                             )
 
                 except Exception as api_error:
-                    # ⚠️ Ошибка API - УРОВЕНЬ 2: ручной расчёт
+                    # ⚠️ Ошибка API - УРОВЕНЬ 2: ручной расчёт + комиссии из БД
                     log_error(self.user_id, f"❌ Ошибка API closedPnL: {api_error}", "BaseStrategy")
 
                     if entry_price_saved > 0 and position_size_saved > 0 and side:
@@ -841,14 +859,32 @@ class BaseStrategy(ABC):
                         else:
                             price_diff = entry_price_saved - exit_price
 
-                        final_pnl = price_diff * position_size_saved
+                        pnl_gross = price_diff * position_size_saved
 
-                        log_warning(
-                            self.user_id,
-                            f"⚠️ [FALLBACK] PnL рассчитан вручную: {final_pnl:.2f}$ "
-                            f"(Entry: {entry_price_saved:.4f}, Exit: {exit_price:.4f}, Size: {position_size_saved})",
-                            "BaseStrategy"
-                        )
+                        # КРИТИЧНО: Получаем ТОЧНЫЕ комиссии из БД (openFee + closeFee)
+                        try:
+                            from database.db_trades import db_manager
+                            total_fees_from_db = Decimal(str(await db_manager.get_total_fees_for_position(
+                                self.user_id, self.symbol, self.account_priority
+                            )))
+                            commission = total_fees_from_db
+                            final_pnl = pnl_gross - commission
+
+                            log_warning(
+                                self.user_id,
+                                f"⚠️ [FALLBACK] PnL={final_pnl:.2f}$ (gross={pnl_gross:.2f}$ - комиссии={commission:.2f}$) "
+                                f"(Entry: {entry_price_saved:.4f}, Exit: {exit_price:.4f}, Size: {position_size_saved})",
+                                "BaseStrategy"
+                            )
+                        except Exception as db_fee_error:
+                            # УРОВЕНЬ 3: Ошибка получения комиссий из БД - используем PnL без комиссий
+                            log_error(
+                                self.user_id,
+                                f"❌ [FALLBACK] Ошибка получения комиссий из БД: {db_fee_error}. PnL без комиссий: {pnl_gross:.2f}$",
+                                "BaseStrategy"
+                            )
+                            final_pnl = pnl_gross
+                            commission = Decimal('0')
                     else:
                         log_error(
                             self.user_id,
@@ -1031,6 +1067,15 @@ class BaseStrategy(ABC):
             # ДИАГНОСТИКА: Логируем API ключ
             api_key_masked = f"{self.api.api_key[:4]}...{self.api.api_key[-4:]}" if len(self.api.api_key) > 8 else "***"
             log_info(self.user_id, f"[Bot #{self.account_priority}] Размещение ордера {side} {qty} {self.symbol} | API: {api_key_masked}", module_name=__name__)
+
+            # ШАГ 0 (КРИТИЧНО): Регистрируем CLOSE операцию В ПАМЯТИ (решает race condition)
+            # НЕОБХОДИМО: WebSocket может получить position:size=0 ДО записи ордера в БД!
+            # Регистрация ДО размещения на бирже гарантирует что WebSocket увидит флаг
+            if order_purpose == 'CLOSE' and self.data_feed:
+                self.data_feed.register_close_operation(self.symbol)
+                log_debug(self.user_id, f"🔒 [IN-MEMORY] CLOSE операция зарегистрирована для {self.symbol} ПЕРЕД размещением ордера", module_name=__name__)
+            elif order_purpose == 'CLOSE' and not self.data_feed:
+                log_warning(self.user_id, f"⚠️ data_feed не инициализирован! Невозможно зарегистрировать CLOSE операцию для {self.symbol}", module_name=__name__)
 
             # ШАГ 1: СОЗДАЕМ ОРДЕР ЧЕРЕЗ API - получаем order_id сразу
             order_id = await self.api.place_order(

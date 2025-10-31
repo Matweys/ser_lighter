@@ -23,8 +23,8 @@ class SignalScalperStrategy(BaseStrategy):
     """
 
     def __init__(self, user_id: int, symbol: str, signal_data: Dict[str, Any], api: BybitAPI, event_bus: EventBus,
-                 bot: "Bot", config: Optional[Dict] = None, account_priority: int = 1):
-        super().__init__(user_id, symbol, signal_data, api, event_bus, bot, config, account_priority)
+                 bot: "Bot", config: Optional[Dict] = None, account_priority: int = 1, data_feed=None):
+        super().__init__(user_id, symbol, signal_data, api, event_bus, bot, config, account_priority, data_feed)
 
         # Компоненты
         self.signal_analyzer: Optional[SignalAnalyzer] = None
@@ -113,6 +113,9 @@ class SignalScalperStrategy(BaseStrategy):
         # Recovery Handler для восстановления после перезагрузки сервера
         from strategies.recovery import SignalScalperRecoveryHandler
         self.recovery_handler = SignalScalperRecoveryHandler(self)
+
+        # Счетчик обновлений цены (для диагностики)
+        self._price_update_counter = 0
 
 
     def _get_strategy_type(self) -> StrategyType:
@@ -206,11 +209,16 @@ class SignalScalperStrategy(BaseStrategy):
 
         THREAD-SAFE: Защищено декоратором @strategy_locked для предотвращения race conditions.
         """
+        # ДИАГНОСТИКА: Логируем вызов обработчика
+        log_debug(self.user_id, f"🔔 handle_new_candle ВЫЗВАН для {event.symbol} (is_running={self.is_running}, self.symbol={self.symbol})", "SignalScalper")
+
         # КРИТИЧНО: Проверяем флаг работы в самом начале
         if not self.is_running:
+            log_warning(self.user_id, f"⚠️ handle_new_candle: is_running=FALSE, пропускаю событие", "SignalScalper")
             return
 
         if event.symbol != self.symbol:
+            log_debug(self.user_id, f"⚠️ handle_new_candle: неверный символ {event.symbol} != {self.symbol}", "SignalScalper")
             return
 
         # SPIKE DETECTOR: Обрабатываем 1-минутные свечи для детектора всплесков
@@ -340,6 +348,13 @@ class SignalScalperStrategy(BaseStrategy):
 
         THREAD-SAFE: Защищено декоратором @strategy_locked для предотвращения race conditions.
         """
+        # ДИАГНОСТИКА: Логируем вызов обработчика (раз в 10 тиков чтобы не спамить)
+        if not hasattr(self, '_price_update_counter'):
+            self._price_update_counter = 0
+        self._price_update_counter += 1
+        if self._price_update_counter % 10 == 1:
+            log_debug(self.user_id, f"💰 handle_price_update ВЫЗВАН #{self._price_update_counter} для {event.symbol} (position_active={self.position_active})", "SignalScalper")
+
         # КРИТИЧЕСКИ ВАЖНО: Проверяем что это цена НАШЕГО символа!
         if event.symbol != self.symbol:
             return
@@ -755,31 +770,67 @@ class SignalScalperStrategy(BaseStrategy):
                                f"✅ [FALLBACK CLOSE] Позиция закрыта через API! WebSocket событие не пришло. Обрабатываю закрытие вручную.",
                                "SignalScalper")
 
-                    # ✅ ИСПОЛЬЗУЕМ ОБЩИЙ МЕТОД для расчета PnL (исправлен БАГ #1 - PnL=0)
-                    # Этот метод рассчитывает PnL даже если OPEN ордер не найден в БД
+                    # ✅ ИСПОЛЬЗУЕМ API ДЛЯ ПОЛУЧЕНИЯ ТОЧНЫХ ДАННЫХ С БИРЖИ (как в base_strategy)
                     from database.db_trades import db_manager
 
-                    exit_price_for_calc = self._last_known_price if self._last_known_price else Decimal('0')
-                    final_pnl, exit_price, entry_price_for_pnl, position_size_for_pnl, saved_entry_time, saved_entry_price, estimated_close_fee = await self._calculate_pnl_from_db_or_memory(exit_price_for_calc)
+                    # Сохраняем данные для fallback (если API не вернет данные)
+                    saved_entry_price = getattr(self, 'entry_price', Decimal('0'))
+                    saved_entry_time = getattr(self, 'entry_time', None)
+                    exit_price = self._last_known_price if self._last_known_price else Decimal('0')
 
-                    # ✅ ИСПРАВЛЕНО: Получаем сумму ВСЕХ комиссий из БД вместо расчета
-                    # Это гарантирует точность: OPEN + AVERAGING + CLOSE (расчетная)
+                    # Инициализация переменных
+                    estimated_close_fee = Decimal('0')
+
                     try:
-                        total_fees_from_db = Decimal(str(await db_manager.get_total_fees_for_position(self.user_id, self.symbol, self.account_priority)))
-                        # Добавляем расчетную комиссию закрытия (т.к. ордер еще не исполнен в БД)
-                        self.total_fees_paid = total_fees_from_db + estimated_close_fee
-                        log_info(self.user_id, f"💰 [FALLBACK CLOSE] Комиссии из БД: ${total_fees_from_db:.4f} + расчетная закрытия: ${estimated_close_fee:.4f} = ${self.total_fees_paid:.4f}", "SignalScalper")
-                    except Exception as fee_error:
-                        log_error(self.user_id, f"❌ [FALLBACK CLOSE] Ошибка получения комиссий из БД: {fee_error}. Используем расчетную", "SignalScalper")
-                        # Fallback: используем только расчетную комиссию
-                        self.total_fees_paid += estimated_close_fee
+                        # УРОВЕНЬ 1: Получаем ТОЧНЫЕ данные с биржи через closedPnL API
+                        log_info(self.user_id, f"📡 [FALLBACK CLOSE] Запрашиваю closedPnL с биржи для {self.symbol}...", "SignalScalper")
+                        closed_pnl_data = await self.api.get_closed_pnl(symbol=self.symbol, limit=1)
 
-                    # Пересчитываем final_pnl с учетом всех комиссий
-                    if self.active_direction == "LONG":
-                        pnl_gross = (exit_price - entry_price_for_pnl) * position_size_for_pnl
-                    else:
-                        pnl_gross = (entry_price_for_pnl - exit_price) * position_size_for_pnl
-                    final_pnl = pnl_gross - self.total_fees_paid
+                        if closed_pnl_data:
+                            # ✅ API вернул ТОЧНЫЕ данные - используем их!
+                            final_pnl = closed_pnl_data['closedPnl']  # Реализованный P&L (с учетом комиссий)
+                            exit_price = closed_pnl_data['avgExitPrice']
+                            self.total_fees_paid = closed_pnl_data['openFee'] + closed_pnl_data['closeFee']  # ТОЧНЫЕ комиссии
+
+                            log_info(self.user_id,
+                                    f"✅ [API] Реализованный PnL={final_pnl:.2f}$, avgExitPrice={exit_price:.4f}, "
+                                    f"комиссии={self.total_fees_paid:.4f}$ (openFee={closed_pnl_data['openFee']:.4f}$ + closeFee={closed_pnl_data['closeFee']:.4f}$)",
+                                    "SignalScalper")
+                        else:
+                            # УРОВЕНЬ 2: API не вернул данные - используем расчет (FALLBACK)
+                            log_warning(self.user_id, "⚠️ [FALLBACK CLOSE] API closedPnL не вернул данные, использую расчет", "SignalScalper")
+                            exit_price_for_calc = self._last_known_price if self._last_known_price else Decimal('0')
+                            final_pnl, exit_price, entry_price_for_pnl, position_size_for_pnl, saved_entry_time, saved_entry_price, estimated_close_fee = await self._calculate_pnl_from_db_or_memory(exit_price_for_calc)
+
+                            # Получаем комиссии из БД
+                            total_fees_from_db = Decimal(str(await db_manager.get_total_fees_for_position(self.user_id, self.symbol, self.account_priority)))
+                            self.total_fees_paid = total_fees_from_db + estimated_close_fee
+
+                            # Пересчитываем PnL с учетом комиссий
+                            if self.active_direction == "LONG":
+                                pnl_gross = (exit_price - entry_price_for_pnl) * position_size_for_pnl
+                            else:
+                                pnl_gross = (entry_price_for_pnl - exit_price) * position_size_for_pnl
+                            final_pnl = pnl_gross - self.total_fees_paid
+
+                            log_info(self.user_id, f"💰 [РАСЧЕТ] PnL={final_pnl:.2f}$, комиссии={self.total_fees_paid:.4f}$", "SignalScalper")
+
+                    except Exception as api_error:
+                        # УРОВЕНЬ 3: Ошибка API - используем расчет
+                        log_error(self.user_id, f"❌ [FALLBACK CLOSE] Ошибка API closedPnL: {api_error}", "SignalScalper")
+                        exit_price_for_calc = self._last_known_price if self._last_known_price else Decimal('0')
+                        final_pnl, exit_price, entry_price_for_pnl, position_size_for_pnl, saved_entry_time, saved_entry_price, estimated_close_fee = await self._calculate_pnl_from_db_or_memory(exit_price_for_calc)
+
+                        total_fees_from_db = Decimal(str(await db_manager.get_total_fees_for_position(self.user_id, self.symbol, self.account_priority)))
+                        self.total_fees_paid = total_fees_from_db + estimated_close_fee
+
+                        if self.active_direction == "LONG":
+                            pnl_gross = (exit_price - entry_price_for_pnl) * position_size_for_pnl
+                        else:
+                            pnl_gross = (entry_price_for_pnl - exit_price) * position_size_for_pnl
+                        final_pnl = pnl_gross - self.total_fees_paid
+
+                        log_warning(self.user_id, f"⚠️ [РАСЧЕТ] PnL={final_pnl:.2f}$, комиссии={self.total_fees_paid:.4f}$", "SignalScalper")
 
                     # Обновляем trade в БД
                     if hasattr(self, 'active_trade_db_id') and self.active_trade_db_id:
@@ -2303,44 +2354,88 @@ class SignalScalperStrategy(BaseStrategy):
                    "SignalScalper")
 
         try:
-            # ✅ ПРАВИЛЬНЫЙ РАСЧЕТ PnL при РУЧНОМ закрытии: используем данные из БД и последнюю цену
-            # Источники истины:
-            # 1. OPEN ордер из БД (по order_id) → entry_price, entry_qty, entry_commission
-            # 2. Последняя известная цена из WebSocket → exit_price (приблизительно)
-            # 3. Накопленные комиссии из памяти → self.total_fees_paid
-
             from database.db_trades import db_manager
-
-            # Получаем данные OPEN ордера из БД
-            open_order = await db_manager.get_open_order_for_position(self.user_id, self.symbol, self.account_priority)
 
             final_pnl = Decimal('0')
             exit_price = Decimal('0')
-            commission = self.total_fees_paid  # Используем накопленные комиссии
+            commission = Decimal('0')
 
+            # =====================================================
+            # УРОВЕНЬ 1: Получаем ТОЧНЫЕ данные с биржи через closedPnL API
+            # =====================================================
+            try:
+                log_info(self.user_id, f"📡 [РУЧНОЕ ЗАКРЫТИЕ] Запрашиваю closedPnL с биржи для {self.symbol}...", "SignalScalper")
+                closed_pnl_data = await self.api.get_closed_pnl(symbol=self.symbol, limit=1)
+
+                if closed_pnl_data:
+                    # ✅ API вернул ТОЧНЫЕ данные - используем их!
+                    final_pnl = closed_pnl_data['closedPnl']
+                    exit_price = closed_pnl_data['avgExitPrice']
+                    commission = closed_pnl_data['openFee'] + closed_pnl_data['closeFee']
+
+                    log_info(self.user_id,
+                            f"✅ [API] Реализованный PnL={final_pnl:.2f}$, avgExitPrice={exit_price:.4f}, "
+                            f"комиссии={commission:.4f}$ (openFee={closed_pnl_data['openFee']:.4f}$ + closeFee={closed_pnl_data['closeFee']:.4f}$)",
+                            "SignalScalper")
+                else:
+                    # УРОВЕНЬ 2: API не вернул данные - используем расчет из БД
+                    log_warning(self.user_id, f"⚠️ [FALLBACK] API не вернул closedPnL для {self.symbol}, использую расчет из БД", "SignalScalper")
+
+                    open_order = await db_manager.get_open_order_for_position(self.user_id, self.symbol, self.account_priority)
+                    if open_order:
+                        entry_price_for_calc = Decimal(str(open_order.get('average_price', '0')))
+                        position_size_for_calc = self.total_position_size if self.total_position_size > 0 else self.position_size
+
+                        exit_price = self._last_known_price if self._last_known_price else entry_price_for_calc
+
+                        if self.active_direction == "LONG":
+                            pnl_gross = (exit_price - entry_price_for_calc) * position_size_for_calc
+                        else:  # SHORT
+                            pnl_gross = (entry_price_for_calc - exit_price) * position_size_for_calc
+
+                        # КРИТИЧНО: Получаем ТОЧНЫЕ комиссии из БД
+                        try:
+                            total_fees_from_db = Decimal(str(await db_manager.get_total_fees_for_position(
+                                self.user_id, self.symbol, self.account_priority
+                            )))
+                            commission = total_fees_from_db
+                            final_pnl = pnl_gross - commission
+
+                            log_info(self.user_id,
+                                    f"💰 [FALLBACK PNL] {self.symbol}: entry={entry_price_for_calc:.4f}, exit≈{exit_price:.4f}, "
+                                    f"PnL={final_pnl:.4f}$ (gross={pnl_gross:.4f}$ - fees={commission:.4f}$)",
+                                    "SignalScalper")
+                        except Exception as db_fee_error:
+                            # УРОВЕНЬ 3: Ошибка получения комиссий из БД - используем накопленные комиссии
+                            log_error(self.user_id, f"❌ [FALLBACK] Ошибка получения комиссий из БД: {db_fee_error}. Использую накопленные комиссии.", "SignalScalper")
+                            commission = self.total_fees_paid
+                            final_pnl = pnl_gross - commission
+
+            except Exception as api_error:
+                # УРОВЕНЬ 3: Ошибка API - используем расчет из БД
+                log_error(self.user_id, f"❌ [ОШИБКА] Ошибка получения closedPnL для {self.symbol}: {api_error}", "SignalScalper")
+
+                open_order = await db_manager.get_open_order_for_position(self.user_id, self.symbol, self.account_priority)
+                if open_order:
+                    entry_price_for_calc = Decimal(str(open_order.get('average_price', '0')))
+                    position_size_for_calc = self.total_position_size if self.total_position_size > 0 else self.position_size
+
+                    exit_price = self._last_known_price if self._last_known_price else entry_price_for_calc
+
+                    if self.active_direction == "LONG":
+                        pnl_gross = (exit_price - entry_price_for_calc) * position_size_for_calc
+                    else:  # SHORT
+                        pnl_gross = (entry_price_for_calc - exit_price) * position_size_for_calc
+
+                    # Используем накопленные комиссии из памяти как fallback
+                    commission = self.total_fees_paid
+                    final_pnl = pnl_gross - commission
+
+            # Получаем saved_entry данные для уведомления
+            open_order = await db_manager.get_open_order_for_position(self.user_id, self.symbol, self.account_priority)
             if open_order:
                 saved_entry_time = open_order.get('filled_at')
                 saved_entry_price = open_order.get('average_price')
-                entry_price_for_calc = Decimal(str(saved_entry_price))
-
-                # ✅ ИСТОЧНИК ИСТИНЫ: Последняя известная цена (приблизительно)
-                exit_price = self._last_known_price if self._last_known_price else entry_price_for_calc
-
-                # Расчёт PnL
-                position_size_for_calc = self.total_position_size if self.total_position_size > 0 else self.position_size
-
-                if self.active_direction == "LONG":
-                    pnl_gross = (exit_price - entry_price_for_calc) * position_size_for_calc
-                else:  # SHORT
-                    pnl_gross = (entry_price_for_calc - exit_price) * position_size_for_calc
-
-                # ФИНАЛЬНЫЙ PnL с учётом комиссий
-                final_pnl = pnl_gross - commission
-
-                log_info(self.user_id,
-                        f"💰 [РУЧНОЕ ЗАКРЫТИЕ] entry={entry_price_for_calc:.4f}, exit≈{exit_price:.4f}, "
-                        f"size={position_size_for_calc}, fees={commission:.4f} | PnL≈{final_pnl:.4f}",
-                        "SignalScalper")
 
                 # Обновляем БД - закрываем ордер
                 try:
