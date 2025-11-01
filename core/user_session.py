@@ -992,13 +992,24 @@ class UserSession:
                 # Отписываемся ТОЛЬКО от удаленных символов БЕЗ активных позиций
                 # Символы с активными позициями останутся подписанными до закрытия позиции
                 for symbol in removed:
-                    # Проверяем, есть ли стратегия с активной позицией для этого символа
+                    # КРИТИЧНО: Проверяем, есть ли активный coordinator для этого символа (multi-account режим)
+                    # Coordinator может работать даже если стратегии удалены из active_strategies!
                     has_active_position = False
-                    for strategy in self.active_strategies.values():
-                        if strategy.symbol == symbol and getattr(strategy, 'position_active', False):
+
+                    if symbol in self.coordinators:
+                        coordinator = self.coordinators[symbol]
+                        # Проверяем есть ли активные позиции у координатора
+                        if hasattr(coordinator, 'has_active_positions') and coordinator.has_active_positions():
                             has_active_position = True
-                            log_info(self.user_id, f"🔒 WebSocket для {symbol} остаётся подписанным (активная позиция)", module_name=__name__)
-                            break
+                            log_info(self.user_id, f"🔒 WebSocket для {symbol} остаётся подписанным (Coordinator имеет активные позиции)", module_name=__name__)
+
+                    # Если нет coordinator, проверяем обычные стратегии
+                    if not has_active_position:
+                        for strategy in self.active_strategies.values():
+                            if strategy.symbol == symbol and getattr(strategy, 'position_active', False):
+                                has_active_position = True
+                                log_info(self.user_id, f"🔒 WebSocket для {symbol} остаётся подписанным (стратегия имеет активную позицию)", module_name=__name__)
+                                break
 
                     if not has_active_position:
                         # Нет активной позиции - безопасно отписываемся
@@ -1163,6 +1174,8 @@ class UserSession:
                 # Создаём 3 стратегии (по одной для каждого API клиента)
                 bot_strategies = []
                 for priority, api_client in enumerate(self.api_clients, start=1):
+                    # КРИТИЧНО: Каждая стратегия получает свой DataFeedHandler (решает race condition)
+                    data_feed = self.data_feed_handlers[priority - 1] if self.data_feed_handlers else None
                     strategy = create_strategy(
                         strategy_type=strategy_type.value,
                         bot=self.bot,
@@ -1172,7 +1185,8 @@ class UserSession:
                         api=api_client,  # Каждая стратегия использует свой API клиент
                         event_bus=self.event_bus,
                         config=None,
-                        account_priority=priority  # КРИТИЧНО: Передаём приоритет для уникального ID
+                        account_priority=priority,  # КРИТИЧНО: Передаём приоритет для уникального ID
+                        data_feed=data_feed  # IN-MEMORY tracking CLOSE операций
                     )
 
                     if not strategy:
@@ -1350,7 +1364,9 @@ class UserSession:
                     signal_data=saved_state.get("signal_data", {}),
                     api=self.api,
                     event_bus=self.event_bus,
-                    config=None
+                    config=None,
+                    account_priority=1,  # КРИТИЧНО: Для обычного режима всегда account_priority=1
+                    data_feed=self.data_feed_handler  # IN-MEMORY tracking CLOSE операций
                 )
 
                 if not strategy:
@@ -1444,7 +1460,9 @@ class UserSession:
                 signal_data={},
                 api=self.api,
                 event_bus=self.event_bus,
-                config=None
+                config=None,
+                account_priority=1,  # КРИТИЧНО: Для обычного режима всегда account_priority=1
+                data_feed=self.data_feed_handler  # IN-MEMORY tracking CLOSE операций
             )
 
             if not strategy:
@@ -1856,13 +1874,26 @@ class UserSession:
 
             current_trading_count = len(unique_symbols)  # Количество УНИКАЛЬНЫХ символов
 
-            # Отдельно считаем стратегии С ОТКРЫТЫМИ ПОЗИЦИЯМИ (для корректного логирования)
-            strategies_with_positions_count = sum(1 for s in active_strategies_analysis.values() if s.get('has_active_position', False))
+            # Считаем активные БОТЫ (только _bot1, _bot2, _bot3, БЕЗ coordinator base записей)
+            # В multi-account режиме: 1 символ = 3 бота + 1 coordinator base = 4 записи
+            # Нас интересуют только реальные боты (экземпляры стратегий, которые торгуют)
+            active_bots_count = sum(1 for strategy_id, analysis in active_strategies_analysis.items()
+                                    if analysis.get('strategy_type') == StrategyType.SIGNAL_SCALPER.value
+                                    and ('_bot' in strategy_id))  # Только боты (_bot1, _bot2, _bot3)
+
+            # Считаем УНИКАЛЬНЫЕ СИМВОЛЫ с открытыми позициями (а не экземпляры стратегий!)
+            # В multi-account режиме может быть несколько ботов с позициями по одному символу
+            symbols_with_positions = set()
+            for strategy_id, analysis in active_strategies_analysis.items():
+                if analysis.get('strategy_type') == StrategyType.SIGNAL_SCALPER.value:
+                    if analysis.get('has_active_position', False):
+                        symbols_with_positions.add(analysis['symbol'])
 
             # Логируем анализ вайтлиста (только SignalScalper использует вайтлист)
-            log_info(self.user_id, f"📊 Анализ вайтлиста: уникальных символов SignalScalper {current_trading_count}/{max_concurrent_trades}, всего активных экземпляров {len(active_strategies_analysis)}", module_name=__name__)
-            if strategies_with_positions_count > 0:
-                log_info(self.user_id, f"🔍 Экземпляров стратегий с открытыми позициями: {strategies_with_positions_count}", module_name=__name__)
+            log_info(self.user_id, f"📊 Анализ вайтлиста: уникальных символов {current_trading_count}/{max_concurrent_trades}, активных ботов {active_bots_count}", module_name=__name__)
+            if symbols_with_positions:
+                # Показываем уникальные символы с позициями и их список
+                log_info(self.user_id, f"🔍 Символов с открытыми позициями: {len(symbols_with_positions)} ({', '.join(sorted(symbols_with_positions))})", module_name=__name__)
 
             # === ОБРАБОТКА УДАЛЕННЫХ СИМВОЛОВ ===
             strategies_to_stop_immediately = []

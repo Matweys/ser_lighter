@@ -1018,12 +1018,12 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
         # Проценты для уровней трейлинга
         level_percentages = {
-            1: Decimal('0.004'),   # 0.4%
-            2: Decimal('0.007'),   # 0.7%
-            3: Decimal('0.009'),   # 0.9%
-            4: Decimal('0.0125'),   # 1.25%
-            5: Decimal('0.025'),   # 2.5%
-            6: Decimal('0.035')    # 3.5%
+            1: Decimal('0.01'),   # 1.0%
+            2: Decimal('0.02'),   # 2.0%
+            3: Decimal('0.03'),   # 3.0%
+            4: Decimal('0.04'),   # 4.0%
+            5: Decimal('0.05'),   # 5.0%
+            6: Decimal('0.06')    # 6.0%
         }
 
         # Рассчитываем пороги в USDT
@@ -1061,12 +1061,12 @@ class FlashDropCatcherStrategy(BaseStrategy):
         levels = self._calculate_dynamic_levels()
 
         level_names = {
-            1: f"МГНОВЕННЫЙ УРОВЕНЬ (${levels[1]:.2f}+, 0.4%)",
-            2: f"РАННИЙ УРОВЕНЬ (${levels[2]:.2f}+, 0.7%)",
-            3: f"СРЕДНИЙ УРОВЕНЬ (${levels[3]:.2f}+, 0.9%)",
-            4: f"ХОРОШИЙ УРОВЕНЬ (${levels[4]:.2f}+, 1.25%)",
-            5: f"ОТЛИЧНЫЙ УРОВЕНЬ (${levels[5]:.2f}+, 2.5%)",
-            6: f"МАКСИМАЛЬНЫЙ УРОВЕНЬ (${levels[6]:.2f}+, 3.5%)"
+            1: f"МГНОВЕННЫЙ УРОВЕНЬ (${levels[1]:.2f}+, 1.0%)",
+            2: f"РАННИЙ УРОВЕНЬ (${levels[2]:.2f}+, 2.0%)",
+            3: f"СРЕДНИЙ УРОВЕНЬ (${levels[3]:.2f}+, 3.0%)",
+            4: f"ХОРОШИЙ УРОВЕНЬ (${levels[4]:.2f}+, 4.0%)",
+            5: f"ОТЛИЧНЫЙ УРОВЕНЬ (${levels[5]:.2f}+, 5.0%)",
+            6: f"МАКСИМАЛЬНЫЙ УРОВЕНЬ (${levels[6]:.2f}+, 6.0%)"
         }
         return level_names.get(level, "НЕИЗВЕСТНЫЙ УРОВЕНЬ")
 

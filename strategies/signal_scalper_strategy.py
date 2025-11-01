@@ -1366,14 +1366,23 @@ class SignalScalperStrategy(BaseStrategy):
 
             # КРИТИЧЕСКИ ВАЖНО: Обновляем ордер CLOSE в БД с profit
             try:
+                # ЗАЩИТА: Используем максимальную комиссию между event.fee и existing commission в БД
+                order_from_db = await db_manager.get_order_by_id(event.order_id)
+                existing_commission = Decimal('0')
+                if order_from_db and order_from_db.get('commission'):
+                    existing_commission = self._convert_to_decimal(order_from_db['commission'])
+
+                # Используем максимальную комиссию (защита от перезаписи)
+                commission_to_save = max(event.fee, existing_commission, self.total_fees_paid)
+
                 await db_manager.update_order_on_fill(
                     order_id=event.order_id,
                     filled_quantity=event.qty,
                     average_price=event.price,
-                    commission=event.fee,
+                    commission=commission_to_save,
                     profit=pnl_net  # Для CLOSE ордера передаём рассчитанный profit
                 )
-                log_debug(self.user_id, f"✅ Ордер CLOSE {event.order_id} обновлён в БД с profit={pnl_net:.2f}$", "SignalScalper")
+                log_debug(self.user_id, f"✅ Ордер CLOSE {event.order_id} обновлён в БД с commission=${commission_to_save:.4f}, profit={pnl_net:.2f}$", "SignalScalper")
             except Exception as db_error:
                 log_error(self.user_id, f"❌ Ошибка обновления CLOSE ордера {event.order_id} в БД: {db_error}", "SignalScalper")
 
@@ -1406,8 +1415,9 @@ class SignalScalperStrategy(BaseStrategy):
             # Отписываемся от price updates
             await self.event_bus.unsubscribe(self.handle_price_update)
             # МГНОВЕННО отправляем уведомление (используем сохраненные значения)
-            await self._send_trade_close_notification(pnl_net, event.fee, exit_price=event.price, entry_price=saved_entry_price, entry_time=saved_entry_time)
-            log_info(self.user_id, f"[УСПЕХ] Позиция {self.symbol} закрыта быстро! PnL: {pnl_net:.2f}$", "SignalScalper")
+            # ИСПОЛЬЗУЕМ self.total_fees_paid вместо event.fee для правильного отображения комиссии!
+            await self._send_trade_close_notification(pnl_net, self.total_fees_paid, exit_price=event.price, entry_price=saved_entry_price, entry_time=saved_entry_time)
+            log_info(self.user_id, f"[УСПЕХ] Позиция {self.symbol} закрыта быстро! PnL: {pnl_net:.2f}$, commission: {self.total_fees_paid:.2f}$", "SignalScalper")
 
             # ПРОВЕРКА ОТЛОЖЕННОЙ ОСТАНОВКИ
             # Проверяем, должна ли стратегия быть остановлена после закрытия позиции

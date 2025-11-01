@@ -284,6 +284,19 @@ class MultiAccountCoordinator:
             log_error(self.user_id, f"Ошибка проверки отложенной остановки координатора: {e}", "Coordinator")
             return False
 
+    def has_active_positions(self) -> bool:
+        """
+        Проверяет, есть ли у какого-то из ботов активная позиция.
+
+        Returns:
+            bool: True если хотя бы один бот имеет активную позицию
+        """
+        for priority, bot_data in self.bots.items():
+            strategy = bot_data.strategy
+            if hasattr(strategy, 'position_active') and strategy.position_active:
+                return True
+        return False
+
     async def _monitor_loop(self):
         """
         Бесконечный цикл мониторинга и ротации.

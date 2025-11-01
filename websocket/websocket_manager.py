@@ -985,7 +985,7 @@ class DataFeedHandler:
                                 closed_event = PositionClosedEvent(
                                     user_id=self.user_id,
                                     symbol=symbol,
-                                    account_priority=self.account_priority,
+                                    bot_priority=self.account_priority,
                                     closed_manually=True
                                 )
                                 await self.event_bus.publish(closed_event)
