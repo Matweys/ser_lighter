@@ -1337,6 +1337,7 @@ class SignalScalperStrategy(BaseStrategy):
         elif is_closing_order and self.position_active:
             # Ордер на закрытие позиции
             log_info(self.user_id, f"[ЗАКРЫТИЕ] Обрабатываем ордер закрытия: {event.order_id}", "SignalScalper")
+            log_info(self.user_id, f"🔍 [STRATEGY DEBUG] event.fee={event.fee}, type={type(event.fee)}", "SignalScalper")
 
             # ✅ ИСПОЛЬЗУЕМ ОБЩИЙ МЕТОД для получения данных из БД и расчета базового PnL
             # ВАЖНО: В WebSocket комиссия точная (event.fee), поэтому пересчитываем PnL после

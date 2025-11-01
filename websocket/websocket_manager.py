@@ -869,6 +869,11 @@ class DataFeedHandler:
                                  "DataFeedHandler")
 
                     # КРИТИЧНО: Генерируем OrderFilledEvent для стратегии
+                    fee_value = to_decimal(order_data.get("cumExecFee", "0"))
+                    log_info(self.user_id,
+                            f"🔍 [WebSocket DEBUG] cumExecFee из order_data: '{order_data.get('cumExecFee', 'NOT_FOUND')}', после to_decimal: {fee_value}",
+                            "DataFeedHandler")
+
                     filled_event = OrderFilledEvent(
                         user_id=self.user_id,
                         order_id=order_id,
@@ -876,11 +881,11 @@ class DataFeedHandler:
                         side=order_data.get("side"),
                         qty=to_decimal(order_data.get("cumExecQty", "0")),
                         price=to_decimal(order_data.get("avgPrice", "0")),
-                        fee=to_decimal(order_data.get("cumExecFee", "0"))
+                        fee=fee_value
                     )
                     await self.event_bus.publish(filled_event)
                     log_info(self.user_id,
-                            f"✅ [WebSocket] OrderFilledEvent опубликовано для ордера {order_id}",
+                            f"✅ [WebSocket] OrderFilledEvent опубликовано для ордера {order_id} с fee={fee_value}",
                             "DataFeedHandler")
 
                 # ШАГ 3: Обрабатываем ручную отмену/отклонение
