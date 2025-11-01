@@ -790,11 +790,18 @@ class SignalScalperStrategy(BaseStrategy):
                             # ✅ API вернул ТОЧНЫЕ данные - используем их!
                             final_pnl = closed_pnl_data['closedPnl']  # Реализованный P&L (с учетом комиссий)
                             exit_price = closed_pnl_data['avgExitPrice']
-                            self.total_fees_paid = closed_pnl_data['openFee'] + closed_pnl_data['closeFee']  # ТОЧНЫЕ комиссии
+
+                            # КРИТИЧНО: API возвращает только openFee + closeFee, НО может быть усреднение!
+                            # Получаем из БД комиссии ВСЕХ ордеров (OPEN + AVERAGING, без CLOSE который еще не в БД)
+                            fees_from_db = Decimal(str(await db_manager.get_total_fees_for_position(self.user_id, self.symbol, self.account_priority)))
+                            # Вычисляем комиссии усреднений (если были): fees_from_db = openFee + averaging
+                            averaging_fees = fees_from_db - closed_pnl_data['openFee'] if fees_from_db > closed_pnl_data['openFee'] else Decimal('0')
+                            # Итоговые комиссии = openFee (API) + closeFee (API) + averaging (БД)
+                            self.total_fees_paid = closed_pnl_data['openFee'] + closed_pnl_data['closeFee'] + averaging_fees
 
                             log_info(self.user_id,
                                     f"✅ [API] Реализованный PnL={final_pnl:.2f}$, avgExitPrice={exit_price:.4f}, "
-                                    f"комиссии={self.total_fees_paid:.4f}$ (openFee={closed_pnl_data['openFee']:.4f}$ + closeFee={closed_pnl_data['closeFee']:.4f}$)",
+                                    f"комиссии={self.total_fees_paid:.4f}$ (openFee={closed_pnl_data['openFee']:.4f}$ + closeFee={closed_pnl_data['closeFee']:.4f}$ + avgFees={averaging_fees:.4f}$)",
                                     "SignalScalper")
                         else:
                             # УРОВЕНЬ 2: API не вернул данные - используем расчет (FALLBACK)
@@ -865,6 +872,9 @@ class SignalScalperStrategy(BaseStrategy):
                     if self.stop_loss_order_id:
                         await self._cancel_stop_loss_order()
 
+                    # КРИТИЧНО: Сохраняем комиссию ДО сброса состояния
+                    final_commission = self.total_fees_paid
+
                     # ✅ ИСПОЛЬЗУЕМ ОБЩИЙ МЕТОД для сброса состояния (исправлены БАГ #2, #3, #4)
                     # Этот метод устанавливает кулдаун, сбрасывает счетчики и всё состояние
                     self._reset_position_state_after_close(final_pnl)
@@ -875,7 +885,7 @@ class SignalScalperStrategy(BaseStrategy):
                     # Отправляем уведомление
                     await self._send_trade_close_notification(
                         pnl=final_pnl,
-                        commission=self.total_fees_paid if 'self' in locals() else Decimal('0'),
+                        commission=final_commission,
                         exit_price=exit_price if exit_price > Decimal('0') else None,
                         entry_price=saved_entry_price,
                         entry_time=saved_entry_time
@@ -1346,8 +1356,15 @@ class SignalScalperStrategy(BaseStrategy):
             # Вызываем общий метод для получения entry данных и базового расчета
             _, exit_price_for_pnl, entry_price_for_pnl, position_size_for_pnl, saved_entry_time, saved_entry_price, _ = await self._calculate_pnl_from_db_or_memory(event.price)
 
-            # ✅ КРИТИЧНО: В WebSocket используем ТОЧНУЮ комиссию от биржи (не estimated_close_fee)
-            self.total_fees_paid += event.fee  # cumExecFee от биржи для данного ордера
+            # ✅ КРИТИЧНО: Получаем ВСЕ комиссии из БД для надежности (OPEN + AVERAGING)
+            # Это защищает от потери комиссий при перезапуске бота или сбоях WebSocket
+            fees_from_db = Decimal(str(await db_manager.get_total_fees_for_position(self.user_id, self.symbol, self.account_priority)))
+            # Добавляем комиссию закрытия от WebSocket (ТОЧНАЯ от биржи)
+            self.total_fees_paid = fees_from_db + event.fee
+
+            log_info(self.user_id,
+                    f"💰 [КОМИССИИ] Из БД (OPEN+AVG): {fees_from_db:.4f}$, закрытие (WS): {event.fee:.4f}$, итого: {self.total_fees_paid:.4f}$",
+                    "SignalScalper")
 
             # Пересчитываем PnL с точной комиссией от WebSocket
             if self.active_direction == "LONG":
@@ -1409,14 +1426,17 @@ class SignalScalperStrategy(BaseStrategy):
             if self.stop_loss_order_id:
                 await self._cancel_stop_loss_order()
 
+            # КРИТИЧНО: Сохраняем комиссию ДО сброса состояния
+            final_commission = self.total_fees_paid
+
             # ✅ ИСПОЛЬЗУЕМ ОБЩИЙ МЕТОД для сброса состояния (единообразная логика с FALLBACK)
             self._reset_position_state_after_close(pnl_net)
 
             # Отписываемся от price updates
             await self.event_bus.unsubscribe(self.handle_price_update)
             # МГНОВЕННО отправляем уведомление (используем сохраненные значения)
-            # ИСПОЛЬЗУЕМ self.total_fees_paid вместо event.fee для правильного отображения комиссии!
-            await self._send_trade_close_notification(pnl_net, self.total_fees_paid, exit_price=event.price, entry_price=saved_entry_price, entry_time=saved_entry_time)
+            # ИСПОЛЬЗУЕМ final_commission вместо self.total_fees_paid для правильного отображения комиссии!
+            await self._send_trade_close_notification(pnl_net, final_commission, exit_price=event.price, entry_price=saved_entry_price, entry_time=saved_entry_time)
             log_info(self.user_id, f"[УСПЕХ] Позиция {self.symbol} закрыта быстро! PnL: {pnl_net:.2f}$, commission: {self.total_fees_paid:.2f}$", "SignalScalper")
 
             # ПРОВЕРКА ОТЛОЖЕННОЙ ОСТАНОВКИ
