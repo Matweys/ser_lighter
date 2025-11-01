@@ -1003,7 +1003,8 @@ class DataFeedHandler:
                     size=size,
                     entry_price=Decimal(str(position.get("avgPrice", "0"))),
                     mark_price=Decimal(str(position.get("markPrice", "0"))),
-                    unrealized_pnl=Decimal(str(position.get("unrealisedPnl", "0")))
+                    unrealized_pnl=Decimal(str(position.get("unrealisedPnl", "0"))),
+                    bot_priority=self.account_priority  # КРИТИЧНО: Фильтрация для мульти-аккаунт режима
                 )
                 await self.event_bus.publish(position_event)
 

@@ -746,9 +746,19 @@ class BaseStrategy(ABC):
 
         КРИТИЧНО: Обрабатывает закрытие позиции вручную (через веб-интерфейс биржи).
         Когда size=0 и стратегия считает позицию активной - завершаем trade и сбрасываем состояние.
+
+        MULTI-ACCOUNT SUPPORT: Фильтрация по bot_priority для изоляции ботов
         """
         if event.user_id != self.user_id or event.symbol != self.symbol:
             return
+
+        # КРИТИЧНО: Фильтруем по bot_priority - обрабатываем только события для НАШЕГО аккаунта
+        if hasattr(event, 'bot_priority') and event.bot_priority is not None:
+            if event.bot_priority != self.account_priority:
+                log_debug(self.user_id,
+                         f"Пропускаю position update event для bot_priority={event.bot_priority}, мой priority={self.account_priority}",
+                         module_name="BaseStrategy")
+                return
 
         try:
             position_size = self._convert_to_decimal(event.size)

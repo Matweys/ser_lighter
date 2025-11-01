@@ -57,13 +57,18 @@ class OrderFilledEvent(BaseEvent):
 
 @dataclass
 class PositionUpdateEvent(BaseEvent):
-    """Событие об обновлении позиции"""
+    """
+    Событие об обновлении позиции
+
+    MULTI-ACCOUNT SUPPORT: Содержит bot_priority для идентификации какой бот должен обработать событие
+    """
     symbol: str
     side: str
     size: Decimal
     entry_price: Decimal
     mark_price: Decimal
     unrealized_pnl: Decimal
+    bot_priority: Optional[int] = None  # Для мульти-аккаунт режима (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
     event_type: EventType = field(default=EventType.POSITION_UPDATE, init=False)
 
 
