@@ -1680,12 +1680,14 @@ class _DatabaseManager:
             trade_id = open_order.get('trade_id')
 
             # Если есть trade_id, получаем все ордера для этого trade
+            # КРИТИЧНО: ИСКЛЮЧАЕМ CLOSE ордер - его комиссия добавляется отдельно в расчёте PnL
             if trade_id:
                 query = """
                 SELECT COALESCE(SUM(commission), 0) as total_fees
                 FROM orders
                 WHERE trade_id = $1
                   AND status = 'FILLED'
+                  AND order_purpose != 'CLOSE'
                 """
                 result = await self._execute_query(query, (trade_id,), fetch_one=True)
             else:
