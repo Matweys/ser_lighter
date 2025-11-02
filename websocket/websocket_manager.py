@@ -981,10 +981,29 @@ class DataFeedHandler:
                                            f"Позиция {symbol} закрыта (size=0), есть незакрытый OPEN ордер в БД!",
                                            module_name=__name__)
 
-                                # Публикуем событие ручного закрытия
+                                # Получаем размер позиции из незакрытого OPEN ордера
+                                position_size = None
+                                try:
+                                    open_order = await db_manager.get_open_order_for_position(
+                                        self.user_id,
+                                        symbol,
+                                        account_priority=self.account_priority
+                                    )
+                                    if open_order and open_order.get('filled_quantity'):
+                                        position_size = to_decimal(open_order['filled_quantity'])
+                                        log_debug(self.user_id,
+                                                 f"✅ Размер закрытой позиции {symbol}: {position_size}",
+                                                 module_name=__name__)
+                                except Exception as size_error:
+                                    log_error(self.user_id,
+                                             f"❌ Ошибка получения размера позиции {symbol}: {size_error}",
+                                             module_name=__name__)
+
+                                # Публикуем событие ручного закрытия с размером позиции
                                 closed_event = PositionClosedEvent(
                                     user_id=self.user_id,
                                     symbol=symbol,
+                                    size=position_size,
                                     bot_priority=self.account_priority,
                                     closed_manually=True
                                 )

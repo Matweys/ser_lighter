@@ -17,13 +17,14 @@ from datetime import datetime
 from collections import defaultdict, deque
 from aiogram import Bot
 from core.logger import log_info, log_error, log_warning, log_debug
-from core.enums import StrategyType, PositionSide, ConfigType
+from core.enums import StrategyType, PositionSide, ConfigType, ExchangeType
 from core.events import EventType, EventBus, PriceUpdateEvent, OrderFilledEvent
 from api.bybit_api import BybitAPI
 from .base_strategy import BaseStrategy
 from aiogram.utils.markdown import hbold, hcode
 from core.concurrency_manager import strategy_locked
 from cache.redis_manager import redis_manager
+from core.settings_config import EXCHANGE_FEES
 
 # Настройка точности для Decimal
 getcontext().prec = 28
@@ -1018,12 +1019,12 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
         # Проценты для уровней трейлинга
         level_percentages = {
-            1: Decimal('0.01'),   # 1.0%
-            2: Decimal('0.02'),   # 2.0%
-            3: Decimal('0.03'),   # 3.0%
-            4: Decimal('0.04'),   # 4.0%
-            5: Decimal('0.05'),   # 5.0%
-            6: Decimal('0.06')    # 6.0%
+            1: Decimal('0.015'),   # 1.0%
+            2: Decimal('0.025'),   # 2.0%
+            3: Decimal('0.035'),   # 3.0%
+            4: Decimal('0.045'),   # 4.0%
+            5: Decimal('0.055'),   # 5.0%
+            6: Decimal('0.065')    # 6.0%
         }
 
         # Рассчитываем пороги в USDT
@@ -1176,54 +1177,55 @@ class FlashDropCatcherStrategy(BaseStrategy):
 
                 try:
                     # =====================================================
-                    # УРОВЕНЬ 1: Получаем ТОЧНЫЕ данные с биржи через closedPnL API
+                    # УРОВЕНЬ 1: Получаем ТОЧНЫЕ данные по order_id (ЕДИНСТВЕННЫЙ ИСТОЧНИК ПРАВДЫ!)
                     # =====================================================
-                    log_info(self.user_id, f"📡 [ЗАКРЫТИЕ] Запрашиваю closedPnL с биржи для {symbol}...", "FlashDropCatcher")
-                    closed_pnl_data = await self.api.get_closed_pnl(symbol=symbol, limit=1)
+                    # КРИТИЧНО: Используем только данные конкретных ордеров по их order_id
+                    # closedPnL API НЕ использует order_id и может вернуть данные старой позиции!
 
-                    if closed_pnl_data:
-                        # ✅ API вернул ТОЧНЫЕ данные - используем их!
-                        final_pnl = closed_pnl_data['closedPnl']  # Реализованный P&L
-                        exit_price = closed_pnl_data['avgExitPrice']
-                        commission = closed_pnl_data['openFee'] + closed_pnl_data['closeFee']  # ТОЧНЫЕ комиссии
+                    log_info(self.user_id, f"📡 [ЗАКРЫТИЕ] Получаю данные по order_id для {symbol}...", "FlashDropCatcher")
+
+                    # 1. Получаем OPEN order_id из position_data
+                    open_order_id = position_data.get('order_id')
+                    if not open_order_id:
+                        raise ValueError(f"order_id отсутствует в position_data для {symbol}!")
+
+                    # 2. Получаем оба ордера с биржи по их order_id (с retry!)
+                    log_info(self.user_id, f"🔍 [ORDER] Запрашиваю OPEN ордер {open_order_id[:12]}... с биржи (retry=3)...", "FlashDropCatcher")
+                    open_order_status = await self.api.get_order_status(open_order_id, max_retries=3, retry_delay=0.3)
+
+                    log_info(self.user_id, f"🔍 [ORDER] Запрашиваю CLOSE ордер {close_result[:12]}... с биржи (retry=3)...", "FlashDropCatcher")
+                    close_order_status = await self.api.get_order_status(close_result, max_retries=3, retry_delay=0.3)
+
+                    if open_order_status and close_order_status:
+                        # ✅ Получили данные обоих ордеров - считаем PnL
+                        entry_price_for_pnl = Decimal(str(open_order_status.get('avgPrice', '0')))
+                        exit_price = Decimal(str(close_order_status.get('avgPrice', '0')))
+                        open_commission = Decimal(str(open_order_status.get('cumExecFee', '0')))
+                        close_commission = Decimal(str(close_order_status.get('cumExecFee', '0')))
+
+                        # Расчёт PnL
+                        pnl_gross = (exit_price - entry_price_for_pnl) * position_size
+                        commission = open_commission + close_commission
+                        final_pnl = pnl_gross - commission
 
                         log_info(self.user_id,
-                                f"✅ [API] Реализованный PnL={final_pnl:.2f}$, avgExitPrice={exit_price:.4f}, "
-                                f"комиссии={commission:.4f}$ (openFee={closed_pnl_data['openFee']:.4f}$ + closeFee={closed_pnl_data['closeFee']:.4f}$)",
+                                f"✅ [ORDER_ID] PnL по ордерам: entry={entry_price_for_pnl:.4f} (order={open_order_id[:8]}...), "
+                                f"exit={exit_price:.4f} (order={close_result[:8]}...), "
+                                f"PnL={final_pnl:.4f}$ (gross={pnl_gross:.4f}$ - fees={commission:.4f}$)",
                                 "FlashDropCatcher")
-
-                        # Получаем entry_price из open_order для статистики
-                        open_order_id = position_data.get('order_id')
-                        if open_order_id:
-                            open_order = await db_manager.get_order_by_id(open_order_id, self.user_id)
-                            if open_order:
-                                entry_price_for_pnl = Decimal(str(open_order.get('average_price', '0')))
-                            else:
-                                entry_price_for_pnl = exit_price  # fallback
-                        else:
-                            entry_price_for_pnl = exit_price  # fallback
-
                     else:
                         # =====================================================
-                        # УРОВЕНЬ 2: API не вернул данные - используем расчет из БД
+                        # УРОВЕНЬ 2: Не получили данные с биржи - используем БД
                         # =====================================================
-                        log_warning(self.user_id, f"⚠️ [FALLBACK] API не вернул closedPnL для {symbol}, использую расчет из БД", "FlashDropCatcher")
+                        log_warning(self.user_id, f"⚠️ [FALLBACK БД] Не получили статус ордеров с биржи, использую БД", "FlashDropCatcher")
 
-                        # Получаем данные из БД
-                        open_order_id = position_data.get('order_id')
-
-                        if not open_order_id:
-                            log_error(self.user_id, f"❌ order_id отсутствует в position_data для {symbol}!", "FlashDropCatcher")
-                            open_order = None
-                        else:
-                            open_order = await db_manager.get_order_by_id(open_order_id, self.user_id)
+                        open_order = await db_manager.get_order_by_id(open_order_id, self.user_id)
 
                         if open_order:
                             entry_price_for_pnl = Decimal(str(open_order.get('average_price', '0')))
-                            position_size_for_pnl = position_size
                             open_commission = Decimal(str(open_order.get('commission', '0')))
 
-                            # Ждём CLOSE ордер в БД
+                            # Ждём CLOSE ордер в БД (WebSocket должен обновить)
                             await asyncio.sleep(0.5)
                             close_order = await db_manager.get_order_by_id(close_result, self.user_id)
 
@@ -1237,56 +1239,90 @@ class FlashDropCatcherStrategy(BaseStrategy):
                             else:
                                 exit_price = self._last_known_price if hasattr(self, '_last_known_price') and self._last_known_price else entry_price_for_pnl
                                 close_commission = Decimal('0')
-                                log_warning(self.user_id, f"⚠️ [FALLBACK] CLOSE ордер не найден, используем _last_known_price={exit_price:.4f}", "FlashDropCatcher")
+                                log_warning(self.user_id, f"⚠️ [FALLBACK] CLOSE ордер не найден в БД, используем _last_known_price={exit_price:.4f}", "FlashDropCatcher")
 
                             # Расчёт PnL
-                            pnl_gross = (exit_price - entry_price_for_pnl) * position_size_for_pnl
+                            pnl_gross = (exit_price - entry_price_for_pnl) * position_size
                             commission = open_commission + close_commission
                             final_pnl = pnl_gross - commission
 
                             log_info(self.user_id,
-                                    f"💰 [FALLBACK PNL] {symbol}: entry={entry_price_for_pnl:.4f}, exit={exit_price:.4f}, "
+                                    f"💰 [БД PNL] {symbol}: entry={entry_price_for_pnl:.4f}, exit={exit_price:.4f}, "
                                     f"PnL={final_pnl:.4f}$ (gross={pnl_gross:.4f}$ - fees={commission:.4f}$)",
                                     "FlashDropCatcher")
                         else:
-                            # УРОВЕНЬ 3: Ошибка - используем unrealisedPnl
-                            log_warning(self.user_id, f"⚠️ [FALLBACK] OPEN ордер не найден, используем unrealisedPnl", "FlashDropCatcher")
-                            positions = await self.api.get_positions(symbol=symbol)
-                            entry_price_for_pnl = Decimal('0')
-                            exit_price = Decimal('0')
-                            commission = Decimal('0')
-                            if positions and isinstance(positions, list):
-                                for pos in positions:
-                                    if pos["symbol"] == symbol:
-                                        final_pnl = self._convert_to_decimal(pos.get("unrealisedPnl", 0))
-                                        break
+                            # =====================================================
+                            # КРИТИЧНО: БД пустая - ПРИБЛИЗИТЕЛЬНЫЙ РАСЧЁТ (КРАЙНИЙ СЛУЧАЙ!)
+                            # =====================================================
+                            # closedPnL API НЕ проверяет order_id и может вернуть данные старой позиции!
+                            # Используем данные из памяти + _last_known_price + РЕАЛЬНЫЕ комиссии из EXCHANGE_FEES
+                            log_warning(self.user_id,
+                                    f"⚠️ [КРАЙНИЙ СЛУЧАЙ] Не удалось получить PnL для {symbol} по order_id. "
+                                    f"Использую ПРИБЛИЗИТЕЛЬНЫЙ расчёт (entry из памяти + _last_known_price + комиссии из EXCHANGE_FEES).",
+                                    "FlashDropCatcher")
+
+                            # Берём entry_price из position_data (данные памяти стратегии)
+                            entry_price_for_pnl = position_data.get('entry_price', Decimal('0'))
+
+                            # Берём exit_price из _last_known_price
+                            exit_price = self._last_known_price if hasattr(self, '_last_known_price') and self._last_known_price else entry_price_for_pnl
+
+                            if entry_price_for_pnl > Decimal('0') and exit_price > Decimal('0'):
+                                # Расчёт ПРИБЛИЗИТЕЛЬНЫХ комиссий через EXCHANGE_FEES (taker = 0.1%)
+                                taker_fee_rate = EXCHANGE_FEES.get(ExchangeType.BYBIT, {}).get('taker', Decimal('0.1')) / Decimal('100')
+
+                                # Комиссия = (цена * количество * ставка)
+                                entry_commission_estimated = entry_price_for_pnl * position_size * taker_fee_rate
+                                exit_commission_estimated = exit_price * position_size * taker_fee_rate
+                                commission = entry_commission_estimated + exit_commission_estimated
+
+                                # Расчёт PnL
+                                pnl_gross = (exit_price - entry_price_for_pnl) * position_size
+                                final_pnl = pnl_gross - commission
+
+                                log_warning(self.user_id,
+                                        f"⚠️ [ПРИБЛИЗИТЕЛЬНЫЙ PNL] {symbol}: entry≈{entry_price_for_pnl:.4f} (из памяти), "
+                                        f"exit≈{exit_price:.4f} (_last_known_price), PnL≈{final_pnl:.4f}$ "
+                                        f"(gross={pnl_gross:.4f}$ - комиссии≈{commission:.4f}$ [taker {float(taker_fee_rate)*100:.2f}%])",
+                                        "FlashDropCatcher")
+                            else:
+                                # Если даже entry/exit из памяти недоступны - устанавливаем 0
+                                final_pnl = Decimal('0')
+                                commission = Decimal('0')
+                                log_error(self.user_id,
+                                        f"❌ [КРИТИЧНО] entry_price или exit_price = 0 для {symbol}. Устанавливаю PnL=0.",
+                                        "FlashDropCatcher")
 
                 except Exception as api_error:
                     # =====================================================
-                    # УРОВЕНЬ 3: Ошибка API - fallback на unrealisedPnl
+                    # КРИТИЧЕСКАЯ ОШИБКА - fallback на 0 PnL
                     # =====================================================
-                    log_error(self.user_id, f"❌ [ОШИБКА] Ошибка получения PnL для {symbol}: {api_error}", "FlashDropCatcher")
-                    positions = await self.api.get_positions(symbol=symbol)
+                    log_error(self.user_id, f"❌ [КРИТИЧЕСКАЯ ОШИБКА] Ошибка получения PnL для {symbol}: {api_error}", "FlashDropCatcher")
+                    final_pnl = Decimal('0')
                     entry_price_for_pnl = Decimal('0')
                     exit_price = Decimal('0')
                     commission = Decimal('0')
-                    if positions and isinstance(positions, list):
-                        for pos in positions:
-                            if pos["symbol"] == symbol:
-                                final_pnl = self._convert_to_decimal(pos.get("unrealisedPnl", 0))
-                                break
 
                 # СОХРАНЯЕМ значения для передачи в уведомление
-                # ИСПОЛЬЗУЕМ УЖЕ ПОЛУЧЕННЫЙ open_order выше (строка 1159)
-                if open_order:
-                    saved_entry_time = open_order.get('filled_at')  # Время из БД
-                    saved_entry_price = open_order.get('average_price')  # Цена из БД
-                    log_debug(self.user_id, f"[ИЗ БД] {symbol} - Время входа: {saved_entry_time}, Цена входа: {saved_entry_price}", "FlashDropCatcher")
+                # КРИТИЧНО: Делаем отдельный запрос в БД для saved_entry данных
+                # (open_order из try блока может быть None если прошли через УРОВЕНЬ 1 API)
+                open_order_id_for_notification = position_data.get('order_id')
+                if open_order_id_for_notification:
+                    open_order_for_notification = await db_manager.get_order_by_id(open_order_id_for_notification, self.user_id)
+                    if open_order_for_notification:
+                        saved_entry_time = open_order_for_notification.get('filled_at')  # Время из БД
+                        saved_entry_price = open_order_for_notification.get('average_price')  # Цена из БД
+                        log_debug(self.user_id, f"[ИЗ БД] {symbol} - Время входа: {saved_entry_time}, Цена входа: {saved_entry_price}", "FlashDropCatcher")
+                    else:
+                        # Fallback на данные из словаря (если БД недоступна)
+                        saved_entry_time = position_data.get('entry_time')
+                        saved_entry_price = position_data.get('entry_price')
+                        log_warning(self.user_id, f"[FALLBACK] Не найден OPEN ордер в БД для {symbol}, используем данные из active_flash_positions", "FlashDropCatcher")
                 else:
-                    # Fallback на данные из словаря (если БД недоступна)
+                    # Если даже order_id нет в position_data (не должно случиться)
                     saved_entry_time = position_data.get('entry_time')
                     saved_entry_price = position_data.get('entry_price')
-                    log_warning(self.user_id, f"[FALLBACK] Не найден OPEN ордер в БД для {symbol}, используем данные из active_flash_positions", "FlashDropCatcher")
+                    log_warning(self.user_id, f"[FALLBACK] order_id не найден в position_data для {symbol}, используем данные из active_flash_positions", "FlashDropCatcher")
 
                 # КРИТИЧНО: Удаляем позицию из словаря активных позиций
                 del self.active_flash_positions[symbol]
@@ -1656,59 +1692,94 @@ class FlashDropCatcherStrategy(BaseStrategy):
             final_pnl = Decimal('0')
             exit_price = Decimal('0')
             commission = Decimal('0')
-            position_size_for_pnl = position_data['position_size']  # Инициализация для использования в close_size
+            position_size_for_pnl = position_data['position_size']
 
             # =====================================================
-            # УРОВЕНЬ 1: Получаем ТОЧНЫЕ данные с биржи через closedPnL API
+            # УРОВЕНЬ 1: Получаем OPEN ордер по order_id (ЕДИНСТВЕННЫЙ ИСТОЧНИК ПРАВДЫ!)
             # =====================================================
+            # КРИТИЧНО: При ручном закрытии у нас НЕТ close_order_id (пользователь закрыл вручную),
+            # но есть OPEN order_id из position_data!
+
             try:
-                log_info(self.user_id, f"📡 [РУЧНОЕ ЗАКРЫТИЕ] Запрашиваю closedPnL с биржи для {event.symbol}...", "FlashDropCatcher")
-                closed_pnl_data = await self.api.get_closed_pnl(symbol=event.symbol, limit=1)
+                log_info(self.user_id, f"📡 [РУЧНОЕ ЗАКРЫТИЕ] Получаю OPEN ордер по order_id для {event.symbol}...", "FlashDropCatcher")
 
-                if closed_pnl_data:
-                    # ✅ API вернул ТОЧНЫЕ данные - используем их!
-                    final_pnl = closed_pnl_data['closedPnl']
-                    exit_price = closed_pnl_data['avgExitPrice']
-                    commission = closed_pnl_data['openFee'] + closed_pnl_data['closeFee']
+                # 1. Получаем OPEN order_id из position_data
+                open_order_id = position_data.get('order_id')
+                if not open_order_id:
+                    raise ValueError(f"order_id отсутствует в position_data для {event.symbol}!")
+
+                # 2. Получаем OPEN ордер с биржи по order_id (с retry!)
+                log_info(self.user_id, f"🔍 [ORDER] Запрашиваю OPEN ордер {open_order_id[:12]}... с биржи (retry=3)...", "FlashDropCatcher")
+                open_order_status = await self.api.get_order_status(open_order_id, max_retries=3, retry_delay=0.3)
+
+                if open_order_status:
+                    # ✅ Получили OPEN ордер - берем entry данные
+                    entry_price_for_pnl = Decimal(str(open_order_status.get('avgPrice', '0')))
+                    open_commission = Decimal(str(open_order_status.get('cumExecFee', '0')))
+
+                    # 3. Exit price используем _last_known_price (closedPnL не используется!)
+                    # closedPnL API НЕ проверяет order_id и может вернуть данные старой позиции
+                    log_info(self.user_id, f"📡 [РУЧНОЕ ЗАКРЫТИЕ] Используем _last_known_price для exit_price (order_id закрывающего ордера неизвестен)", "FlashDropCatcher")
+                    exit_price = self._last_known_price if hasattr(self, '_last_known_price') and self._last_known_price else entry_price_for_pnl
+                    close_commission = Decimal('0')  # У нас нет order_id CLOSE ордера при ручном закрытии
+
+                    if exit_price == entry_price_for_pnl and hasattr(self, '_last_known_price'):
+                        log_warning(self.user_id, f"⚠️ [FALLBACK] _last_known_price не установлена, используем entry_price как exit", "FlashDropCatcher")
+                    else:
+                        log_info(self.user_id, f"✅ [_last_known_price] exit_price={exit_price:.4f}", "FlashDropCatcher")
+
+                    # Расчёт PnL
+                    pnl_gross = (exit_price - entry_price_for_pnl) * position_size_for_pnl
+                    commission = open_commission + close_commission
+                    final_pnl = pnl_gross - commission
 
                     log_info(self.user_id,
-                            f"✅ [API] Реализованный PnL={final_pnl:.2f}$, avgExitPrice={exit_price:.4f}, "
-                            f"комиссии={commission:.4f}$ (openFee={closed_pnl_data['openFee']:.4f}$ + closeFee={closed_pnl_data['closeFee']:.4f}$)",
+                            f"✅ [ORDER_ID MANUAL] PnL по ордеру: entry={entry_price_for_pnl:.4f} (order={open_order_id[:8]}...), "
+                            f"exit≈{exit_price:.4f}, PnL={final_pnl:.4f}$ (gross={pnl_gross:.4f}$ - fees={commission:.4f}$)",
                             "FlashDropCatcher")
                 else:
-                    # УРОВЕНЬ 2: API не вернул данные - используем расчет из БД
-                    log_warning(self.user_id, f"⚠️ [FALLBACK] API не вернул closedPnL для {event.symbol}, использую расчет из БД", "FlashDropCatcher")
+                    # =====================================================
+                    # УРОВЕНЬ 2: Не получили OPEN ордер с биржи - используем БД
+                    # =====================================================
+                    log_warning(self.user_id, f"⚠️ [FALLBACK БД] Не получили OPEN ордер с биржи, использую БД", "FlashDropCatcher")
 
-                    open_order = await db_manager.get_open_order_for_position(self.user_id, event.symbol, self.account_priority)
+                    open_order = await db_manager.get_order_by_id(open_order_id, self.user_id)
+
                     if open_order:
                         entry_price_for_pnl = Decimal(str(open_order.get('average_price', '0')))
-                        position_size_for_pnl = position_data['position_size']
                         open_commission = Decimal(str(open_order.get('commission', '0')))
 
+                        # Exit price используем _last_known_price (closedPnL не используется!)
+                        # closedPnL API НЕ проверяет order_id и может вернуть данные старой позиции
+                        log_info(self.user_id, f"📡 [РУЧНОЕ ЗАКРЫТИЕ БД] Используем _last_known_price для exit_price", "FlashDropCatcher")
                         exit_price = self._last_known_price if hasattr(self, '_last_known_price') and self._last_known_price else entry_price_for_pnl
+                        close_commission = Decimal('0')  # У нас нет order_id CLOSE ордера при ручном закрытии
+
+                        # Расчёт PnL
                         pnl_gross = (exit_price - entry_price_for_pnl) * position_size_for_pnl
-                        commission = open_commission
+                        commission = open_commission + close_commission
                         final_pnl = pnl_gross - commission
 
                         log_info(self.user_id,
-                                f"💰 [FALLBACK PNL] {event.symbol}: entry={entry_price_for_pnl:.4f}, exit≈{exit_price:.4f}, "
+                                f"💰 [БД MANUAL] {event.symbol}: entry={entry_price_for_pnl:.4f}, exit≈{exit_price:.4f}, "
                                 f"PnL={final_pnl:.4f}$ (gross={pnl_gross:.4f}$ - fees={commission:.4f}$)",
                                 "FlashDropCatcher")
+                    else:
+                        log_error(self.user_id, f"❌ [КРИТИЧНО] OPEN ордер не найден ни на бирже, ни в БД для {event.symbol}!", "FlashDropCatcher")
+                        final_pnl = Decimal('0')
+                        entry_price_for_pnl = Decimal('0')
+                        exit_price = Decimal('0')
+                        commission = Decimal('0')
 
             except Exception as api_error:
-                # УРОВЕНЬ 3: Ошибка API - используем расчет из БД
-                log_error(self.user_id, f"❌ [ОШИБКА] Ошибка получения closedPnL для {event.symbol}: {api_error}", "FlashDropCatcher")
-
-                open_order = await db_manager.get_open_order_for_position(self.user_id, event.symbol, self.account_priority)
-                if open_order:
-                    entry_price_for_pnl = Decimal(str(open_order.get('average_price', '0')))
-                    position_size_for_pnl = position_data['position_size']
-                    open_commission = Decimal(str(open_order.get('commission', '0')))
-
-                    exit_price = self._last_known_price if hasattr(self, '_last_known_price') and self._last_known_price else entry_price_for_pnl
-                    pnl_gross = (exit_price - entry_price_for_pnl) * position_size_for_pnl
-                    commission = open_commission
-                    final_pnl = pnl_gross - commission
+                # =====================================================
+                # КРИТИЧЕСКАЯ ОШИБКА - fallback на 0 PnL
+                # =====================================================
+                log_error(self.user_id, f"❌ [КРИТИЧЕСКАЯ ОШИБКА] Ошибка получения PnL для {event.symbol}: {api_error}", "FlashDropCatcher")
+                final_pnl = Decimal('0')
+                entry_price_for_pnl = Decimal('0')
+                exit_price = Decimal('0')
+                commission = Decimal('0')
 
             # Получаем saved_entry данные для уведомления
             open_order = await db_manager.get_open_order_for_position(self.user_id, event.symbol, self.account_priority)

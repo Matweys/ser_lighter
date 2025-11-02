@@ -319,72 +319,126 @@ class BybitAPI:
             log_error(self.user_id, f"Ошибка при получении текущей цены для {symbol}: {e}", module_name=__name__)
             return None
 
-    async def get_order_status(self, order_id: str) -> Optional[Dict[str, Any]]:
+    async def get_order_status(self, order_id: str, max_retries: int = 3, retry_delay: float = 0.3) -> Optional[Dict[str, Any]]:
         """
-        Получает статус конкретного ордера по его ID.
+        Получает статус конкретного ордера по его ID с механизмом повторных попыток.
         Проверяет ОБА эндпоинта: realtime (активные) и history (завершённые).
-        Для Market ордеров использует retry логику из-за задержки попадания в историю.
+
+        КРИТИЧНО для Market ордеров: они попадают в историю через 100-500ms после исполнения.
+        Без retry может не найти свежеисполненный ордер!
+
+        Args:
+            order_id: Уникальный ID ордера (единственный источник правды!)
+            max_retries: Максимальное количество попыток (по умолчанию 3)
+            retry_delay: Задержка между попытками в секундах (по умолчанию 0.3s)
+
+        Returns:
+            Dict с данными ордера:
+            - orderId: ID ордера
+            - orderStatus: Статус (Filled, PartiallyFilled, etc.)
+            - side: Buy/Sell
+            - avgPrice: Средняя цена исполнения (✅ ТОЧНАЯ по order_id!)
+            - cumExecQty: Исполненное количество
+            - cumExecFee: Комиссия (✅ ТОЧНАЯ по order_id!)
+
+            None если ордер не найден после всех попыток
         """
-        try:
-            # ПОПЫТКА 1: Проверяем активные ордера (если ордер еще обрабатывается)
-            realtime_params = {
-                "category": "linear",
-                "orderId": order_id,
-                "limit": 1
-            }
+        for attempt in range(max_retries):
+            try:
+                log_info(self.user_id,
+                        f"[ORDER_STATUS] Попытка {attempt + 1}/{max_retries} получения статуса ордера {order_id[:12]}...",
+                        module_name=__name__)
 
-            realtime_response = await self._make_request(
-                method="GET",
-                endpoint="/v5/order/realtime",
-                params=realtime_params,
-                private=True,
-                return_full_response=True
-            )
-
-            if realtime_response and realtime_response.get("retCode") == 0 and realtime_response.get('result', {}).get('list'):
-                order_details = realtime_response['result']['list'][0]
-                return {
-                    "orderId": order_details.get("orderId"),
-                    "orderStatus": order_details.get("orderStatus"),
-                    "side": order_details.get("side"),
-                    "avgPrice": order_details.get("avgPrice", '0'),
-                    "cumExecQty": order_details.get("cumExecQty", '0'),
-                    "cumExecFee": order_details.get("cumExecFee", '0')
+                # ПРОВЕРКА 1: Активные ордера (realtime)
+                realtime_params = {
+                    "category": "linear",
+                    "orderId": order_id,
+                    "limit": 1
                 }
 
-            # ПОПЫТКА 2: Проверяем историю (если ордер уже исполнен/отменён)
-            # Market ордера попадают сюда через 100-500ms после исполнения
-            history_params = {
-                "category": "linear",
-                "orderId": order_id,
-                "limit": 1
-            }
+                realtime_response = await self._make_request(
+                    method="GET",
+                    endpoint="/v5/order/realtime",
+                    params=realtime_params,
+                    private=True,
+                    return_full_response=True
+                )
 
-            history_response = await self._make_request(
-                method="GET",
-                endpoint="/v5/order/history",
-                params=history_params,
-                private=True,
-                return_full_response=True
-            )
+                if realtime_response and realtime_response.get("retCode") == 0 and realtime_response.get('result', {}).get('list'):
+                    order_details = realtime_response['result']['list'][0]
+                    log_info(self.user_id,
+                            f"✅ [ORDER_STATUS] Ордер {order_id[:12]}... найден в realtime на попытке {attempt + 1}: "
+                            f"status={order_details.get('orderStatus')}, avgPrice={order_details.get('avgPrice')}, "
+                            f"fee={order_details.get('cumExecFee')}",
+                            module_name=__name__)
+                    return {
+                        "orderId": order_details.get("orderId"),
+                        "orderStatus": order_details.get("orderStatus"),
+                        "side": order_details.get("side"),
+                        "avgPrice": order_details.get("avgPrice", '0'),
+                        "cumExecQty": order_details.get("cumExecQty", '0'),
+                        "cumExecFee": order_details.get("cumExecFee", '0')
+                    }
 
-            if history_response and history_response.get("retCode") == 0 and history_response.get('result', {}).get('list'):
-                order_details = history_response['result']['list'][0]
-                return {
-                    "orderId": order_details.get("orderId"),
-                    "orderStatus": order_details.get("orderStatus"),
-                    "side": order_details.get("side"),
-                    "avgPrice": order_details.get("avgPrice", '0'),
-                    "cumExecQty": order_details.get("cumExecQty", '0'),
-                    "cumExecFee": order_details.get("cumExecFee", '0')
+                # ПРОВЕРКА 2: История (завершенные ордера)
+                # Market ордера попадают сюда через 100-500ms после исполнения
+                history_params = {
+                    "category": "linear",
+                    "orderId": order_id,
+                    "limit": 1
                 }
 
-            # Ордер не найден ни в активных, ни в истории (временной разрыв для Market ордеров)
-            return None
+                history_response = await self._make_request(
+                    method="GET",
+                    endpoint="/v5/order/history",
+                    params=history_params,
+                    private=True,
+                    return_full_response=True
+                )
 
-        except Exception as e:
-            log_error(self.user_id, f"Критическая ошибка при получении статуса ордера {order_id}: {e}", module_name=__name__)
-            return None
+                if history_response and history_response.get("retCode") == 0 and history_response.get('result', {}).get('list'):
+                    order_details = history_response['result']['list'][0]
+                    log_info(self.user_id,
+                            f"✅ [ORDER_STATUS] Ордер {order_id[:12]}... найден в history на попытке {attempt + 1}: "
+                            f"status={order_details.get('orderStatus')}, avgPrice={order_details.get('avgPrice')}, "
+                            f"fee={order_details.get('cumExecFee')}",
+                            module_name=__name__)
+                    return {
+                        "orderId": order_details.get("orderId"),
+                        "orderStatus": order_details.get("orderStatus"),
+                        "side": order_details.get("side"),
+                        "avgPrice": order_details.get("avgPrice", '0'),
+                        "cumExecQty": order_details.get("cumExecQty", '0'),
+                        "cumExecFee": order_details.get("cumExecFee", '0')
+                    }
+
+                # Ордер не найден - ждем перед следующей попыткой
+                if attempt < max_retries - 1:
+                    log_warning(self.user_id,
+                               f"⚠️ [ORDER_STATUS] Ордер {order_id[:12]}... не найден, попытка {attempt + 1}/{max_retries}. "
+                               f"Повторяю через {retry_delay}s...",
+                               module_name=__name__)
+                    await asyncio.sleep(retry_delay)
+                else:
+                    log_error(self.user_id,
+                             f"❌ [ORDER_STATUS] Ордер {order_id[:12]}... не найден после {max_retries} попыток!",
+                             module_name=__name__)
+                    return None
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    log_warning(self.user_id,
+                               f"⚠️ [ORDER_STATUS] Ошибка при получении ордера {order_id[:12]}...: {e}. "
+                               f"Попытка {attempt + 1}/{max_retries}. Повторяю через {retry_delay}s...",
+                               module_name=__name__)
+                    await asyncio.sleep(retry_delay)
+                else:
+                    log_error(self.user_id,
+                             f"❌ [ORDER_STATUS] Критическая ошибка после {max_retries} попыток для {order_id[:12]}...: {e}",
+                             module_name=__name__)
+                    return None
+
+        return None
 
 
     async def get_positions(self, symbol: str = None, max_retries: int = 3, retry_delay: float = 1.0) -> Optional[List[Dict[str, Any]]]:
