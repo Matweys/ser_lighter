@@ -23,10 +23,12 @@ DEFAULT_SYMBOLS = [
     'NEARUSDT', 'ICPUSDT'
 ]
 # Комиссии бирж для внутреннего расчета PnL
+# Источник: https://www.bybit.com/en/help-center/article/Perpetual-Futures-Contract-Fees-Explained/
+# Обновлено: 2025-11-02 (актуальные ставки для USDT Perpetual Futures)
 EXCHANGE_FEES = {
     ExchangeType.BYBIT: {
-        'maker': Decimal('0.036'),    # 0.036% (Maker)
-        'taker': Decimal('0.1'),      # 0.1% (Taker)
+        'maker': Decimal('0.02'),     # 0.02% (Maker)
+        'taker': Decimal('0.055'),    # 0.055% (Taker)
     },
     # Можно добавить другие биржи в будущем
 }

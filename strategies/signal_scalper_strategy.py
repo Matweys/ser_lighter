@@ -658,19 +658,23 @@ class SignalScalperStrategy(BaseStrategy):
                                     self.averaging_executed = False
                                     self.total_position_size = Decimal('0')
                                     self.average_entry_price = Decimal('0')
-                                    # ИСПРАВЛЕНО: НЕ перезаписываем total_fees_paid, если WebSocket уже установил комиссию
-                                    # self.total_fees_paid сохраняет значение из WebSocket события (если оно пришло)
+
+                                    # ✅ ПОЛУЧАЕМ КОМИССИЮ ИЗ API (как в FALLBACK close)
                                     if self.total_fees_paid == Decimal('0'):
-                                        # WebSocket НЕ установил комиссию, получаем из БД
+                                        # WebSocket НЕ установил комиссию, получаем из API через order_id
                                         try:
-                                            order_from_db = await db_manager.get_order_by_id(order_id)
-                                            if order_from_db and order_from_db.get('commission'):
-                                                self.total_fees_paid = self._convert_to_decimal(order_from_db['commission'])
-                                                log_info(self.user_id, f"💰 [FALLBACK] Комиссия получена из БД: ${self.total_fees_paid:.4f}", "SignalScalper")
+                                            log_info(self.user_id, f"📡 [FALLBACK OPEN] Запрашиваю комиссию OPEN ордера {order_id} с биржи...", "SignalScalper")
+                                            open_order_status = await self.api.get_order_status(order_id, max_retries=3)
+
+                                            if open_order_status and open_order_status.get('orderStatus') == 'Filled':
+                                                # ✅ API вернул ТОЧНУЮ комиссию OPEN ордера!
+                                                open_commission = Decimal(str(open_order_status.get('cumExecFee', '0')))
+                                                self.total_fees_paid = open_commission
+                                                log_info(self.user_id, f"💰 [FALLBACK OPEN] Комиссия получена из API: ${self.total_fees_paid:.4f}", "SignalScalper")
                                             else:
-                                                log_warning(self.user_id, "⚠️ [FALLBACK] Комиссия не найдена в БД, используем 0", "SignalScalper")
+                                                log_warning(self.user_id, "⚠️ [FALLBACK OPEN] API не вернул данные ордера, комиссия = 0", "SignalScalper")
                                         except Exception as fee_error:
-                                            log_error(self.user_id, f"❌ [FALLBACK] Ошибка получения комиссии из БД: {fee_error}", "SignalScalper")
+                                            log_error(self.user_id, f"❌ [FALLBACK OPEN] Ошибка получения комиссии из API: {fee_error}", "SignalScalper")
                                     else:
                                         log_info(self.user_id, f"💰 [FALLBACK] Используем комиссию из памяти (WebSocket): ${self.total_fees_paid:.4f}", "SignalScalper")
 
@@ -711,6 +715,9 @@ class SignalScalperStrategy(BaseStrategy):
                                             log_info(self.user_id, f"✅ [FALLBACK OPEN] Ордер {order_id} обновлён в БД (комиссия сохранена: ${existing_commission:.4f})", "SignalScalper")
                                     except Exception as db_error:
                                         log_error(self.user_id, f"❌ [FALLBACK OPEN] Ошибка обновления ордера в БД: {db_error}", "SignalScalper")
+
+                                    # ✅ КРИТИЧНО: Устанавливаем Stop Loss (как в WebSocket обработчике!)
+                                    await self._place_stop_loss_order(self.active_direction, self.entry_price, self.position_size)
 
                                     # КРИТИЧНО: Сбрасываем флаг ожидания и устанавливаем last_known_price
                                     self.is_waiting_for_trade = False
