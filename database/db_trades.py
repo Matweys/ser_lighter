@@ -1633,7 +1633,7 @@ class _DatabaseManager:
             SELECT id, user_id, symbol, side, order_type, quantity, price,
                    filled_quantity, average_price, status, order_id,
                    client_order_id, strategy_type, bot_priority, order_purpose,
-                   filled_at, created_at, updated_at, metadata
+                   filled_at, created_at, updated_at, metadata, trade_id, commission
             FROM orders
             WHERE user_id = $1
               AND symbol = $2
@@ -1693,6 +1693,7 @@ class _DatabaseManager:
             else:
                 # Fallback: если trade_id нет, суммируем по symbol и bot_priority
                 # Берем все FILLED ордера после последнего OPEN ордера
+                # КРИТИЧНО: ИСКЛЮЧАЕМ CLOSE ордер - его комиссия добавляется отдельно в расчёте PnL
                 query = """
                 SELECT COALESCE(SUM(commission), 0) as total_fees
                 FROM orders
@@ -1700,6 +1701,7 @@ class _DatabaseManager:
                   AND symbol = $2
                   AND bot_priority = $3
                   AND status = 'FILLED'
+                  AND order_purpose != 'CLOSE'
                   AND filled_at >= (
                       SELECT filled_at
                       FROM orders
