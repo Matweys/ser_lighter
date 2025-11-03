@@ -252,7 +252,6 @@ class GlobalWebSocketManager:
             # Обработка публичных сделок (МГНОВЕННЫЕ обновления цен!)
             if topic.startswith("publicTrade."):
                 symbol = topic.split(".")[1]
-                log_info(0, f"🔔 [DIAGNOSTIC] Получено publicTrade событие для {symbol}, данных: {len(data.get('data', []))}", module_name=__name__)
                 await self._handle_public_trade(symbol, data["data"])
 
             # Обработка тикеров (медленные обновления - deprecated)
@@ -277,32 +276,17 @@ class GlobalWebSocketManager:
         """
         try:
             if not trade_data:
-                log_warning(0, f"⚠️ [publicTrade] {symbol}: получен пустой trade_data!", module_name=__name__)
                 return
 
             # Берем последнюю сделку из массива (самая свежая цена)
             latest_trade = trade_data[-1]
             price = Decimal(str(latest_trade.get("p", "0")))
 
-            # 🔍 ДИАГНОСТИКА: Логируем каждое 20-е событие для мониторинга
-            if not hasattr(self, '_trade_counter'):
-                self._trade_counter = {}
-            if symbol not in self._trade_counter:
-                self._trade_counter[symbol] = 0
-            self._trade_counter[symbol] += 1
-
-            if self._trade_counter[symbol] % 20 == 1:
-                subscribers_count = len(self.symbol_subscribers.get(symbol, set()))
-                subscriber_ids = list(self.symbol_subscribers.get(symbol, set()))
-                log_info(0, f"🔔 [publicTrade] {symbol}: price={price}, подписчиков={subscribers_count}, user_ids={subscriber_ids}, событие #{self._trade_counter[symbol]}", module_name=__name__)
-
             if price <= 0:
-                log_warning(0, f"⚠️ [publicTrade] {symbol}: получена недопустимая цена price={price}!", module_name=__name__)
                 return
 
             # Проверяем наличие подписчиков
             if symbol not in self.symbol_subscribers or not self.symbol_subscribers[symbol]:
-                log_warning(0, f"⚠️ [publicTrade] {symbol}: НЕТ ПОДПИСЧИКОВ! Пропускаю событие. symbol_subscribers={list(self.symbol_subscribers.keys())}", module_name=__name__)
                 return
 
             # Отправка события всем подписчикам символа
@@ -313,10 +297,6 @@ class GlobalWebSocketManager:
                     price=price
                 )
                 await self.event_bus.publish(price_event)
-
-                # ДИАГНОСТИКА: Логируем первые 5 публикаций событий
-                if self._trade_counter[symbol] <= 5:
-                    log_info(0, f"✅ [publicTrade] Опубликовал PriceUpdateEvent для user_id={user_id}, symbol={symbol}, price={price}", module_name=__name__)
 
         except Exception as e:
             log_error(0, f"Ошибка обработки публичной сделки {symbol}: {e}", module_name=__name__)

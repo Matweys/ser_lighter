@@ -115,9 +115,6 @@ class SignalScalperStrategy(BaseStrategy):
         from strategies.recovery import SignalScalperRecoveryHandler
         self.recovery_handler = SignalScalperRecoveryHandler(self)
 
-        # Счетчик обновлений цены (для диагностики)
-        self._price_update_counter = 0
-
 
     def _get_strategy_type(self) -> StrategyType:
         return StrategyType.SIGNAL_SCALPER
@@ -210,9 +207,6 @@ class SignalScalperStrategy(BaseStrategy):
 
         THREAD-SAFE: Защищено декоратором @strategy_locked для предотвращения race conditions.
         """
-        # ДИАГНОСТИКА: Логируем вызов обработчика
-        log_debug(self.user_id, f"🔔 handle_new_candle ВЫЗВАН для {event.symbol} (is_running={self.is_running}, self.symbol={self.symbol})", "SignalScalper")
-
         # КРИТИЧНО: Проверяем флаг работы в самом начале
         if not self.is_running:
             log_warning(self.user_id, f"⚠️ handle_new_candle: is_running=FALSE, пропускаю событие", "SignalScalper")
@@ -349,26 +343,11 @@ class SignalScalperStrategy(BaseStrategy):
 
         THREAD-SAFE: Защищено декоратором @strategy_locked для предотвращения race conditions.
         """
-        # ДИАГНОСТИКА: Логируем вызов обработчика
-        if not hasattr(self, '_price_update_counter'):
-            self._price_update_counter = 0
-        self._price_update_counter += 1
-
-        # УСИЛЕННАЯ ДИАГНОСТИКА: первые 10 событий логируем как INFO
-        if self._price_update_counter <= 10:
-            log_info(self.user_id, f"💰 [ДИАГНОСТИКА] handle_price_update ВЫЗВАН #{self._price_update_counter} для {event.symbol}, price={event.price}, position_active={self.position_active}", "SignalScalper")
-        elif self._price_update_counter % 20 == 1:
-            log_debug(self.user_id, f"💰 handle_price_update ВЫЗВАН #{self._price_update_counter} для {event.symbol} (position_active={self.position_active})", "SignalScalper")
-
         # КРИТИЧЕСКИ ВАЖНО: Проверяем что это цена НАШЕГО символа!
         if event.symbol != self.symbol:
-            if self._price_update_counter <= 3:
-                log_warning(self.user_id, f"⚠️ [ДИАГНОСТИКА] Получено событие для {event.symbol}, но стратегия работает с {self.symbol}! Пропускаю.", "SignalScalper")
             return
 
         if not self.position_active or not self.entry_price or self.is_waiting_for_trade:
-            if self._price_update_counter <= 3:
-                log_debug(self.user_id, f"ℹ️ [ДИАГНОСТИКА] Получено событие, но позиция неактивна (position_active={self.position_active}, entry_price={self.entry_price}, waiting={self.is_waiting_for_trade})", "SignalScalper")
             return
 
         current_price = event.price
@@ -669,33 +648,38 @@ class SignalScalperStrategy(BaseStrategy):
                                     self.average_entry_price = Decimal('0')
 
                                     # ✅ ПОЛУЧАЕМ КОМИССИЮ ИЗ API (как в FALLBACK close)
-                                    # ✅ КРИТИЧНО: Сначала проверяем, не установил ли WebSocket комиссию в БД
-                                    order_from_db_for_fee_check = await db_manager.get_order_by_order_id(order_id)
-                                    existing_commission_in_db = Decimal('0')
-                                    if order_from_db_for_fee_check and order_from_db_for_fee_check.get('commission'):
-                                        existing_commission_in_db = self._convert_to_decimal(order_from_db_for_fee_check['commission'])
+                                    # ✅ КРИТИЧНО: Обернуто в try-except для защиты от ошибок БД
+                                    try:
+                                        # ✅ КРИТИЧНО: Сначала проверяем, не установил ли WebSocket комиссию в БД
+                                        order_from_db_for_fee_check = await db_manager.get_order_by_exchange_id(order_id, self.user_id)
+                                        existing_commission_in_db = Decimal('0')
+                                        if order_from_db_for_fee_check and order_from_db_for_fee_check.get('commission'):
+                                            existing_commission_in_db = self._convert_to_decimal(order_from_db_for_fee_check['commission'])
 
-                                    if existing_commission_in_db > Decimal('0'):
-                                        # WebSocket УЖЕ установил комиссию в БД - используем её!
-                                        self.total_fees_paid = existing_commission_in_db
-                                        log_info(self.user_id, f"💰 [FALLBACK OPEN] WebSocket уже установил комиссию в БД: ${self.total_fees_paid:.4f}", "SignalScalper")
-                                    elif self.total_fees_paid == Decimal('0'):
-                                        # WebSocket НЕ установил комиссию, получаем из API через order_id
-                                        try:
-                                            log_info(self.user_id, f"📡 [FALLBACK OPEN] Запрашиваю комиссию OPEN ордера {order_id} с биржи...", "SignalScalper")
-                                            open_order_status = await self.api.get_order_status(order_id, max_retries=3)
+                                        if existing_commission_in_db > Decimal('0'):
+                                            # WebSocket УЖЕ установил комиссию в БД - используем её!
+                                            self.total_fees_paid = existing_commission_in_db
+                                            log_info(self.user_id, f"💰 [FALLBACK OPEN] WebSocket уже установил комиссию в БД: ${self.total_fees_paid:.4f}", "SignalScalper")
+                                        elif self.total_fees_paid == Decimal('0'):
+                                            # WebSocket НЕ установил комиссию, получаем из API через order_id
+                                            try:
+                                                log_info(self.user_id, f"📡 [FALLBACK OPEN] Запрашиваю комиссию OPEN ордера {order_id} с биржи...", "SignalScalper")
+                                                open_order_status = await self.api.get_order_status(order_id, max_retries=3)
 
-                                            if open_order_status and open_order_status.get('orderStatus') == 'Filled':
-                                                # ✅ API вернул ТОЧНУЮ комиссию OPEN ордера!
-                                                open_commission = Decimal(str(open_order_status.get('cumExecFee', '0')))
-                                                self.total_fees_paid = open_commission
-                                                log_info(self.user_id, f"💰 [FALLBACK OPEN] Комиссия получена из API: ${self.total_fees_paid:.4f}", "SignalScalper")
-                                            else:
-                                                log_warning(self.user_id, "⚠️ [FALLBACK OPEN] API не вернул данные ордера, комиссия = 0", "SignalScalper")
-                                        except Exception as fee_error:
-                                            log_error(self.user_id, f"❌ [FALLBACK OPEN] Ошибка получения комиссии из API: {fee_error}", "SignalScalper")
-                                    else:
-                                        log_info(self.user_id, f"💰 [FALLBACK] Используем комиссию из памяти (WebSocket): ${self.total_fees_paid:.4f}", "SignalScalper")
+                                                if open_order_status and open_order_status.get('orderStatus') == 'Filled':
+                                                    # ✅ API вернул ТОЧНУЮ комиссию OPEN ордера!
+                                                    open_commission = Decimal(str(open_order_status.get('cumExecFee', '0')))
+                                                    self.total_fees_paid = open_commission
+                                                    log_info(self.user_id, f"💰 [FALLBACK OPEN] Комиссия получена из API: ${self.total_fees_paid:.4f}", "SignalScalper")
+                                                else:
+                                                    log_warning(self.user_id, "⚠️ [FALLBACK OPEN] API не вернул данные ордера, комиссия = 0", "SignalScalper")
+                                            except Exception as fee_error:
+                                                log_error(self.user_id, f"❌ [FALLBACK OPEN] Ошибка получения комиссии из API: {fee_error}", "SignalScalper")
+                                        else:
+                                            log_info(self.user_id, f"💰 [FALLBACK] Используем комиссию из памяти (WebSocket): ${self.total_fees_paid:.4f}", "SignalScalper")
+                                    except Exception as commission_check_error:
+                                        # ✅ КРИТИЧНО: Если не удалось получить комиссию - продолжаем с текущим значением
+                                        log_warning(self.user_id, f"⚠️ [FALLBACK OPEN] Ошибка получения комиссии из БД: {commission_check_error}. Продолжаю с комиссией=${self.total_fees_paid:.4f}", "SignalScalper")
 
                                     self.initial_margin_usd = self.intended_order_amount
                                     self.current_total_margin = self.intended_order_amount
@@ -1073,15 +1057,6 @@ class SignalScalperStrategy(BaseStrategy):
                 is_closing_order = True
                 log_info(self.user_id, f"[FALLBACK] Ордер {event.order_id} определен как ЗАКРЫТИЕ по направлению: {event.side} (ожидалось {expected_closing_side})", "SignalScalper")
 
-        # ДЕТАЛЬНОЕ логирование для диагностики
-        log_info(self.user_id,
-                f"[ДИАГНОСТИКА] Ордер {event.order_id}: "
-                f"side={event.side}, qty={event.qty}, price={event.price}, "
-                f"reduce_only={getattr(event, 'reduce_only', 'НЕТ')}, "
-                f"position_active={self.position_active}, active_direction={self.active_direction}, "
-                f"is_closing={is_closing_order}",
-                "SignalScalper")
-
         # Определение усреднения: позиция активна + НЕ закрытие + правильное направление
         is_averaging_order = False
         if self.position_active and not is_closing_order:
@@ -1383,7 +1358,6 @@ class SignalScalperStrategy(BaseStrategy):
         elif is_closing_order and self.position_active:
             # Ордер на закрытие позиции
             log_info(self.user_id, f"[ЗАКРЫТИЕ] Обрабатываем ордер закрытия: {event.order_id}", "SignalScalper")
-            log_info(self.user_id, f"🔍 [STRATEGY DEBUG] event.fee={event.fee}, type={type(event.fee)}", "SignalScalper")
 
             # ✅ ИСПОЛЬЗУЕМ ОБЩИЙ МЕТОД для получения данных из БД и расчета базового PnL
             # ВАЖНО: В WebSocket комиссия точная (event.fee), поэтому пересчитываем PnL после
