@@ -349,24 +349,33 @@ class SignalScalperStrategy(BaseStrategy):
 
         THREAD-SAFE: Защищено декоратором @strategy_locked для предотвращения race conditions.
         """
-        # ДИАГНОСТИКА: Логируем вызов обработчика (раз в 10 тиков чтобы не спамить)
+        # ДИАГНОСТИКА: Логируем вызов обработчика
         if not hasattr(self, '_price_update_counter'):
             self._price_update_counter = 0
         self._price_update_counter += 1
-        if self._price_update_counter % 10 == 1:
+
+        # УСИЛЕННАЯ ДИАГНОСТИКА: первые 10 событий логируем как INFO
+        if self._price_update_counter <= 10:
+            log_info(self.user_id, f"💰 [ДИАГНОСТИКА] handle_price_update ВЫЗВАН #{self._price_update_counter} для {event.symbol}, price={event.price}, position_active={self.position_active}", "SignalScalper")
+        elif self._price_update_counter % 20 == 1:
             log_debug(self.user_id, f"💰 handle_price_update ВЫЗВАН #{self._price_update_counter} для {event.symbol} (position_active={self.position_active})", "SignalScalper")
 
         # КРИТИЧЕСКИ ВАЖНО: Проверяем что это цена НАШЕГО символа!
         if event.symbol != self.symbol:
+            if self._price_update_counter <= 3:
+                log_warning(self.user_id, f"⚠️ [ДИАГНОСТИКА] Получено событие для {event.symbol}, но стратегия работает с {self.symbol}! Пропускаю.", "SignalScalper")
             return
 
         if not self.position_active or not self.entry_price or self.is_waiting_for_trade:
+            if self._price_update_counter <= 3:
+                log_debug(self.user_id, f"ℹ️ [ДИАГНОСТИКА] Получено событие, но позиция неактивна (position_active={self.position_active}, entry_price={self.entry_price}, waiting={self.is_waiting_for_trade})", "SignalScalper")
             return
 
         current_price = event.price
 
         # Защита от неправильных цен
         if current_price <= 0:
+            log_warning(self.user_id, f"⚠️ Получена недопустимая цена: {current_price}", "SignalScalper")
             return
 
         # СОХРАНЯЕМ ПОСЛЕДНЮЮ ЦЕНУ для координатора multi-account
@@ -660,7 +669,17 @@ class SignalScalperStrategy(BaseStrategy):
                                     self.average_entry_price = Decimal('0')
 
                                     # ✅ ПОЛУЧАЕМ КОМИССИЮ ИЗ API (как в FALLBACK close)
-                                    if self.total_fees_paid == Decimal('0'):
+                                    # ✅ КРИТИЧНО: Сначала проверяем, не установил ли WebSocket комиссию в БД
+                                    order_from_db_for_fee_check = await db_manager.get_order_by_order_id(order_id)
+                                    existing_commission_in_db = Decimal('0')
+                                    if order_from_db_for_fee_check and order_from_db_for_fee_check.get('commission'):
+                                        existing_commission_in_db = self._convert_to_decimal(order_from_db_for_fee_check['commission'])
+
+                                    if existing_commission_in_db > Decimal('0'):
+                                        # WebSocket УЖЕ установил комиссию в БД - используем её!
+                                        self.total_fees_paid = existing_commission_in_db
+                                        log_info(self.user_id, f"💰 [FALLBACK OPEN] WebSocket уже установил комиссию в БД: ${self.total_fees_paid:.4f}", "SignalScalper")
+                                    elif self.total_fees_paid == Decimal('0'):
                                         # WebSocket НЕ установил комиссию, получаем из API через order_id
                                         try:
                                             log_info(self.user_id, f"📡 [FALLBACK OPEN] Запрашиваю комиссию OPEN ордера {order_id} с биржи...", "SignalScalper")
@@ -2513,6 +2532,10 @@ class SignalScalperStrategy(BaseStrategy):
                 entry_price=saved_entry_price,
                 entry_time=saved_entry_time
             )
+
+            # ПРОВЕРКА ОТЛОЖЕННОЙ ОСТАНОВКИ
+            # Проверяем, должна ли стратегия быть остановлена после закрытия позиции
+            await self.check_deferred_stop()
 
         except Exception as e:
             log_error(self.user_id, f"❌ Ошибка обработки ручного закрытия: {e}", "SignalScalper")

@@ -101,6 +101,9 @@ class FlashDropCatcherStrategy(BaseStrategy):
         # Стратегия сканирует ВСЕ символы и работает с множеством позиций параллельно
         # self.symbol меняется ВРЕМЕННО только при вызове _place_order() для корректной работы базового класса
 
+        # ✅ КРИТИЧНО: Сохраняем ИСХОДНОЕ значение self.symbol для восстановления после закрытия позиций
+        self._original_symbol = symbol  # Должно быть "ALL" для multi-symbol стратегии
+
         # Hard stop loss при -15$ (из конфига)
         self.HARD_STOP_LOSS_USDT = Decimal('-15.0')
 
@@ -731,10 +734,14 @@ class FlashDropCatcherStrategy(BaseStrategy):
                 return
 
             # Проверка 3: Проверяем, что это наш символ (если стратегия работает для конкретного символа)
+            # ✅ КРИТИЧНО: Используем WARNING уровень вместо DEBUG, чтобы видеть блокировку в логах
             if self.symbol != "ALL" and symbol != self.symbol:
-                log_debug(self.user_id,
-                         f"⏩ Пропускаем сигнал {symbol} - стратегия настроена только для {self.symbol}",
-                         "FlashDropCatcher")
+                log_warning(self.user_id,
+                           f"⏩ Пропускаем сигнал {symbol} - стратегия настроена только для {self.symbol} (self.symbol должен быть 'ALL'!)",
+                           "FlashDropCatcher")
+                log_warning(self.user_id,
+                           f"🔧 [ДИАГНОСТИКА] self.symbol={self.symbol}, _original_symbol={self._original_symbol}, symbol={symbol}",
+                           "FlashDropCatcher")
                 return
 
             # Генерируем детальное сообщение сигнала
@@ -1157,8 +1164,11 @@ class FlashDropCatcherStrategy(BaseStrategy):
                     reduce_only=True
                 )
             finally:
-                # Восстанавливаем self.symbol обратно в "ALL"
-                self.symbol = original_symbol
+                # ✅ КРИТИЧНО: Восстанавливаем self.symbol в ИСХОДНОЕ значение "ALL"
+                # ВАЖНО: НЕ используем original_symbol (который может быть символом позиции),
+                # а используем _original_symbol (всегда "ALL" для multi-symbol стратегии)
+                self.symbol = self._original_symbol
+                log_info(self.user_id, f"✅ self.symbol восстановлен обратно в '{self._original_symbol}' после закрытия {symbol}", "FlashDropCatcher")
 
             # place_order() возвращает order_id (строку), а не словарь
             if close_result:
