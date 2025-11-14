@@ -44,7 +44,11 @@ class OrderUpdateEvent(BaseEvent):
 
 @dataclass
 class OrderFilledEvent(BaseEvent):
-    """Событие об исполнении ордера"""
+    """
+    Событие об исполнении ордера
+
+    MULTI-ACCOUNT SUPPORT: Содержит bot_priority для идентификации какой бот должен обработать событие
+    """
     order_id: str
     symbol: str
     side: str
@@ -52,6 +56,7 @@ class OrderFilledEvent(BaseEvent):
     price: Decimal
     fee: Decimal
     strategy_type: Optional[str] = None
+    bot_priority: Optional[int] = None  # Для мульти-аккаунт режима (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
     event_type: EventType = field(default=EventType.ORDER_FILLED, init=False)
 
 
@@ -90,15 +95,6 @@ class PositionClosedEvent(BaseEvent):
     closed_manually: bool = False  # Флаг ручного закрытия через WebSocket
     event_type: EventType = field(default=EventType.POSITION_CLOSED, init=False)
 
-
-@dataclass
-class SignalEvent(BaseEvent):
-    """Событие-сигнал от MetaStrategist для запуска стратегии"""
-    symbol: str
-    strategy_type: str
-    signal_strength: int
-    analysis_data: Optional[Dict[str, Any]] = None
-    event_type: EventType = field(default=EventType.SIGNAL, init=False)
 
 @dataclass
 class StrategyRestartRequestEvent(BaseEvent):
@@ -185,17 +181,6 @@ class DrawdownWarningEvent(BaseEvent):
     event_type: EventType = field(default=EventType.DRAWDOWN_WARNING, init=False)
 
 
-@dataclass
-class SystemStatusEvent(BaseEvent):
-    """Событие о статусе системы"""
-    status: str
-    message: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    # Для системных событий user_id может быть неактуален, но он обязателен в BaseEvent
-    # Он будет устанавливаться при создании события (например, user_id=0)
-    event_type: EventType = field(default=EventType.SYSTEM_STATUS, init=False)
-
-
 
 # Типизация для обработчиков
 Handler = Callable[[Any], Awaitable[None]]
@@ -224,6 +209,11 @@ class EventBus:
         self._running = False
         self._processor_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
+
+    @property
+    def is_running(self) -> bool:
+        """Public property to check if EventBus is running"""
+        return self._running
 
     async def start(self):
         if self._running: return

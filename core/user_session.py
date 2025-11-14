@@ -11,7 +11,6 @@ from datetime import datetime
 from core.logger import log_info, log_error, log_warning, log_debug
 from core.events import (
     BaseEvent,
-    SignalEvent,
     OrderFilledEvent,
     PositionUpdateEvent,
     PriceUpdateEvent,
@@ -24,8 +23,6 @@ from core.events import (
 )
 from cache.redis_manager import redis_manager, ConfigType
 from core.enums import StrategyType, EventType
-from analysis.meta_strategist import MetaStrategist
-from analysis.market_analyzer import MarketAnalyzer
 from api.bybit_api import BybitAPI
 from websocket.websocket_manager import GlobalWebSocketManager, DataFeedHandler
 from database.db_trades import db_manager
@@ -33,7 +30,7 @@ from core.settings_config import system_config
 from aiogram import Bot
 # Импорт стратегий
 from strategies.base_strategy import BaseStrategy
-from strategies.factory import create_strategy
+from strategies.signal_scalper_strategy import SignalScalperStrategy
 
 from telegram.bot import bot_manager
 from coordinator.multi_account_coordinator import MultiAccountCoordinator
@@ -50,9 +47,9 @@ class UserSession:
     Пользовательская торговая сессия
 
     Управляет всеми компонентами торговли для одного пользователя:
-    - MetaStrategist (анализ и принятие решений)
-    - DataFeedHandler (получение данных)
-    - Активные стратегии
+    - DataFeedHandler (получение рыночных данных)
+    - Активные стратегии (Signal Scalper)
+    - Multi-Account Coordinator (режим 3 ботов)
 
     Принципы работы:
     - Полная изоляция между пользователями
@@ -76,7 +73,6 @@ class UserSession:
         # API клиент сессии
         self.api: Optional[BybitAPI] = None
         # Основные компоненты
-        self.meta_strategist: Optional[MetaStrategist] = None
         self.data_feed_handler: Optional[DataFeedHandler] = None  # Для обычного режима (1 API ключ)
         self.data_feed_handlers: List[DataFeedHandler] = []  # Для multi-account режима (3 API ключа)
 
@@ -154,7 +150,7 @@ class UserSession:
                 log_info(self.user_id, "⏭️ Пропускаю запуск persistent стратегий (восстановление из Redis/БД)", module_name=__name__)
 
             # Сохранение состояния сессии в Redis
-            await self._save_session_state()
+            await self.save_session_state()
 
             log_info(self.user_id, "Пользовательская сессия запущена", module_name=__name__)
             # 2. Отправляем уведомление об успешном запуске
@@ -255,19 +251,6 @@ class UserSession:
                     analysis_data={'trigger': 'persistent_start'}
                 )
 
-            # === ЗАПУСК FLASH DROP CATCHER (независимая стратегия) ===
-            flash_drop_config = await redis_manager.get_config(self.user_id, ConfigType.STRATEGY_FLASH_DROP_CATCHER)
-            if flash_drop_config and flash_drop_config.get("is_enabled", False):
-                log_info(self.user_id, "🚀 Запуск Flash Drop Catcher (сканирование всех символов)...",
-                         module_name=__name__)
-                await self.start_strategy(
-                    strategy_type=StrategyType.FLASH_DROP_CATCHER.value,
-                    symbol="ALL",
-                    analysis_data={'trigger': 'persistent_start'}
-                )
-            else:
-                log_info(self.user_id, "Стратегия Flash Drop Catcher отключена в настройках.",
-                         module_name=__name__)
 
         except Exception as e:
             log_error(self.user_id, f"Ошибка при запуске постоянных стратегий: {e}", module_name=__name__)
@@ -287,7 +270,6 @@ class UserSession:
 
             # Статус компонентов
             components_status = {
-                "meta_strategist": self.meta_strategist.running if self.meta_strategist else False,
                 "data_feed_handler": self.data_feed_handler.running if self.data_feed_handler else False
             }
 
@@ -378,8 +360,7 @@ class UserSession:
                 for priority, api_client in enumerate(self.api_clients, start=1):
                     # КРИТИЧНО: Каждая стратегия получает свой DataFeedHandler (решает race condition)
                     data_feed = self.data_feed_handlers[priority - 1] if self.data_feed_handlers else None
-                    strategy = create_strategy(
-                        strategy_type=strategy_type,
+                    strategy = SignalScalperStrategy(
                         bot=self.bot,
                         user_id=self.user_id,
                         symbol=symbol,
@@ -439,7 +420,7 @@ class UserSession:
                 self.session_stats["strategies_launched"] += 1
 
                 # Сохраняем состояние сессии в Redis
-                await self._save_session_state()
+                await self.save_session_state()
 
                 # Публикация события (используем первую стратегию для ID)
                 event = StrategyStartEvent(
@@ -455,8 +436,7 @@ class UserSession:
 
             # === ОБЫЧНЫЙ РЕЖИМ (старая логика) ===
             else:
-                strategy = create_strategy(
-                    strategy_type=strategy_type,
+                strategy = SignalScalperStrategy(
                     bot=self.bot,
                     user_id=self.user_id,
                     symbol=symbol,
@@ -572,7 +552,7 @@ class UserSession:
                     self.session_stats["strategies_stopped"] += 1
 
                     # Сохраняем состояние сессии в Redis
-                    await self._save_session_state()
+                    await self.save_session_state()
 
                     # Отписываемся от WebSocket если нужно
                     global_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
@@ -682,7 +662,7 @@ class UserSession:
                     api_key_masked = f"{key_data['api_key'][:4]}...{key_data['api_key'][-4:]}" if len(key_data['api_key']) > 8 else "***"
                     log_info(self.user_id, f"✅ API клиент #{key_data['priority']} инициализирован | Ключ: {api_key_masked}", module_name=__name__)
 
-                # PRIMARY API клиент (первый) используется для MetaStrategist и других компонентов
+                # PRIMARY API клиент (первый) используется для компонентов сессии
                 self.api = self.api_clients[0]
                 log_info(self.user_id, "📌 PRIMARY API клиент установлен для компонентов", module_name=__name__)
 
@@ -729,16 +709,6 @@ class UserSession:
                 )
                 log_info(self.user_id, "✅ DataFeedHandler создан (обычный режим)", module_name=__name__)
 
-            # Создаем независимый анализатор
-            market_analyzer = MarketAnalyzer(user_id=self.user_id, bybit_api=self.api)
-
-            # Передаем анализатор и шину событий в MetaStrategist как зависимости
-            self.meta_strategist = MetaStrategist(
-                user_id=self.user_id,
-                analyzer=market_analyzer,
-                event_bus=self.event_bus
-            )
-
             log_info(self.user_id, "Компоненты сессии инициализированы", module_name=__name__)
 
         except Exception as e:
@@ -759,9 +729,6 @@ class UserSession:
                 # Обычный режим - запускаем единственный DataFeedHandler
                 await self.data_feed_handler.start()
                 log_info(self.user_id, "✅ DataFeedHandler запущен (обычный режим)", module_name=__name__)
-
-            # Запуск MetaStrategist
-            await self.meta_strategist.start()
 
             log_info(self.user_id, "Компоненты сессии запущены", module_name=__name__)
 
@@ -793,10 +760,6 @@ class UserSession:
                     except Exception as coord_error:
                         log_error(self.user_id, f"Ошибка остановки coordinator для {symbol}: {coord_error}", module_name=__name__)
                 self.coordinators.clear()
-
-            # Остановка компонентов
-            if self.meta_strategist:
-                await self.meta_strategist.stop()
 
             # Остановка DataFeedHandler (multi-account или обычный режим)
             if self.data_feed_handlers:
@@ -838,9 +801,7 @@ class UserSession:
     async def _subscribe_to_events(self):
         """Подписка на события. Явно указываем все события, которые обрабатывает сессия."""
         try:
-            # Этот список - самодокументируемый контракт. Сразу видно, что умеет делать сессия.
             events_for_session = [
-                EventType.SIGNAL,
                 EventType.RISK_LIMIT_EXCEEDED,
                 EventType.USER_SETTINGS_CHANGED,
                 EventType.STRATEGY_RESTART_REQUESTED,
@@ -864,8 +825,8 @@ class UserSession:
         except Exception as e:
             log_error(self.user_id, f"Ошибка отписки от событий: {e}", module_name=__name__)
 
-    async def _save_session_state(self):
-        """Сохранение состояния сессии в Redis"""
+    async def save_session_state(self):
+        """Public method to save session state to Redis"""
         try:
             session_state = {
                 "user_id": self.user_id,
@@ -905,10 +866,7 @@ class UserSession:
 
         try:
             # 1. Маршрутизация событий для самой сессии
-            if isinstance(event, SignalEvent):
-                await self._handle_signal_event(event)
-                return  # Сигнал обрабатывается только сессией
-            elif isinstance(event, RiskLimitExceededEvent):
+            if isinstance(event, RiskLimitExceededEvent):
                 await self._handle_risk_event(event)
                 return  # Событие риска обрабатывается только сессией
             elif isinstance(event, UserSettingsChangedEvent):
@@ -924,6 +882,18 @@ class UserSession:
                 # Ищем стратегию, которая работает с этим символом
                 for strategy in self.active_strategies.values():
                     if strategy.symbol == symbol:
+                        # КРИТИЧНО ДЛЯ MULTI-ACCOUNT: Фильтруем события по bot_priority
+                        # Если событие имеет bot_priority (OrderFilledEvent, PositionUpdateEvent, PositionClosedEvent),
+                        # то отправляем его ТОЛЬКО той стратегии, у которой совпадает account_priority
+                        if hasattr(event, 'bot_priority') and event.bot_priority is not None:
+                            strategy_priority = getattr(strategy, 'account_priority', 1)
+                            if strategy_priority != event.bot_priority:
+                                # Событие предназначено для другого бота (Bot_1/Bot_2/Bot_3) - пропускаем
+                                log_debug(self.user_id,
+                                         f"[MULTI-ACCOUNT FILTER] Событие {type(event).__name__} для Bot_{event.bot_priority}, "
+                                         f"стратегия {strategy.symbol} - это Bot_{strategy_priority}. Пропускаю.",
+                                         module_name=__name__)
+                                continue
                         # Просто передаем событие в публичный обработчик стратегии
                         await strategy.handle_event(event)
 
@@ -964,13 +934,8 @@ class UserSession:
                  module_name=__name__)
         try:
             # Получаем старый watchlist для сравнения
-            old_watchlist = set()
-            if self.meta_strategist and self.meta_strategist.user_config:
-                old_watchlist = set(self.meta_strategist.user_config.get("watchlist_symbols", []))
-
-            # Передаем событие в дочерние компоненты, у которых есть свой обработчик
-            if self.meta_strategist:
-                await self.meta_strategist.on_settings_changed(event)
+            old_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
+            old_watchlist = set(old_config.get("watchlist_symbols", []))
 
             # Обновляем watchlist в DataFeedHandler
             # ✅ КРИТИЧНО: Проверяем оба режима - обычный И multi-account!
@@ -1073,31 +1038,6 @@ class UserSession:
         except Exception as e:
             log_error(self.user_id, f"Ошибка остановки всех стратегий: {e}", module_name=__name__)
 
-    async def _handle_signal_event(self, event: SignalEvent):
-        """Обработчик сигналов от MetaStrategist для запуска стратегий."""
-        try:
-            log_info(self.user_id,
-                     f"Получен сигнал-триггер {event.strategy_type} для {event.symbol} (сила: {event.signal_strength})",
-                     module_name=__name__)
-
-            self.session_stats["total_signals"] += 1
-
-            # Запускаем стратегию. Метод start_strategy САМ получит свежие данные.
-            success = await self.start_strategy(
-                strategy_type=event.strategy_type,
-                symbol=event.symbol
-            )
-
-            if success:
-                log_info(self.user_id, f"Стратегия {event.strategy_type} для {event.symbol} запущена по сигналу",
-                         module_name=__name__)
-            else:
-                log_warning(self.user_id, f"Не удалось запустить стратегию {event.strategy_type} для {event.symbol}",
-                            module_name=__name__)
-        except Exception as e:
-            log_error(self.user_id, f"Ошибка обработки сигнала {event.strategy_type} для {event.symbol}: {e}",
-                      module_name=__name__)
-
     async def _handle_strategy_restart_request(self, event: StrategyRestartRequestEvent):
         """Обработчик запроса на перезапуск стратегии с поддержкой задержки."""
         log_info(self.user_id,
@@ -1176,8 +1116,7 @@ class UserSession:
                 for priority, api_client in enumerate(self.api_clients, start=1):
                     # КРИТИЧНО: Каждая стратегия получает свой DataFeedHandler (решает race condition)
                     data_feed = self.data_feed_handlers[priority - 1] if self.data_feed_handlers else None
-                    strategy = create_strategy(
-                        strategy_type=strategy_type.value,
+                    strategy = SignalScalperStrategy(
                         bot=self.bot,
                         user_id=self.user_id,
                         symbol=symbol,
@@ -1336,7 +1275,7 @@ class UserSession:
                 self.active_strategies[strategy_id] = bot_strategies[0]
 
                 # КРИТИЧНО: Сохраняем обновленное состояние в Redis для /autotrade_status
-                await self._save_session_state()
+                await self.save_session_state()
 
                 # Обновляем статистику
                 self.session_stats["strategies_launched"] += 1
@@ -1355,9 +1294,8 @@ class UserSession:
 
             # === ОБЫЧНЫЙ РЕЖИМ (один API клиент) ===
             else:
-                # Создаем стратегию с использованием factory
-                strategy = create_strategy(
-                    strategy_type=strategy_type.value,
+                # Создаем стратегию напрямую (только SignalScalper)
+                strategy = SignalScalperStrategy(
                     bot=self.bot,
                     user_id=self.user_id,
                     symbol=symbol,
@@ -1409,8 +1347,7 @@ class UserSession:
         """Отправка уведомления о запуске стратегии пользователю (ОДНО уведомление на стратегию)"""
         try:
             strategy_display_names = {
-                "signal_scalper": "Signal Scalper",
-                "flash_drop_catcher": "Flash Drop Catcher"
+                "signal_scalper": "Signal Scalper"
             }
 
             strategy_name = strategy_display_names.get(strategy.strategy_type.value, strategy.strategy_type.value)
@@ -1451,9 +1388,8 @@ class UserSession:
                 log_warning(self.user_id, f"Стратегия {strategy_id} уже активна", module_name=__name__)
                 return True
 
-            # Создаем стратегию с использованием factory
-            strategy = create_strategy(
-                strategy_type=strategy_type.value,
+            # Создаем стратегию напрямую (только SignalScalper)
+            strategy = SignalScalperStrategy(
                 bot=self.bot,
                 user_id=self.user_id,
                 symbol=symbol,
@@ -1865,7 +1801,6 @@ class UserSession:
 
             # КРИТИЧНО: Считаем УНИКАЛЬНЫЕ СИМВОЛЫ для SignalScalper (учитываем multi-account!)
             # Multi-account: 1 символ = 4 записи (_bot1, _bot2, _bot3, base) = 1 СЛОТ
-            # FlashDropCatcher НЕ влияет на слоты SignalScalper
             unique_symbols = set()
             for strategy_id, analysis in active_strategies_analysis.items():
                 # Учитываем ТОЛЬКО SignalScalper стратегии
@@ -2082,12 +2017,8 @@ class UserSession:
 
             # Добавляем информацию о лимитах
             # КРИТИЧНО: В multi-account режиме 3 стратегии для одного символа = 1 слот!
-            # FlashDropCatcher НЕ считается - это изолированная стратегия вне слотов
             unique_slots = set()
             for strategy_id in self.active_strategies.keys():
-                # Пропускаем FlashDropCatcher - он не занимает слоты
-                if 'flash_drop_catcher' in strategy_id.lower():
-                    continue
 
                 # Убираем суффикс _botN если есть (multi-account режим)
                 normalized_id = strategy_id
@@ -2098,7 +2029,7 @@ class UserSession:
                         normalized_id = '_'.join(parts[:-1])
                 unique_slots.add(normalized_id)
 
-            current_active = len(unique_slots)  # Правильный подсчёт слотов (без FlashDropCatcher)
+            current_active = len(unique_slots)  # Правильный подсчёт слотов
 
             message_parts.append(f"📊 <b>Статус торговых слотов:</b>")
             message_parts.append(f"▫️ Занято слотов: {current_active}")

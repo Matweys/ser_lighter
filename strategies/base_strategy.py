@@ -12,7 +12,7 @@ from aiogram import Bot
 from core.logger import log_info, log_error, log_warning, log_debug
 from core.enums import StrategyType, PositionSide, ConfigType, ExchangeType
 from core.events import (
-    EventType, BaseEvent, SignalEvent, PriceUpdateEvent,
+    EventType, BaseEvent, PriceUpdateEvent,
     OrderFilledEvent, PositionUpdateEvent, PositionClosedEvent,
     UserSettingsChangedEvent, EventBus, OrderUpdateEvent
 )
@@ -47,9 +47,9 @@ class BaseStrategy(ABC):
         Args:
             user_id: ID пользователя
             symbol: Торговый символ
-            signal_data: Данные сигнала от MetaStrategist
+            signal_data: Данные сигнала для запуска стратегии
             account_priority: Приоритет аккаунта (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
-            data_feed: DataFeedHandler для регистрации CLOSE операций (решает race condition)
+            data_feed: DataFeedHandler для регистрации CLOSE операций
         """
         self.user_id = user_id
         self.symbol = symbol
@@ -297,6 +297,20 @@ class BaseStrategy(ABC):
             stop_price = entry_price + price_offset
 
         return stop_price
+
+    @staticmethod
+    def _calculate_pnl_gross(entry_price: Decimal, exit_price: Decimal, position_size: Decimal, direction: str) -> Decimal:
+        """Рассчитывает валовый PnL (без вычета комиссий) в зависимости от направления позиции."""
+        if direction == "LONG":
+            return (exit_price - entry_price) * position_size
+        else:
+            return (entry_price - exit_price) * position_size
+
+    @staticmethod
+    def _estimate_close_commission(exit_price: Decimal, position_size: Decimal) -> Decimal:
+        """Рассчитывает приблизительную комиссию закрытия позиции."""
+        taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')
+        return exit_price * position_size * taker_fee_rate
 
     def _get_stop_loss_info(self, side: str, price: Decimal, quantity: Decimal) -> tuple[Decimal, Decimal]:
         """
@@ -913,7 +927,8 @@ class BaseStrategy(ABC):
                             exit_price=exit_price,
                             pnl=final_pnl,
                             commission=commission,
-                            exit_time=datetime.now(tz.utc)
+                            exit_time=datetime.now(tz.utc),
+                            bot_priority=self.account_priority  # MULTI-ACCOUNT: изоляция по bot_priority
                         )
                         log_info(
                             self.user_id,
@@ -2219,7 +2234,8 @@ class BaseStrategy(ABC):
                                 side=order_data.get("side", "Buy"),
                                 qty=Decimal(str(order_status.get("cumExecQty", "0"))),
                                 price=Decimal(str(order_status.get("avgPrice", "0"))),
-                                fee=Decimal(str(order_status.get("cumExecFee", "0")))
+                                fee=Decimal(str(order_status.get("cumExecFee", "0"))),
+                                bot_priority=self.account_priority  # MULTI-ACCOUNT: фильтрация по боту
                             )
                             await self._handle_order_filled(filled_event)
                         else:

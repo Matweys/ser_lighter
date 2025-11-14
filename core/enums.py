@@ -9,7 +9,6 @@ from enum import Enum, IntEnum
 class StrategyType(Enum):
     """Типы торговых стратегий"""
     SIGNAL_SCALPER = "signal_scalper"
-    FLASH_DROP_CATCHER = "flash_drop_catcher"
 
 
 class PositionSide(Enum):
@@ -54,64 +53,29 @@ class PositionMode(Enum):
     HEDGE_SHORT = 2
 
 
-class MarketCondition(Enum):
-    """Рыночные условия для анализа"""
-    STRONG_TREND = "STRONG_TREND"
-    TREND = "TREND"
-    WEAK_TREND = "WEAK_TREND"
-    STRONG_FLAT = "STRONG_FLAT"
-    FLAT = "FLAT"
-    UNCERTAIN = "UNCERTAIN"
-
-
-class TrendDirection(Enum):
-    """Направления тренда"""
-    BULLISH = "BULLISH"
-    BEARISH = "BEARISH"
-    SIDEWAYS = "SIDEWAYS"
-    NEUTRAL = "NEUTRAL"
-
-
-class SignalDirection(Enum):
-    """Направления торговых сигналов"""
-    LONG = "LONG"
-    SHORT = "SHORT"
-    CLOSE_LONG = "CLOSE_LONG"
-    CLOSE_SHORT = "CLOSE_SHORT"
-    HOLD = "HOLD"
-
-
 class EventType(Enum):
     """Типы событий в системе"""
     # Рыночные события
     PRICE_UPDATE = "price_update"
-    VOLUME_UPDATE = "volume_update"
-    TICKER_UPDATE = "ticker_update"
     NEW_CANDLE = "new_candle"
 
     # Торговые события
-    ORDER_PLACED = "order_placed"
     ORDER_FILLED = "order_filled"
-    ORDER_CANCELLED = "order_cancelled"
-    ORDER_REJECTED = "order_rejected"
     ORDER_UPDATE = "order_update"
 
     # События позиций
-    POSITION_OPENED = "position_opened"
     POSITION_UPDATE = "position_update"
     POSITION_CLOSED = "position_closed"
 
     # События стратегий
     STRATEGY_STARTED = "strategy_started"
     STRATEGY_STOPPED = "strategy_stopped"
-    STRATEGY_ERROR = "strategy_error"
     STRATEGY_RESTART_REQUESTED = "strategy_restart_requested"
     SIGNAL = "signal"
 
     # События риск-менеджмента
     RISK_LIMIT_EXCEEDED = "risk_limit_exceeded"
     DRAWDOWN_WARNING = "drawdown_warning"
-    EMERGENCY_STOP = "emergency_stop"
 
     # Системные события
     USER_SETTINGS_CHANGED = "user_settings_changed"
@@ -119,16 +83,6 @@ class EventType(Enum):
     USER_SESSION_STOP_REQUESTED = "user_session_stop_requested"
     USER_SESSION_STARTED = "user_session_started"
     USER_SESSION_STOPPED = "user_session_stopped"
-    SESSION_STARTED = "session_started"
-    SESSION_STOPPED = "session_stopped"
-    WEBSOCKET_CONNECTED = "websocket_connected"
-    WEBSOCKET_DISCONNECTED = "websocket_disconnected"
-    SYSTEM_STATUS = "system_status"
-
-    # События анализа
-    MARKET_ANALYSIS_COMPLETED = "market_analysis_completed"
-    TREND_CHANGED = "trend_changed"
-    VOLATILITY_ALERT = "volatility_alert"
 
 
 class StrategyStatus(Enum):
@@ -185,50 +139,14 @@ class TimeFrame(Enum):
     W1 = "1w"
 
 
-class IndicatorType(Enum):
-    """Типы технических индикаторов"""
-    EMA = "ema"
-    SMA = "sma"
-    RSI = "rsi"
-    MACD = "macd"
-    BOLLINGER = "bollinger"
-    ADX = "adx"
-    ATR = "atr"
-    STOCHASTIC = "stochastic"
-    WILLIAMS_R = "williams_r"
-    CCI = "cci"
-
-
-class OrderPriority(IntEnum):
-    """Приоритеты ордеров"""
-    LOW = 1
-    NORMAL = 2
-    HIGH = 3
-    URGENT = 4
-    EMERGENCY = 5
-
-
 class ConfigType(Enum):
     """Типы конфигураций"""
     GLOBAL = "global_config"
 
     # Типы для каждой стратегии
     STRATEGY_SIGNAL_SCALPER = "strategy_signal_scalper"
-    STRATEGY_FLASH_DROP_CATCHER = "strategy_flash_drop_catcher"
-
-    # Типы для каждого компонента
-    COMPONENT_META_STRATEGIST = "component_meta_strategist"
 
     USER_SETTINGS = "user_settings"
-
-
-class LogLevel(Enum):
-    """Уровни логирования"""
-    DEBUG = "debug"
-    INFO = "info"
-    WARNING = "warning"
-    ERROR = "error"
-    CRITICAL = "critical"
 
 
 class WebSocketChannel(Enum):
@@ -311,42 +229,8 @@ class TradingStatus(Enum):
 # Константы для системы
 class SystemConstants:
     """Системные константы"""
-    
-    # Точность вычислений
-    DECIMAL_PRECISION = 28
-    
-    # Таймауты (в секундах)
-    API_TIMEOUT = 30
-    WEBSOCKET_TIMEOUT = 60
-    ORDER_TIMEOUT = 300
-    POSITION_TIMEOUT = 3600
-    
-    # Лимиты
-    MAX_RETRIES = 3
-    MAX_ORDERS_PER_SYMBOL = 100
-    MAX_POSITIONS_PER_USER = 50
-    MAX_STRATEGIES_PER_USER = 10
-    
-    # Rate limits
-    API_RATE_LIMIT = 0.1  # 100ms между запросами
-    WEBSOCKET_RATE_LIMIT = 0.05  # 50ms между сообщениями
-    
+
     # Кэширование
     CACHE_EXPIRY_SECONDS = 300  # 5 минут
     CONFIG_CACHE_SECONDS = 60   # 1 минута
-    
-    # Минимальные значения
-    MIN_ORDER_SIZE_USDT = 5.0
-    MIN_BALANCE_USDT = 10.0
-    MIN_SIGNAL_STRENGTH = 50
-    
-    # Максимальные значения
-    MAX_LEVERAGE = 100
-    MAX_POSITION_SIZE_PERCENT = 50
-    MAX_DAILY_DRAWDOWN_PERCENT = 20
-    
-    # Форматирование
-    PRICE_DECIMAL_PLACES = 8
-    QUANTITY_DECIMAL_PLACES = 6
-    PERCENTAGE_DECIMAL_PLACES = 4
 

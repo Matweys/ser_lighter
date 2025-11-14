@@ -6,6 +6,7 @@ from typing import Dict, List, Tuple, Optional, Any
 from api.bybit_api import BybitAPI
 from core.logger import log_info, log_error, log_warning
 from core.functions import format_currency, format_percentage
+from core.settings_config import system_config
 
 
 # ============================================================================
@@ -14,6 +15,39 @@ from core.functions import format_currency, format_percentage
 
 PRIORITY_NAMES = {1: "PRIMARY", 2: "SECONDARY", 3: "TERTIARY"}
 PRIORITY_EMOJIS = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+# Названия ботов для отображения
+BOT_NAMES = {1: "BOT #1", 2: "BOT #2", 3: "BOT #3"}
+
+# Названия стратегий для отображения
+STRATEGY_NAMES = {
+    "signal_scalper": "SignalScalper"
+}
+
+# Заголовки стратегий с эмодзи для отображения
+STRATEGY_HEADERS = {
+    "signal_scalper": "📊 Signal Scalper"
+}
+
+# Названия месяцев на русском для статистики
+MONTH_NAMES_RU = {
+    1: "январь", 2: "февраль", 3: "март", 4: "апрель", 5: "май", 6: "июнь",
+    7: "июль", 8: "август", 9: "сентябрь", 10: "октябрь", 11: "ноябрь", 12: "декабрь"
+}
+
+# Названия параметров стратегий на русском
+PARAM_NAMES_RU = {
+    "enable_stop_loss": "Stop Loss",
+    "enable_stagnation_detector": "Усреднение #1 (Детектор застревания)",
+    "enable_averaging": "Усреднение #2 (Основное)"
+}
+
+# Названия приоритетов с эмодзи для отображения в UI
+PRIORITY_NAMES_WITH_EMOJI = {
+    1: "🥇 PRIMARY (Bot 1)",
+    2: "🥈 SECONDARY (Bot 2)",
+    3: "🥉 TERTIARY (Bot 3)"
+}
 
 
 # ============================================================================
@@ -431,3 +465,21 @@ def format_multi_account_orders(all_orders: List[Dict]) -> str:
     orders_text += f"🌟 <b>ИТОГО:</b> {len(all_orders)} ордеров\n"
 
     return orders_text
+
+
+# ============================================================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ КОНФИГУРАЦИИ
+# ============================================================================
+
+def get_demo_mode(exchange_name: str = "bybit") -> bool:
+    """
+    Определяет режим торговли (demo/live) из конфигурации.
+
+    Args:
+        exchange_name: Название биржи (по умолчанию "bybit")
+
+    Returns:
+        bool: True если демо-режим, False если реальная торговля
+    """
+    exchange_config = system_config.get_exchange_config(exchange_name)
+    return exchange_config.demo if exchange_config else False

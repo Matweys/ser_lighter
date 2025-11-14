@@ -1,16 +1,18 @@
 """
+
 Профессиональная система обработки callback запросов для многопользовательского торгового бота
 """
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, Message
 from aiogram.fsm.context import FSMContext
-from typing import Dict, Any, Optional
+from aiogram.exceptions import TelegramBadRequest
+from typing import Optional
 from decimal import Decimal
-import json
+from datetime import datetime, timedelta, timezone
 from ..bot import bot_manager
 from database.db_trades import db_manager
-from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent, UserSettingsChangedEvent, SignalEvent
-from core.enums import StrategyType, PositionSide, NotificationType, ConfigType
+from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent, UserSettingsChangedEvent
+from core.enums import StrategyType, ConfigType
 from ..keyboards.inline import (
     get_main_menu_keyboard,
     get_strategy_config_keyboard,
@@ -18,12 +20,11 @@ from ..keyboards.inline import (
     get_symbol_selection_keyboard,
     get_settings_keyboard,
     get_strategy_settings_keyboard,
-    get_back_keyboard,
-    get_parameter_description
+    get_back_keyboard
 )
 from .states import UserStates
 from cache.redis_manager import redis_manager
-from core.functions import format_currency, format_percentage, validate_symbol
+from core.functions import format_currency, format_percentage
 from core.default_configs import DefaultConfigs
 from core.logger import log_info, log_error, log_warning
 from core.settings_config import DEFAULT_SYMBOLS, system_config
@@ -36,17 +37,18 @@ def set_bot_application(bot_app):
     """Установка BotApplication для callback handler"""
     global _bot_application
     _bot_application = bot_app
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.utils.markdown import hbold
-from core.functions import to_decimal
-from datetime import datetime, timedelta, timezone
+
 from .multi_account_helpers import (
     PRIORITY_NAMES,
     PRIORITY_EMOJIS,
+    MONTH_NAMES_RU,
+    PARAM_NAMES_RU,
+    PRIORITY_NAMES_WITH_EMOJI,
     validate_api_keys,
     is_multi_account_mode,
     get_multi_account_balance,
-    format_multi_account_balance
+    format_multi_account_balance,
+    get_demo_mode
 )
 
 
@@ -65,16 +67,6 @@ class CallbackHandler:
                     "Интеллектуальная стратегия, работающая в обе стороны (LONG/SHORT).\n"
                     "Принимает решения на основе пересечения EMA и значений RSI.\n"
                     "Автоматически управляет выходом из сделки по трейлингу."
-                ),
-                "risk_level": "MEDIUM",
-                "min_balance": Decimal('100')
-            },
-            StrategyType.FLASH_DROP_CATCHER.value: {
-                "name": "🚀 Flash Drop Catcher",
-                "description": (
-                    "Стратегия ловли резких падений для входа в LONG.\n"
-                    "Сканирует все фьючерсные пары на резкие движения вниз.\n"
-                    "Открывает позиции на отскок с trailing stop."
                 ),
                 "risk_level": "MEDIUM",
                 "min_balance": Decimal('100')
@@ -175,15 +167,8 @@ async def _generate_stats_report(user_id: int, start_date: Optional[datetime] = 
         for stat in strategy_stats:
             strategy_name = stat['strategy_type'].replace('_', ' ').title()
 
-            # Переводим названия стратегий на русский
-            if strategy_name == 'Signal Scalper':
-                strategy_name = 'Signal Scalper'
-            elif strategy_name == 'Flash Drop Catcher':
-                strategy_name = '🚀 Flash Drop Catcher'
-
             net_pnl = stat['net_pnl']
             trades = stat['total_trades']
-            wins = stat['winning_trades']
             strategy_win_rate = stat['win_rate']
             strategy_profit_percentage = stat['profit_percentage']
 
@@ -281,11 +266,7 @@ async def callback_stats_period(callback: CallbackQuery, state: FSMContext):
                 end_date = datetime(year, month + 1, 1, tzinfo=moscow_tz) - timedelta(seconds=1)
 
             # Название месяца для отображения
-            month_names = {
-                1: "январь", 2: "февраль", 3: "март", 4: "апрель", 5: "май", 6: "июнь",
-                7: "июль", 8: "август", 9: "сентябрь", 10: "октябрь", 11: "ноябрь", 12: "декабрь"
-            }
-            period_name = f"за {month_names[month]} {year}"
+            period_name = f"за {MONTH_NAMES_RU[month]} {year}"
 
             report_text = await _generate_stats_report(
                 user_id,
@@ -377,8 +358,7 @@ async def callback_configure_strategy(callback: CallbackQuery, state: FSMContext
         # --- ИЗМЕНЕНИЕ 1: Надежное получение типа конфигурации ---
         # Вместо getattr, который вызывал ошибку, используем явную карту соответствия.
         strategy_enum_map = {
-            StrategyType.SIGNAL_SCALPER.value: ConfigType.STRATEGY_SIGNAL_SCALPER,
-            StrategyType.FLASH_DROP_CATCHER.value: ConfigType.STRATEGY_FLASH_DROP_CATCHER
+            StrategyType.SIGNAL_SCALPER.value: ConfigType.STRATEGY_SIGNAL_SCALPER
         }
         config_enum = strategy_enum_map.get(strategy_type)
 
@@ -431,17 +411,16 @@ async def callback_set_strategy_parameter(callback: CallbackQuery, state: FSMCon
     user_id = callback.from_user.id
     try:
         # Формат: set_param_{strategy_type}_{param_key}
-        # Нужно правильно разобрать для flash_drop_catcher (3 части) и signal_scalper (2 части)
         parts = callback.data.split("_")
 
         # Определяем, где заканчивается имя стратегии
-        # Известные стратегии: signal_scalper, flash_drop_catcher
-        if len(parts) >= 5 and f"{parts[2]}_{parts[3]}_{parts[4]}" in ["flash_drop_catcher"]:
-            strategy_type = f"{parts[2]}_{parts[3]}_{parts[4]}"
-            param_key = "_".join(parts[5:])
-        else:
+        # Известные стратегии: signal_scalper
+        if len(parts) >= 4:
             strategy_type = f"{parts[2]}_{parts[3]}"
             param_key = "_".join(parts[4:])
+        else:
+            await callback.answer("Некорректный формат параметра", show_alert=True)
+            return
 
         # Используем НОВОЕ, единое состояние
         await state.set_state(UserStates.AWAITING_STRATEGY_PARAM_VALUE)
@@ -453,11 +432,9 @@ async def callback_set_strategy_parameter(callback: CallbackQuery, state: FSMCon
             menu_message_id=callback.message.message_id
         )
 
-        # Получаем описание параметра (или дефолтный текст)
-        description_text = get_parameter_description(strategy_type, param_key)
-
+        # Запрашиваем новое значение параметра
         await callback.message.edit_text(
-            description_text,
+            f"Введите новое значение для параметра <b>{param_key}</b>:",
             parse_mode="HTML",
             reply_markup=get_back_keyboard(f"reconfigure_{strategy_type}")
         )
@@ -516,6 +493,12 @@ async def process_strategy_param_value(message: Message, state: FSMContext):
             param_key = user_data.get("editing_param_key")
             menu_message_id = user_data.get("menu_message_id")
 
+            # Проверка на None
+            if not strategy_type or not param_key:
+                await message.answer("❌ Ошибка: отсутствуют данные о стратегии или параметре.")
+                await state.clear()
+                return
+
             # Надежное сохранение слиянием
             config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
             all_defaults = DefaultConfigs.get_all_default_configs()["strategy_configs"]
@@ -531,7 +514,7 @@ async def process_strategy_param_value(message: Message, state: FSMContext):
             await state.clear()
 
             # Обновляем меню настроек
-            await _show_strategy_config_menu(message.bot, user_id, menu_message_id, strategy_type, user_id)
+            await _show_strategy_config_menu(message.bot, user_id, menu_message_id, strategy_type)
 
     except (ValueError, TypeError):
         await message.answer("❌ Некорректный формат. Введите числовое значение.")
@@ -597,14 +580,14 @@ async def callback_toggle_param(callback: CallbackQuery, state: FSMContext):
         parts = callback.data.split("_")
 
         # Определяем, где заканчивается имя стратегии
-        # Известные стратегии: signal_scalper, flash_drop_catcher
-        if len(parts) >= 5 and f"{parts[2]}_{parts[3]}_{parts[4]}" in ["flash_drop_catcher"]:
-            strategy_type = f"{parts[2]}_{parts[3]}_{parts[4]}"
-            param_name = "_".join(parts[5:])
-        else:
+        # Известные стратегии: signal_scalper
+        if len(parts) >= 4:
             # signal_scalper и другие 2-словные стратегии
             strategy_type = f"{parts[2]}_{parts[3]}"
             param_name = "_".join(parts[4:])
+        else:
+            await callback.answer("Некорректный формат параметра", show_alert=True)
+            return
 
         # Получаем конфигурацию
         config_enum = getattr(ConfigType, f"STRATEGY_{strategy_type.upper()}")
@@ -621,13 +604,7 @@ async def callback_toggle_param(callback: CallbackQuery, state: FSMContext):
         await redis_manager.save_config(user_id, config_enum, config)
 
         # Определяем человекочитаемое название
-        param_names_ru = {
-            "enable_stop_loss": "Stop Loss",
-            "enable_stagnation_detector": "Усреднение #1 (Детектор застревания)",
-            "enable_averaging": "Усреднение #2 (Основное)",
-            "enable_heartbeat_notifications": "Heartbeat уведомления"
-        }
-        param_name_ru = param_names_ru.get(param_name, param_name)
+        param_name_ru = PARAM_NAMES_RU.get(param_name, param_name)
         status_text = "включено" if new_value else "отключено"
 
         await callback.answer(f"{param_name_ru}: {status_text}", show_alert=False)
@@ -659,7 +636,7 @@ async def callback_reconfigure_strategy(callback: CallbackQuery, state: FSMConte
 # -- ОБРАБОИЧИКИ ВЫБОРА СТРАТЕГИИ для настройки
 
 # --- 1. НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ---
-async def _show_strategy_config_menu(bot, chat_id: int, message_id: int, strategy_type: str, user_id: int):
+async def _show_strategy_config_menu(bot, user_id: int, message_id: int, strategy_type: str):
     """
     Отображает меню настройки стратегии, гарантируя слияние
     конфигурации по умолчанию с пользовательской. (ИСПРАВЛЕННАЯ ВЕРСИЯ)
@@ -695,7 +672,7 @@ async def _show_strategy_config_menu(bot, chat_id: int, message_id: int, strateg
         # --- ОТКАЗОУСТОЙЧИВОЕ ОБНОВЛЕНИЕ ---
         await bot.edit_message_text(
             text=text,
-            chat_id=chat_id,
+            chat_id=user_id,
             message_id=message_id,
             reply_markup=reply_markup,
             parse_mode="HTML"
@@ -705,7 +682,7 @@ async def _show_strategy_config_menu(bot, chat_id: int, message_id: int, strateg
             pass
         else:
             log_error(user_id, f"Ошибка Telegram API при обновлении меню стратегии: {e}", "callback")
-            await bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode="HTML")
+            await bot.send_message(user_id, text, reply_markup=reply_markup, parse_mode="HTML")
     except Exception as e:
         log_error(user_id, f"Критическая ошибка в _show_strategy_config_menu: {e}", "callback")
 
@@ -859,8 +836,8 @@ async def callback_show_balance(callback: CallbackQuery, state: FSMContext):
         return
 
     try:
-        exchange_config = system_config.get_exchange_config("bybit")
-        use_demo = exchange_config.demo if exchange_config else False
+        # Определяем режим торговли (demo/live)
+        use_demo = get_demo_mode()
 
         # === MULTI-ACCOUNT РЕЖИМ (3 аккаунта) ===
         if is_multi_account_mode(all_api_keys):
@@ -1120,7 +1097,6 @@ async def callback_api_settings(callback: CallbackQuery, state: FSMContext):
             )
         elif len(all_api_keys) == 3:
             # Multi-Account режим - все 3 ключа настроены
-            priority_names = {1: "🥇 PRIMARY (Bot 1)", 2: "🥈 SECONDARY (Bot 2)", 3: "🥉 TERTIARY (Bot 3)"}
             text = "🔑 <b>Multi-Account режим АКТИВЕН</b>\n\n"
 
             for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
@@ -1128,13 +1104,12 @@ async def callback_api_settings(callback: CallbackQuery, state: FSMContext):
                 api_key = key_data['api_key']
                 api_key_short = api_key[:4] + '...' + api_key[-4:]
 
-                text += f"{priority_names[priority]}\n"
+                text += f"{PRIORITY_NAMES_WITH_EMOJI[priority]}\n"
                 text += f"<b>API Key:</b> <code>{api_key_short}</code>\n\n"
 
             text += "✅ Все 3 бота настроены для автоматической ротации."
         else:
             # Частичная настройка (1 или 2 ключа)
-            priority_names = {1: "🥇 PRIMARY (Bot 1)", 2: "🥈 SECONDARY (Bot 2)", 3: "🥉 TERTIARY (Bot 3)"}
             text = f"🔑 <b>Настроенные API ключи ({len(all_api_keys)}/3)</b>\n\n"
 
             for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
@@ -1142,7 +1117,7 @@ async def callback_api_settings(callback: CallbackQuery, state: FSMContext):
                 api_key = key_data['api_key']
                 api_key_short = api_key[:4] + '...' + api_key[-4:]
 
-                text += f"{priority_names[priority]}\n"
+                text += f"{PRIORITY_NAMES_WITH_EMOJI[priority]}\n"
                 text += f"<b>API Key:</b> <code>{api_key_short}</code>\n\n"
 
             text += f"⚠️ Для Multi-Account режима добавьте ещё {3 - len(all_api_keys)} ключа.\n"
@@ -1483,12 +1458,7 @@ async def process_api_secret_input(message: Message, state: FSMContext):
             # Показываем короткую версию ключа для подтверждения
             api_key_short = api_key[:4] + '...' + api_key[-4:]
 
-            priority_names = {
-                1: "PRIMARY (Bot 1)",
-                2: "SECONDARY (Bot 2)",
-                3: "TERTIARY (Bot 3)"
-            }
-            priority_name = priority_names[priority]
+            priority_name = PRIORITY_NAMES_WITH_EMOJI[priority]
 
             # Получаем ОБНОВЛЕННОЕ количество ключей для правильного отображения клавиатуры
             all_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
@@ -1580,12 +1550,7 @@ async def callback_add_update_api_key_with_priority(callback: CallbackQuery, sta
             return
 
         # Определяем имя для отображения
-        priority_names = {
-            1: "PRIMARY (Bot 1)",
-            2: "SECONDARY (Bot 2)",
-            3: "TERTIARY (Bot 3)"
-        }
-        priority_name = priority_names[priority]
+        priority_name = PRIORITY_NAMES_WITH_EMOJI[priority]
         action_text = "Обновление" if action == "update" else "Добавление"
 
         # Сохраняем priority в состояние
@@ -1644,12 +1609,7 @@ async def callback_delete_api_key_with_priority(callback: CallbackQuery, state: 
             return
 
         # Определяем имя для отображения
-        priority_names = {
-            1: "PRIMARY (Bot 1)",
-            2: "SECONDARY (Bot 2)",
-            3: "TERTIARY (Bot 3)"
-        }
-        priority_name = priority_names[priority]
+        priority_name = PRIORITY_NAMES_WITH_EMOJI[priority]
 
         # Проверяем, существует ли ключ с таким priority
         all_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
@@ -1734,12 +1694,7 @@ async def callback_confirm_delete_api_key_with_priority(callback: CallbackQuery,
         all_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
         api_keys_count = len(all_keys)
 
-        priority_names = {
-            1: "PRIMARY (Bot 1)",
-            2: "SECONDARY (Bot 2)",
-            3: "TERTIARY (Bot 3)"
-        }
-        priority_name = priority_names[priority]
+        priority_name = PRIORITY_NAMES_WITH_EMOJI[priority]
 
         text = (
             f"✅ <b>{priority_name} API ключ успешно удален</b>\n\n"

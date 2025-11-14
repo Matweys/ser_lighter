@@ -10,7 +10,7 @@ from core.enums import StrategyType, EventType, ExchangeType
 from core.settings_config import EXCHANGE_FEES
 from core.logger import log_info, log_error, log_warning, log_debug
 from core.events import EventBus, NewCandleEvent, PriceUpdateEvent, OrderFilledEvent, PositionClosedEvent
-from analysis.signal_analyzer import SignalAnalyzer, SignalAnalysisResult
+from analysis.signal_analyzer import SignalAnalyzer
 from analysis.spike_detector import SpikeDetector
 from core.concurrency_manager import strategy_locked
 
@@ -46,6 +46,7 @@ class SignalScalperStrategy(BaseStrategy):
         self.intended_order_amount: Optional[Decimal] = None  # Запрошенная сумма ордера
         self.close_reason: Optional[str] = None  # Причина закрытия позиции для передачи в _handle_order_filled
         self._last_known_price: Optional[Decimal] = None  # Последняя известная цена для расчета PnL в координаторе
+        self.signal_price: Optional[Decimal] = None  # Цена сигнала для уведомлений
 
         # Multi-Account координатор (для проверки условий торговли)
         self.coordinator: Optional["MultiAccountCoordinator"] = None  # Устанавливается извне после создания
@@ -61,13 +62,6 @@ class SignalScalperStrategy(BaseStrategy):
         self.last_trade_close_time: Optional[float] = None  # Время закрытия последней сделки
         self.cooldown_seconds = 60  # Кулдаун в секундах (1 минута)
         self.last_trade_was_loss = False  # Была ли последняя сделка убыточной
-
-        # СИСТЕМА КОНТРОЛЯ РЕВЕРСОВ
-        self.last_reversal_time: Optional[float] = None  # Время последнего реверса
-        self.reversal_cooldown_seconds = 60  # Кулдаун после реверса в секундах (1 минута)
-        self.reversal_required_confirmations = 2  # Требуемые подтверждения после реверса
-        self.after_reversal_mode = False  # Флаг: находимся ли мы в режиме после реверса
-
 
         # ОСНОВНАЯ СИСТЕМА УСРЕДНЕНИЯ
         self.averaging_enabled = False  # Включена ли система усреднения
@@ -138,6 +132,287 @@ class SignalScalperStrategy(BaseStrategy):
     def last_known_price(self, value: Decimal):
         """Установка последней известной цены."""
         self._last_known_price = value
+
+    def _get_effective_entry_data(self) -> tuple[Decimal, Decimal]:
+        """Возвращает актуальные данные позиции с учётом усреднений (цена входа, размер позиции)."""
+        entry_price = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
+        position_size = self.total_position_size if self.total_position_size > 0 else self.position_size
+        return entry_price, position_size
+
+    async def _get_accumulated_fees_from_db(self) -> Decimal:
+        """Получает сумму накопленных комиссий (OPEN + AVERAGING) из БД для текущей позиции."""
+        try:
+            fees = await db_manager.get_total_fees_for_position(self.user_id, self.symbol, self.account_priority)
+            return Decimal(str(fees))
+        except Exception as e:
+            log_warning(self.user_id, f"Ошибка получения комиссий из БД: {e}", "SignalScalper")
+            return Decimal('0')
+
+    async def _fallback_open_position(self, order_id: str, side: str, direction: str):
+        """FALLBACK логика для открытия позиции через API если WebSocket не сработал."""
+        log_info(self.user_id, f"[FALLBACK] Ожидаю 1.5 сек исполнения ордера {order_id}...", "SignalScalper")
+        await asyncio.sleep(1.5)
+
+        try:
+            log_info(self.user_id, f"[FALLBACK] Проверяю позицию через get_positions()...", "SignalScalper")
+            positions = await self.api.get_positions(symbol=self.symbol)
+
+            log_info(self.user_id, f"[FALLBACK] Получено {len(positions) if positions else 0} позиций из API", "SignalScalper")
+
+            if positions and isinstance(positions, list):
+                for pos in positions:
+                    if pos["symbol"] == self.symbol:
+                        pos_size = abs(self._convert_to_decimal(pos.get("size", "0")))
+                        log_info(self.user_id, f"[FALLBACK] Найдена позиция {self.symbol}: size={pos_size}, avgPrice={pos.get('avgPrice')}", "SignalScalper")
+
+                        if pos_size > 0:
+                            if not self.position_active:
+                                entry_price_from_api = self._convert_to_decimal(pos.get("avgPrice", "0"))
+
+                                log_info(self.user_id,
+                                        f"✅ [FALLBACK] Позиция открыта через API: {entry_price_from_api:.4f} USDT",
+                                        "SignalScalper")
+
+                                self.position_active = True
+                                self.entry_price = entry_price_from_api
+                                self.position_size = pos_size
+                                self.active_direction = direction
+
+                                await self.event_bus.subscribe(EventType.PRICE_UPDATE, self.handle_price_update, user_id=self.user_id)
+
+                                from database.db_trades import db_manager, TradeRecord
+                                from datetime import timezone as tz
+                                try:
+                                    new_trade = TradeRecord(
+                                        user_id=self.user_id,
+                                        symbol=self.symbol,
+                                        side=side,
+                                        entry_price=entry_price_from_api,
+                                        quantity=pos_size,
+                                        leverage=int(float(self.get_config_value("leverage", 1))),
+                                        status="ACTIVE",
+                                        strategy_type=self.strategy_type.value,
+                                        bot_priority=self.account_priority,  # MULTI-ACCOUNT SUPPORT
+                                        entry_time=datetime.now(tz.utc),
+                                        profit=Decimal('0'),
+                                        commission=Decimal('0')
+                                    )
+                                    trade_id = await db_manager.save_trade(new_trade)
+                                    if trade_id:
+                                        self.active_trade_db_id = trade_id
+                                        await db_manager.update_order_trade_id(order_id, trade_id)
+                                        log_info(self.user_id, f"✅ [FALLBACK] Trade создан в БД: trade_id={trade_id}", "SignalScalper")
+                                except Exception as trade_error:
+                                    log_error(self.user_id, f"❌ [FALLBACK] Ошибка создания trade: {trade_error}", "SignalScalper")
+
+                                signal_price = getattr(self, 'signal_price', None)
+                                await self._send_trade_open_notification(side, entry_price_from_api, pos_size, self.intended_order_amount, signal_price)
+
+                                self.averaging_executed = False
+                                self.total_position_size = Decimal('0')
+                                self.average_entry_price = Decimal('0')
+
+                                try:
+                                    order_from_db_for_fee_check = await db_manager.get_order_by_exchange_id(order_id, self.user_id)
+                                    existing_commission_in_db = Decimal('0')
+                                    if order_from_db_for_fee_check and order_from_db_for_fee_check.get('commission'):
+                                        existing_commission_in_db = self._convert_to_decimal(order_from_db_for_fee_check['commission'])
+
+                                    if existing_commission_in_db > Decimal('0'):
+                                        self.total_fees_paid = existing_commission_in_db
+                                        log_info(self.user_id, f"💰 [FALLBACK OPEN] WebSocket уже установил комиссию в БД: ${self.total_fees_paid:.4f}", "SignalScalper")
+                                    elif self.total_fees_paid == Decimal('0'):
+                                        try:
+                                            log_info(self.user_id, f"📡 [FALLBACK OPEN] Запрашиваю комиссию OPEN ордера {order_id} с биржи...", "SignalScalper")
+                                            open_order_status = await self.api.get_order_status(order_id, max_retries=3)
+
+                                            if open_order_status and open_order_status.get('orderStatus') == 'Filled':
+                                                open_commission = Decimal(str(open_order_status.get('cumExecFee', '0')))
+                                                self.total_fees_paid = open_commission
+                                                log_info(self.user_id, f"💰 [FALLBACK OPEN] Комиссия получена из API: ${self.total_fees_paid:.4f}", "SignalScalper")
+                                            else:
+                                                log_warning(self.user_id, "⚠️ [FALLBACK OPEN] API не вернул данные ордера, комиссия = 0", "SignalScalper")
+                                        except Exception as fee_error:
+                                            log_error(self.user_id, f"❌ [FALLBACK OPEN] Ошибка получения комиссии из API: {fee_error}", "SignalScalper")
+                                    else:
+                                        log_info(self.user_id, f"💰 [FALLBACK] Используем комиссию из памяти (WebSocket): ${self.total_fees_paid:.4f}", "SignalScalper")
+                                except Exception as commission_check_error:
+                                    log_warning(self.user_id, f"⚠️ [FALLBACK OPEN] Ошибка получения комиссии из БД: {commission_check_error}. Продолжаю с комиссией=${self.total_fees_paid:.4f}", "SignalScalper")
+
+                                self.initial_margin_usd = self.intended_order_amount
+                                self.current_total_margin = self.intended_order_amount
+
+                                log_info(self.user_id, f"💰 [FALLBACK] Начальная маржа: ${self.initial_margin_usd:.2f}", "SignalScalper")
+
+                                self.entry_time = datetime.now()
+
+                                try:
+                                    order_from_db = await db_manager.get_order_by_id(order_id, self.user_id)  # КРИТИЧНО: user_id для изоляции!
+                                    existing_commission = Decimal('0')
+                                    if order_from_db and order_from_db.get('commission'):
+                                        existing_commission = self._convert_to_decimal(order_from_db['commission'])
+
+                                    if existing_commission == Decimal('0'):
+                                        await db_manager.update_order_on_fill(
+                                            order_id=order_id,
+                                            filled_quantity=pos_size,
+                                            average_price=entry_price_from_api,
+                                            commission=self.total_fees_paid
+                                        )
+                                        log_info(self.user_id, f"✅ [FALLBACK OPEN] Ордер {order_id} обновлён в БД с комиссией ${self.total_fees_paid:.4f}", "SignalScalper")
+                                    else:
+                                        await db_manager.update_order_on_fill(
+                                            order_id=order_id,
+                                            filled_quantity=pos_size,
+                                            average_price=entry_price_from_api,
+                                            commission=existing_commission
+                                        )
+                                        log_info(self.user_id, f"✅ [FALLBACK OPEN] Ордер {order_id} обновлён в БД (комиссия сохранена: ${existing_commission:.4f})", "SignalScalper")
+                                except Exception as db_error:
+                                    log_error(self.user_id, f"❌ [FALLBACK OPEN] Ошибка обновления ордера в БД: {db_error}", "SignalScalper")
+
+                                await self._place_stop_loss_order(self.active_direction, self.entry_price, self.position_size)
+
+                                self.is_waiting_for_trade = False
+                                self._last_known_price = entry_price_from_api
+                                log_info(self.user_id, f"✅ [FALLBACK] is_waiting_for_trade=False, _last_known_price={entry_price_from_api:.4f}", "SignalScalper")
+                            break
+
+        except Exception as api_error:
+            log_error(self.user_id, f"❌ [FALLBACK] Ошибка проверки позиции через API: {api_error}", "SignalScalper")
+
+    async def _fallback_close_position(self, order_id: str, position_size_to_close: Decimal):
+        """FALLBACK логика для закрытия позиции через API если WebSocket не сработал."""
+        log_info(self.user_id, f"[FALLBACK CLOSE] Ожидаю 1.5 сек исполнения ордера закрытия {order_id}...", "SignalScalper")
+        await asyncio.sleep(1.5)
+
+        try:
+            log_info(self.user_id, f"[FALLBACK CLOSE] Проверяю позицию через get_positions()...", "SignalScalper")
+            positions = await self.api.get_positions(symbol=self.symbol)
+
+            log_info(self.user_id, f"[FALLBACK CLOSE] Получено {len(positions) if positions else 0} позиций из API", "SignalScalper")
+
+            position_closed = True
+            if positions and isinstance(positions, list):
+                for pos in positions:
+                    if pos["symbol"] == self.symbol:
+                        pos_size = abs(self._convert_to_decimal(pos.get("size", "0")))
+                        log_info(self.user_id, f"[FALLBACK CLOSE] Найдена позиция {self.symbol}: size={pos_size}", "SignalScalper")
+                        if pos_size > 0:
+                            position_closed = False
+                        break
+
+            if position_closed and self.position_active:
+                log_warning(self.user_id,
+                           f"✅ [FALLBACK CLOSE] Позиция закрыта через API! WebSocket событие не пришло. Обрабатываю закрытие вручную.",
+                           "SignalScalper")
+
+                from database.db_trades import db_manager
+
+                saved_entry_price = getattr(self, 'entry_price', Decimal('0'))
+                saved_entry_time = getattr(self, 'entry_time', None)
+                exit_price = self._last_known_price if self._last_known_price else Decimal('0')
+
+                estimated_close_fee = Decimal('0')
+
+                try:
+                    log_info(self.user_id, f"📡 [FALLBACK CLOSE] Запрашиваю данные CLOSE ордера {order_id} с биржи...", "SignalScalper")
+                    close_order_status = await self.api.get_order_status(order_id, max_retries=3)
+
+                    if close_order_status and close_order_status.get('orderStatus') == 'Filled':
+                        exit_price = Decimal(str(close_order_status.get('avgPrice', '0')))
+                        close_commission = Decimal(str(close_order_status.get('cumExecFee', '0')))
+
+                        entry_price_for_pnl, position_size_for_pnl = self._get_effective_entry_data()
+
+                        fees_from_db = Decimal(str(await db_manager.get_total_fees_for_position(self.user_id, self.symbol, self.account_priority)))
+
+                        self.total_fees_paid = fees_from_db + close_commission
+
+                        pnl_gross = self._calculate_pnl_gross(entry_price_for_pnl, exit_price, position_size_for_pnl, self.active_direction)
+                        final_pnl = pnl_gross - self.total_fees_paid
+
+                        log_info(self.user_id,
+                                f"✅ [API ORDER_ID] PnL={final_pnl:.2f}$, exit={exit_price:.4f}, "
+                                f"комиссии={self.total_fees_paid:.4f}$ (OPEN+AVG из БД={fees_from_db:.4f}$ + CLOSE={close_commission:.4f}$)",
+                                "SignalScalper")
+                    else:
+                        log_warning(self.user_id, f"⚠️ [FALLBACK CLOSE] API не вернул данные для order_id {order_id}, использую расчет", "SignalScalper")
+                        exit_price_for_calc = self._last_known_price if self._last_known_price else Decimal('0')
+                        final_pnl, exit_price, entry_price_for_pnl, position_size_for_pnl, saved_entry_time, saved_entry_price, estimated_close_fee = await self._calculate_pnl_from_db_or_memory(exit_price_for_calc)
+
+                        total_fees_from_db = Decimal(str(await db_manager.get_total_fees_for_position(self.user_id, self.symbol, self.account_priority)))
+                        self.total_fees_paid = total_fees_from_db + estimated_close_fee
+
+                        pnl_gross = self._calculate_pnl_gross(entry_price_for_pnl, exit_price, position_size_for_pnl, self.active_direction)
+                        final_pnl = pnl_gross - self.total_fees_paid
+
+                        log_info(self.user_id, f"💰 [РАСЧЕТ] PnL={final_pnl:.2f}$, комиссии={self.total_fees_paid:.4f}$", "SignalScalper")
+
+                except Exception as api_error:
+                    log_error(self.user_id, f"❌ [FALLBACK CLOSE] Ошибка API closedPnL: {api_error}", "SignalScalper")
+                    exit_price_for_calc = self._last_known_price if self._last_known_price else Decimal('0')
+                    final_pnl, exit_price, entry_price_for_pnl, position_size_for_pnl, saved_entry_time, saved_entry_price, estimated_close_fee = await self._calculate_pnl_from_db_or_memory(exit_price_for_calc)
+
+                    total_fees_from_db = Decimal(str(await db_manager.get_total_fees_for_position(self.user_id, self.symbol, self.account_priority)))
+                    self.total_fees_paid = total_fees_from_db + estimated_close_fee
+
+                    pnl_gross = self._calculate_pnl_gross(entry_price_for_pnl, exit_price, position_size_for_pnl, self.active_direction)
+                    final_pnl = pnl_gross - self.total_fees_paid
+
+                    log_warning(self.user_id, f"⚠️ [РАСЧЕТ] PnL={final_pnl:.2f}$, комиссии={self.total_fees_paid:.4f}$", "SignalScalper")
+
+                if hasattr(self, 'active_trade_db_id') and self.active_trade_db_id:
+                    try:
+                        from datetime import timezone as tz
+                        await db_manager.update_trade_on_close(
+                            trade_id=self.active_trade_db_id,
+                            exit_price=exit_price,
+                            pnl=final_pnl,
+                            commission=self.total_fees_paid,
+                            exit_time=datetime.now(tz.utc),
+                            bot_priority=self.account_priority  # MULTI-ACCOUNT: изоляция по bot_priority
+                        )
+                        log_info(self.user_id, f"✅ [FALLBACK CLOSE] Trade {self.active_trade_db_id} обновлён в БД", "SignalScalper")
+                        self.active_trade_db_id = None
+                    except Exception as trade_error:
+                        log_error(self.user_id, f"❌ [FALLBACK CLOSE] Ошибка обновления trade: {trade_error}", "SignalScalper")
+
+                try:
+                    await db_manager.update_order_on_fill(
+                        order_id=order_id,
+                        filled_quantity=position_size_to_close,
+                        average_price=exit_price,
+                        commission=estimated_close_fee if 'estimated_close_fee' in locals() else Decimal('0'),
+                        profit=final_pnl
+                    )
+                    log_info(self.user_id, f"✅ [FALLBACK CLOSE] Ордер {order_id} обновлён в БД", "SignalScalper")
+                except Exception as db_error:
+                    log_error(self.user_id, f"❌ [FALLBACK CLOSE] Ошибка обновления ордера: {db_error}", "SignalScalper")
+
+                if self.stop_loss_order_id:
+                    await self._cancel_stop_loss_order()
+
+                final_commission = self.total_fees_paid
+
+                self._reset_position_state_after_close(final_pnl)
+
+                await self.event_bus.unsubscribe(self.handle_price_update)
+
+                await self._send_trade_close_notification(
+                    pnl=final_pnl,
+                    commission=final_commission,
+                    exit_price=exit_price if exit_price > Decimal('0') else None,
+                    entry_price=saved_entry_price,
+                    entry_time=saved_entry_time
+                )
+
+                log_info(self.user_id, f"✅ [FALLBACK CLOSE] Позиция закрыта через FALLBACK. PnL: ${final_pnl:.2f}", "SignalScalper")
+
+                self.is_waiting_for_trade = False
+
+        except Exception as api_error:
+            log_error(self.user_id, f"❌ [FALLBACK CLOSE] Ошибка проверки позиции через API: {api_error}", "SignalScalper")
 
     async def _load_strategy_config(self):
         """Переопределяем для инициализации SignalAnalyzer и SpikeDetector."""
@@ -247,12 +522,12 @@ class SignalScalperStrategy(BaseStrategy):
 
         # --- Конечный автомат логики ---
         if self.position_active:
-            # Правило 4: Реверс позиции при смене сигнала (ВРЕМЕННО БЕЗ ПРОВЕРКИ PnL)
+            # Правило 4: Реверс позиции при смене сигнала
             if (signal == "LONG" and self.active_direction == "SHORT") or \
                     (signal == "SHORT" and self.active_direction == "LONG"):
                 current_pnl = await self._calculate_current_pnl(price)
 
-                # ВРЕМЕННО ОТКЛЮЧЕНО: Проверка PnL для реверса (чтобы вернуть - раскомментируй блок ниже)
+                # Проверка PnL для реверса - реверсируем только при положительном PnL
                 if current_pnl >= 0:
                     log_warning(self.user_id,
                             f"СМЕНА СИГНАЛА! Реверс позиции по {self.symbol} с {self.active_direction} на {signal} при PnL={current_pnl:.2f}$.",
@@ -291,11 +566,7 @@ class SignalScalperStrategy(BaseStrategy):
                 if self._is_cooldown_active():
                     return
 
-                # НОВАЯ ПРОВЕРКА: Проверка кулдауна после реверса
-                if self._is_reversal_cooldown_active():
-                    return
-
-                # Проверка подтверждения сигнала (включает логику после реверса)
+                # Проверка подтверждения сигнала
                 if not self._is_signal_confirmed(signal):
                     return
 
@@ -365,15 +636,8 @@ class SignalScalperStrategy(BaseStrategy):
         if price_change_percent > Decimal('50'):
             return
 
-        # Используем среднюю цену входа если есть усреднения
-        entry_price_to_use = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
-        position_size_to_use = self.total_position_size if self.total_position_size > 0 else self.position_size
-
-        # Рассчитываем PnL относительно средней цены входа
-        if self.active_direction == "LONG":
-            pnl = (current_price - entry_price_to_use) * position_size_to_use
-        else:  # SHORT
-            pnl = (entry_price_to_use - current_price) * position_size_to_use
+        entry_price_to_use, position_size_to_use = self._get_effective_entry_data()
+        pnl = self._calculate_pnl_gross(entry_price_to_use, current_price, position_size_to_use, self.active_direction)
 
 
         # ============================================================
@@ -575,163 +839,8 @@ class SignalScalperStrategy(BaseStrategy):
         order_id = await self._place_order(side=side, order_type="Market", qty=qty)
 
         if order_id:
-            self.current_order_id = order_id  # Сохраняем ID ожидаемого ордера
-
-            # ВРЕМЕННЫЙ FALLBACK: Если WebSocket событие не придёт, обработаем через API
-            # Ждём 1.5 сек для исполнения Market ордера
-            log_info(self.user_id, f"[FALLBACK] Ожидаю 1.5 сек исполнения ордера {order_id}...", "SignalScalper")
-            await asyncio.sleep(1.5)
-
-            # Проверяем позицию через API
-            try:
-                log_info(self.user_id, f"[FALLBACK] Проверяю позицию через get_positions()...", "SignalScalper")
-                positions = await self.api.get_positions(symbol=self.symbol)
-
-                log_info(self.user_id, f"[FALLBACK] Получено {len(positions) if positions else 0} позиций из API", "SignalScalper")
-
-                if positions and isinstance(positions, list):
-                    for pos in positions:
-                        if pos["symbol"] == self.symbol:
-                            pos_size = abs(self._convert_to_decimal(pos.get("size", "0")))
-                            log_info(self.user_id, f"[FALLBACK] Найдена позиция {self.symbol}: size={pos_size}, avgPrice={pos.get('avgPrice')}", "SignalScalper")
-
-                            if pos_size > 0:
-                                # Позиция открыта! Создаём trade и уведомление если ещё не создали
-                                if not self.position_active:
-                                    entry_price_from_api = self._convert_to_decimal(pos.get("avgPrice", "0"))
-
-                                    log_info(self.user_id,
-                                            f"✅ [FALLBACK] Позиция открыта через API: {entry_price_from_api:.4f} USDT",
-                                            "SignalScalper")
-
-                                    # Устанавливаем флаги
-                                    self.position_active = True
-                                    self.entry_price = entry_price_from_api
-                                    self.position_size = pos_size
-                                    self.active_direction = direction
-
-                                    # Подписываемся на price_update
-                                    await self.event_bus.subscribe(EventType.PRICE_UPDATE, self.handle_price_update, user_id=self.user_id)
-
-                                    # Создаём trade в БД
-                                    from database.db_trades import db_manager, TradeRecord
-                                    from datetime import timezone as tz
-                                    try:
-                                        new_trade = TradeRecord(
-                                            user_id=self.user_id,
-                                            symbol=self.symbol,
-                                            side=side,
-                                            entry_price=entry_price_from_api,
-                                            quantity=pos_size,
-                                            leverage=int(float(self.get_config_value("leverage", 1))),
-                                            status="ACTIVE",
-                                            strategy_type=self.strategy_type.value,
-                                            entry_time=datetime.now(tz.utc),
-                                            profit=Decimal('0'),
-                                            commission=Decimal('0')
-                                        )
-                                        trade_id = await db_manager.save_trade(new_trade)
-                                        if trade_id:
-                                            self.active_trade_db_id = trade_id
-                                            await db_manager.update_order_trade_id(order_id, trade_id)
-                                            log_info(self.user_id, f"✅ [FALLBACK] Trade создан в БД: trade_id={trade_id}", "SignalScalper")
-                                    except Exception as trade_error:
-                                        log_error(self.user_id, f"❌ [FALLBACK] Ошибка создания trade: {trade_error}", "SignalScalper")
-
-                                    # Отправляем уведомление
-                                    signal_price = getattr(self, 'signal_price', None)
-                                    await self._send_trade_open_notification(side, entry_price_from_api, pos_size, self.intended_order_amount, signal_price)
-
-                                    # Инициализируем переменные усреднения
-                                    self.averaging_executed = False
-                                    self.total_position_size = Decimal('0')
-                                    self.average_entry_price = Decimal('0')
-
-                                    # ✅ ПОЛУЧАЕМ КОМИССИЮ ИЗ API (как в FALLBACK close)
-                                    # ✅ КРИТИЧНО: Обернуто в try-except для защиты от ошибок БД
-                                    try:
-                                        # ✅ КРИТИЧНО: Сначала проверяем, не установил ли WebSocket комиссию в БД
-                                        order_from_db_for_fee_check = await db_manager.get_order_by_exchange_id(order_id, self.user_id)
-                                        existing_commission_in_db = Decimal('0')
-                                        if order_from_db_for_fee_check and order_from_db_for_fee_check.get('commission'):
-                                            existing_commission_in_db = self._convert_to_decimal(order_from_db_for_fee_check['commission'])
-
-                                        if existing_commission_in_db > Decimal('0'):
-                                            # WebSocket УЖЕ установил комиссию в БД - используем её!
-                                            self.total_fees_paid = existing_commission_in_db
-                                            log_info(self.user_id, f"💰 [FALLBACK OPEN] WebSocket уже установил комиссию в БД: ${self.total_fees_paid:.4f}", "SignalScalper")
-                                        elif self.total_fees_paid == Decimal('0'):
-                                            # WebSocket НЕ установил комиссию, получаем из API через order_id
-                                            try:
-                                                log_info(self.user_id, f"📡 [FALLBACK OPEN] Запрашиваю комиссию OPEN ордера {order_id} с биржи...", "SignalScalper")
-                                                open_order_status = await self.api.get_order_status(order_id, max_retries=3)
-
-                                                if open_order_status and open_order_status.get('orderStatus') == 'Filled':
-                                                    # ✅ API вернул ТОЧНУЮ комиссию OPEN ордера!
-                                                    open_commission = Decimal(str(open_order_status.get('cumExecFee', '0')))
-                                                    self.total_fees_paid = open_commission
-                                                    log_info(self.user_id, f"💰 [FALLBACK OPEN] Комиссия получена из API: ${self.total_fees_paid:.4f}", "SignalScalper")
-                                                else:
-                                                    log_warning(self.user_id, "⚠️ [FALLBACK OPEN] API не вернул данные ордера, комиссия = 0", "SignalScalper")
-                                            except Exception as fee_error:
-                                                log_error(self.user_id, f"❌ [FALLBACK OPEN] Ошибка получения комиссии из API: {fee_error}", "SignalScalper")
-                                        else:
-                                            log_info(self.user_id, f"💰 [FALLBACK] Используем комиссию из памяти (WebSocket): ${self.total_fees_paid:.4f}", "SignalScalper")
-                                    except Exception as commission_check_error:
-                                        # ✅ КРИТИЧНО: Если не удалось получить комиссию - продолжаем с текущим значением
-                                        log_warning(self.user_id, f"⚠️ [FALLBACK OPEN] Ошибка получения комиссии из БД: {commission_check_error}. Продолжаю с комиссией=${self.total_fees_paid:.4f}", "SignalScalper")
-
-                                    self.initial_margin_usd = self.intended_order_amount
-                                    self.current_total_margin = self.intended_order_amount
-
-                                    log_info(self.user_id, f"💰 [FALLBACK] Начальная маржа: ${self.initial_margin_usd:.2f}", "SignalScalper")
-
-                                    # ✅ КРИТИЧНО: Устанавливаем entry_time для согласованности с WebSocket
-                                    self.entry_time = datetime.now()
-
-                                    # ✅ КРИТИЧНО: Обновляем OPEN ордер в БД (как в WebSocket обработчике)
-                                    # ИСПРАВЛЕНО: НЕ перезаписываем комиссию если она уже установлена
-                                    try:
-                                        # Проверяем текущую комиссию в БД
-                                        order_from_db = await db_manager.get_order_by_id(order_id)
-                                        existing_commission = Decimal('0')
-                                        if order_from_db and order_from_db.get('commission'):
-                                            existing_commission = self._convert_to_decimal(order_from_db['commission'])
-
-                                        # Обновляем ТОЛЬКО если комиссия еще не установлена
-                                        if existing_commission == Decimal('0'):
-                                            await db_manager.update_order_on_fill(
-                                                order_id=order_id,
-                                                filled_quantity=pos_size,
-                                                average_price=entry_price_from_api,
-                                                commission=self.total_fees_paid  # Используем комиссию из памяти
-                                            )
-                                            log_info(self.user_id, f"✅ [FALLBACK OPEN] Ордер {order_id} обновлён в БД с комиссией ${self.total_fees_paid:.4f}", "SignalScalper")
-                                        else:
-                                            # Только обновляем qty и price, не трогая комиссию
-                                            await db_manager.update_order_on_fill(
-                                                order_id=order_id,
-                                                filled_quantity=pos_size,
-                                                average_price=entry_price_from_api,
-                                                commission=existing_commission  # Сохраняем существующую комиссию
-                                            )
-                                            log_info(self.user_id, f"✅ [FALLBACK OPEN] Ордер {order_id} обновлён в БД (комиссия сохранена: ${existing_commission:.4f})", "SignalScalper")
-                                    except Exception as db_error:
-                                        log_error(self.user_id, f"❌ [FALLBACK OPEN] Ошибка обновления ордера в БД: {db_error}", "SignalScalper")
-
-                                    # ✅ КРИТИЧНО: Устанавливаем Stop Loss (как в WebSocket обработчике!)
-                                    await self._place_stop_loss_order(self.active_direction, self.entry_price, self.position_size)
-
-                                    # КРИТИЧНО: Сбрасываем флаг ожидания и устанавливаем last_known_price
-                                    self.is_waiting_for_trade = False
-                                    self._last_known_price = entry_price_from_api
-                                    log_info(self.user_id, f"✅ [FALLBACK] is_waiting_for_trade=False, _last_known_price={entry_price_from_api:.4f}", "SignalScalper")
-                                break
-
-            except Exception as api_error:
-                log_error(self.user_id, f"❌ [FALLBACK] Ошибка проверки позиции через API: {api_error}", "SignalScalper")
-
-            # WebSocket всё ещё может прислать событие и обновить entry_price
+            self.current_order_id = order_id
+            await self._fallback_open_position(order_id, side, direction)
         else:
             self.is_waiting_for_trade = False
 
@@ -752,194 +861,10 @@ class SignalScalperStrategy(BaseStrategy):
         order_id = await self._place_order(side=side, order_type="Market", qty=position_size_to_close, reduce_only=True)
 
         if order_id:
-            self.current_order_id = order_id  # Сохраняем ID ожидаемого ордера
-
-            # ВРЕМЕННЫЙ FALLBACK: Если WebSocket событие не придёт, обработаем через API
-            log_info(self.user_id, f"[FALLBACK CLOSE] Ожидаю 1.5 сек исполнения ордера закрытия {order_id}...", "SignalScalper")
-            await asyncio.sleep(1.5)
-
-            # Проверяем позицию через API
-            try:
-                log_info(self.user_id, f"[FALLBACK CLOSE] Проверяю позицию через get_positions()...", "SignalScalper")
-                positions = await self.api.get_positions(symbol=self.symbol)
-
-                log_info(self.user_id, f"[FALLBACK CLOSE] Получено {len(positions) if positions else 0} позиций из API", "SignalScalper")
-
-                position_closed = True  # По умолчанию считаем что закрыта
-                if positions and isinstance(positions, list):
-                    for pos in positions:
-                        if pos["symbol"] == self.symbol:
-                            pos_size = abs(self._convert_to_decimal(pos.get("size", "0")))
-                            log_info(self.user_id, f"[FALLBACK CLOSE] Найдена позиция {self.symbol}: size={pos_size}", "SignalScalper")
-                            if pos_size > 0:
-                                position_closed = False
-                            break
-
-                # Если позиция закрыта И всё ещё активна в стратегии - значит WebSocket не пришёл
-                if position_closed and self.position_active:
-                    log_warning(self.user_id,
-                               f"✅ [FALLBACK CLOSE] Позиция закрыта через API! WebSocket событие не пришло. Обрабатываю закрытие вручную.",
-                               "SignalScalper")
-
-                    # ✅ ИСПОЛЬЗУЕМ API ДЛЯ ПОЛУЧЕНИЯ ТОЧНЫХ ДАННЫХ С БИРЖИ (как в base_strategy)
-                    from database.db_trades import db_manager
-
-                    # Сохраняем данные для fallback (если API не вернет данные)
-                    saved_entry_price = getattr(self, 'entry_price', Decimal('0'))
-                    saved_entry_time = getattr(self, 'entry_time', None)
-                    exit_price = self._last_known_price if self._last_known_price else Decimal('0')
-
-                    # Инициализация переменных
-                    estimated_close_fee = Decimal('0')
-
-                    try:
-                        # УРОВЕНЬ 1: Получаем ТОЧНЫЕ данные с биржи через order_id CLOSE ордера
-                        log_info(self.user_id, f"📡 [FALLBACK CLOSE] Запрашиваю данные CLOSE ордера {order_id} с биржи...", "SignalScalper")
-                        close_order_status = await self.api.get_order_status(order_id, max_retries=3)
-
-                        if close_order_status and close_order_status.get('orderStatus') == 'Filled':
-                            # ✅ API вернул ТОЧНЫЕ данные CLOSE ордера по order_id!
-                            exit_price = Decimal(str(close_order_status.get('avgPrice', '0')))
-                            close_commission = Decimal(str(close_order_status.get('cumExecFee', '0')))
-
-                            # Получаем entry данные из памяти (уже рассчитаны с усреднениями!)
-                            entry_price_for_pnl = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
-                            position_size_for_pnl = self.total_position_size if self.total_position_size > 0 else self.position_size
-
-                            # Получаем ВСЕ комиссии из БД (OPEN + AVERAGING, без CLOSE который ещё не в БД)
-                            fees_from_db = Decimal(str(await db_manager.get_total_fees_for_position(self.user_id, self.symbol, self.account_priority)))
-
-                            # Итоговые комиссии = БД (OPEN + AVERAGING) + CLOSE (из API)
-                            self.total_fees_paid = fees_from_db + close_commission
-
-                            # Расчёт PnL
-                            if self.active_direction == "LONG":
-                                pnl_gross = (exit_price - entry_price_for_pnl) * position_size_for_pnl
-                            else:  # SHORT
-                                pnl_gross = (entry_price_for_pnl - exit_price) * position_size_for_pnl
-                            final_pnl = pnl_gross - self.total_fees_paid
-
-                            log_info(self.user_id,
-                                    f"✅ [API ORDER_ID] PnL={final_pnl:.2f}$, exit={exit_price:.4f}, "
-                                    f"комиссии={self.total_fees_paid:.4f}$ (OPEN+AVG из БД={fees_from_db:.4f}$ + CLOSE={close_commission:.4f}$)",
-                                    "SignalScalper")
-                        else:
-                            # УРОВЕНЬ 2: API не вернул данные по order_id - используем расчет (FALLBACK)
-                            log_warning(self.user_id, f"⚠️ [FALLBACK CLOSE] API не вернул данные для order_id {order_id}, использую расчет", "SignalScalper")
-                            exit_price_for_calc = self._last_known_price if self._last_known_price else Decimal('0')
-                            final_pnl, exit_price, entry_price_for_pnl, position_size_for_pnl, saved_entry_time, saved_entry_price, estimated_close_fee = await self._calculate_pnl_from_db_or_memory(exit_price_for_calc)
-
-                            # Получаем комиссии из БД
-                            total_fees_from_db = Decimal(str(await db_manager.get_total_fees_for_position(self.user_id, self.symbol, self.account_priority)))
-                            self.total_fees_paid = total_fees_from_db + estimated_close_fee
-
-                            # Пересчитываем PnL с учетом комиссий
-                            if self.active_direction == "LONG":
-                                pnl_gross = (exit_price - entry_price_for_pnl) * position_size_for_pnl
-                            else:
-                                pnl_gross = (entry_price_for_pnl - exit_price) * position_size_for_pnl
-                            final_pnl = pnl_gross - self.total_fees_paid
-
-                            log_info(self.user_id, f"💰 [РАСЧЕТ] PnL={final_pnl:.2f}$, комиссии={self.total_fees_paid:.4f}$", "SignalScalper")
-
-                    except Exception as api_error:
-                        # УРОВЕНЬ 3: Ошибка API - используем расчет
-                        log_error(self.user_id, f"❌ [FALLBACK CLOSE] Ошибка API closedPnL: {api_error}", "SignalScalper")
-                        exit_price_for_calc = self._last_known_price if self._last_known_price else Decimal('0')
-                        final_pnl, exit_price, entry_price_for_pnl, position_size_for_pnl, saved_entry_time, saved_entry_price, estimated_close_fee = await self._calculate_pnl_from_db_or_memory(exit_price_for_calc)
-
-                        total_fees_from_db = Decimal(str(await db_manager.get_total_fees_for_position(self.user_id, self.symbol, self.account_priority)))
-                        self.total_fees_paid = total_fees_from_db + estimated_close_fee
-
-                        if self.active_direction == "LONG":
-                            pnl_gross = (exit_price - entry_price_for_pnl) * position_size_for_pnl
-                        else:
-                            pnl_gross = (entry_price_for_pnl - exit_price) * position_size_for_pnl
-                        final_pnl = pnl_gross - self.total_fees_paid
-
-                        log_warning(self.user_id, f"⚠️ [РАСЧЕТ] PnL={final_pnl:.2f}$, комиссии={self.total_fees_paid:.4f}$", "SignalScalper")
-
-                    # Обновляем trade в БД
-                    if hasattr(self, 'active_trade_db_id') and self.active_trade_db_id:
-                        try:
-                            from datetime import timezone as tz
-                            await db_manager.update_trade_on_close(
-                                trade_id=self.active_trade_db_id,
-                                exit_price=exit_price,
-                                pnl=final_pnl,
-                                commission=self.total_fees_paid,
-                                exit_time=datetime.now(tz.utc)
-                            )
-                            log_info(self.user_id, f"✅ [FALLBACK CLOSE] Trade {self.active_trade_db_id} обновлён в БД", "SignalScalper")
-                            self.active_trade_db_id = None
-                        except Exception as trade_error:
-                            log_error(self.user_id, f"❌ [FALLBACK CLOSE] Ошибка обновления trade: {trade_error}", "SignalScalper")
-
-                    # Обновляем CLOSE ордер в БД
-                    try:
-                        await db_manager.update_order_on_fill(
-                            order_id=order_id,
-                            filled_quantity=position_size_to_close,
-                            average_price=exit_price,
-                            commission=estimated_close_fee if 'estimated_close_fee' in locals() else Decimal('0'),
-                            profit=final_pnl
-                        )
-                        log_info(self.user_id, f"✅ [FALLBACK CLOSE] Ордер {order_id} обновлён в БД", "SignalScalper")
-                    except Exception as db_error:
-                        log_error(self.user_id, f"❌ [FALLBACK CLOSE] Ошибка обновления ордера: {db_error}", "SignalScalper")
-
-                    # Отменяем стоп-лосс
-                    if self.stop_loss_order_id:
-                        await self._cancel_stop_loss_order()
-
-                    # КРИТИЧНО: Сохраняем комиссию ДО сброса состояния
-                    final_commission = self.total_fees_paid
-
-                    # ✅ ИСПОЛЬЗУЕМ ОБЩИЙ МЕТОД для сброса состояния (исправлены БАГ #2, #3, #4)
-                    # Этот метод устанавливает кулдаун, сбрасывает счетчики и всё состояние
-                    self._reset_position_state_after_close(final_pnl)
-
-                    # Отписываемся от price updates
-                    await self.event_bus.unsubscribe(self.handle_price_update)
-
-                    # Отправляем уведомление
-                    await self._send_trade_close_notification(
-                        pnl=final_pnl,
-                        commission=final_commission,
-                        exit_price=exit_price if exit_price > Decimal('0') else None,
-                        entry_price=saved_entry_price,
-                        entry_time=saved_entry_time
-                    )
-
-                    log_info(self.user_id, f"✅ [FALLBACK CLOSE] Позиция закрыта через FALLBACK. PnL: ${final_pnl:.2f}", "SignalScalper")
-
-                    # Сбрасываем флаг ожидания
-                    self.is_waiting_for_trade = False
-
-            except Exception as api_error:
-                log_error(self.user_id, f"❌ [FALLBACK CLOSE] Ошибка проверки позиции через API: {api_error}", "SignalScalper")
-
-            # WebSocket всё ещё может прислать событие и обновить данные
+            self.current_order_id = order_id
+            await self._fallback_close_position(order_id, position_size_to_close)
         else:
             self.is_waiting_for_trade = False
-
-    async def _reverse_position(self, new_direction: str):
-        """Закрывает текущую позицию и УСТАНАВЛИВАЕТ ЗАДЕРЖКУ перед открытием новой."""
-        # Сначала закрываем текущую
-        await self._close_position(reason=f"reversing_to_{new_direction}")
-
-        # НОВАЯ ЛОГИКА: Устанавливаем флаг реверса вместо немедленного открытия новой позиции
-        self.last_reversal_time = time.time()
-        self.after_reversal_mode = True
-
-        # Сбрасываем счетчики сигналов для требования новых подтверждений
-        self.signal_confirmation_count = 0
-        self.last_signal = None
-
-        log_warning(self.user_id,
-                   f"🔄 РЕВЕРС ВЫПОЛНЕН! Установлена задержка {self.reversal_cooldown_seconds} сек. "
-                   f"Следующему сигналу {new_direction} потребуется {self.reversal_required_confirmations} подтверждения.",
-                   "SignalScalper")
 
     async def _handle_order_filled(self, event: OrderFilledEvent):
         """
@@ -961,6 +886,14 @@ class SignalScalperStrategy(BaseStrategy):
         # АТОМАРНО добавляем в set (set.add() thread-safe благодаря GIL)
         self.processed_orders.add(event.order_id)
         log_debug(self.user_id, f"🔒 Ордер {event.order_id} заблокирован от повторной обработки", "SignalScalper")
+
+        # MULTI-ACCOUNT: РАННЯЯ фильтрация по bot_priority (до обращения к БД)
+        if hasattr(event, 'bot_priority') and event.bot_priority is not None:
+            if event.bot_priority != self.account_priority:
+                log_debug(self.user_id,
+                         f"[РАННИЙ ФИЛЬТР] Событие для Bot_{event.bot_priority}, а это Bot_{self.account_priority}. ИГНОРИРУЮ.",
+                         "SignalScalper")
+                return
 
         # КРИТИЧЕСКИ ВАЖНО: Проверяем что ордер принадлежит БОТУ (есть в БД)
         from database.db_trades import db_manager
@@ -1002,6 +935,17 @@ class SignalScalperStrategy(BaseStrategy):
             # КРИТИЧНО: Защита от двойной обработки (FALLBACK + WebSocket)
             order_trade_id = order_in_db.get('trade_id')
             order_purpose = order_in_db.get('order_purpose', 'UNKNOWN')
+            order_status = order_in_db.get('status', 'UNKNOWN')
+            filled_at = order_in_db.get('filled_at')
+
+            # УНИВЕРСАЛЬНАЯ ДЕДУПЛИКАЦИЯ: Проверяем был ли ордер уже полностью обработан
+            # Если ордер уже FILLED и имеет filled_at timestamp, значит он был обработан ранее
+            if order_status == 'FILLED' and filled_at:
+                log_warning(self.user_id,
+                           f"⚠️ [ДЕДУПЛИКАЦИЯ] Ордер {event.order_id} уже FILLED в БД (обработан {filled_at}). "
+                           f"Это задержанное/повторное WebSocket событие. ИГНОРИРУЮ.",
+                           "SignalScalper")
+                return
 
             # Проверка 1: Ордер уже связан с trade (trade_id установлен)
             if order_trade_id and order_purpose == 'OPEN':
@@ -1180,6 +1124,7 @@ class SignalScalperStrategy(BaseStrategy):
                     leverage=int(float(self.get_config_value("leverage", 1))),
                     status="ACTIVE",
                     strategy_type=self.strategy_type.value,
+                    bot_priority=self.account_priority,  # MULTI-ACCOUNT SUPPORT
                     entry_time=datetime.now(tz.utc),
                     profit=Decimal('0'),
                     commission=event.fee
@@ -1282,12 +1227,7 @@ class SignalScalperStrategy(BaseStrategy):
 
             averaging_amount = order_amount * multiplier
 
-            # Рассчитываем текущий PnL ДО усреднения (для информирования о причине усреднения)
-            if self.active_direction == "LONG":
-                current_pnl = (event.price - self.entry_price) * self.position_size
-            else:  # SHORT
-                current_pnl = (self.entry_price - event.price) * self.position_size
-
+            current_pnl = self._calculate_pnl_gross(self.entry_price, event.price, self.position_size, self.active_direction)
             loss_percent = ((abs(current_pnl) / self.initial_margin_usd) * Decimal('100')) if (
                         self.initial_margin_usd > 0 > current_pnl) else Decimal('0')
 
@@ -1321,7 +1261,8 @@ class SignalScalperStrategy(BaseStrategy):
                 await db_manager.update_trade_on_averaging(
                     trade_id=self.active_trade_db_id,
                     new_entry_price=self.average_entry_price,
-                    new_quantity=self.total_position_size
+                    new_quantity=self.total_position_size,
+                    bot_priority=self.account_priority  # MULTI-ACCOUNT: изоляция по bot_priority
                 )
                 log_info(self.user_id, f"[БД] Сделка {self.active_trade_db_id} обновлена в БД после усреднения", "SignalScalper")
 
@@ -1377,10 +1318,7 @@ class SignalScalperStrategy(BaseStrategy):
                     "SignalScalper")
 
             # Пересчитываем PnL с точной комиссией от WebSocket
-            if self.active_direction == "LONG":
-                pnl_gross = (event.price - entry_price_for_pnl) * position_size_for_pnl
-            else:  # SHORT
-                pnl_gross = (entry_price_for_pnl - event.price) * position_size_for_pnl
+            pnl_gross = self._calculate_pnl_gross(entry_price_for_pnl, event.price, position_size_for_pnl, self.active_direction)
 
             # ФИНАЛЬНЫЙ PnL: Вычитаем ВСЕ накопленные комиссии (открытие + усреднение + закрытие)
             pnl_net = pnl_gross - self.total_fees_paid
@@ -1394,7 +1332,7 @@ class SignalScalperStrategy(BaseStrategy):
             # КРИТИЧЕСКИ ВАЖНО: Обновляем ордер CLOSE в БД с profit
             try:
                 # ЗАЩИТА: Используем максимальную комиссию между event.fee и existing commission в БД
-                order_from_db = await db_manager.get_order_by_id(event.order_id)
+                order_from_db = await db_manager.get_order_by_id(event.order_id, self.user_id)  # КРИТИЧНО: user_id для изоляции!
                 existing_commission = Decimal('0')
                 if order_from_db and order_from_db.get('commission'):
                     existing_commission = self._convert_to_decimal(order_from_db['commission'])
@@ -1422,7 +1360,8 @@ class SignalScalperStrategy(BaseStrategy):
                         exit_price=exit_price_for_pnl,
                         pnl=pnl_net,
                         commission=self.total_fees_paid,
-                        exit_time=datetime.now(tz.utc)
+                        exit_time=datetime.now(tz.utc),
+                        bot_priority=self.account_priority  # MULTI-ACCOUNT: изоляция по bot_priority
                     )
                     log_info(self.user_id, f"✅ Trade {self.active_trade_db_id} обновлён в БД: PnL={pnl_net:.2f}$", "SignalScalper")
                     # Очищаем trade_id после закрытия
@@ -1490,9 +1429,7 @@ class SignalScalperStrategy(BaseStrategy):
             else:
                 actual_loss = (sl_price - price) * quantity
 
-            # Добавляем комиссию при закрытии (используем реальное значение из конфига)
-            taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')  # Конвертируем из % в десятичное
-            estimated_close_fee = sl_price * quantity * taker_fee_rate
+            estimated_close_fee = self._estimate_close_commission(sl_price, quantity)
             total_expected_loss = actual_loss + estimated_close_fee
 
             return sl_price, total_expected_loss
@@ -1666,31 +1603,14 @@ class SignalScalperStrategy(BaseStrategy):
         if self.last_trade_was_loss:
             required = max(required, 2)  # После убытка требуем минимум 3 подтверждения
 
-        # НОВАЯ ЛОГИКА: После реверса требуем специальное количество подтверждений
-        if self.after_reversal_mode:
-            required = max(required, self.reversal_required_confirmations)  # Выбираем максимум
-
         confirmed = self.signal_confirmation_count >= required
-
-        # ДОПОЛНИТЕЛЬНАЯ ЛОГИКА: После подтверждения сигнала в режиме реверса, выходим из этого режима
-        if confirmed and self.after_reversal_mode:
-            log_info(self.user_id,
-                    f"🔄 Режим после реверса завершен. Сигнал {signal} получил необходимые подтверждения.",
-                    "SignalScalper")
-            self.after_reversal_mode = False
-            self.last_reversal_time = None
 
         if confirmed:
             log_info(self.user_id,
                     f"Сигнал {signal} подтвержден! ({self.signal_confirmation_count}/{required})",
                     "SignalScalper")
         else:
-            reason = ""
-            if self.last_trade_was_loss:
-                reason = " (после убытка)"
-            elif self.after_reversal_mode:
-                reason = " (после реверса)"
-
+            reason = " (после убытка)" if self.last_trade_was_loss else ""
             log_info(self.user_id,
                     f"Сигнал {signal} ожидает подтверждения ({self.signal_confirmation_count}/{required}){reason}",
                     "SignalScalper")
@@ -1724,8 +1644,7 @@ class SignalScalperStrategy(BaseStrategy):
                     "SignalScalper")
         else:
             # ⚠️ FALLBACK: используем данные из памяти
-            entry_price_for_pnl = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
-            position_size_for_pnl = self.total_position_size if self.total_position_size > 0 else self.position_size
+            entry_price_for_pnl, position_size_for_pnl = self._get_effective_entry_data()
 
             # Используем последнюю известную цену если exit_price не передан
             if not exit_price or exit_price == Decimal('0'):
@@ -1740,14 +1659,10 @@ class SignalScalperStrategy(BaseStrategy):
                        "SignalScalper")
 
         # Расчёт PnL
-        if self.active_direction == "LONG":
-            pnl_gross = (exit_price - entry_price_for_pnl) * position_size_for_pnl
-        else:  # SHORT
-            pnl_gross = (entry_price_for_pnl - exit_price) * position_size_for_pnl
+        pnl_gross = self._calculate_pnl_gross(entry_price_for_pnl, exit_price, position_size_for_pnl, self.active_direction)
 
         # Добавляем комиссию за закрытие (если еще не добавлена)
-        taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')
-        estimated_close_fee = exit_price * position_size_for_pnl * taker_fee_rate
+        estimated_close_fee = self._estimate_close_commission(exit_price, position_size_for_pnl)
 
         # Если total_fees_paid уже содержит комиссию закрытия (из WebSocket event.fee),
         # то не добавляем её повторно. Это определяется контекстом вызова.
@@ -1814,13 +1729,6 @@ class SignalScalperStrategy(BaseStrategy):
         self.sl_extended = False
         self.sl_extension_notified = False
 
-        # КРИТИЧЕСКИ ВАЖНО: СБРОС РЕЖИМА РЕВЕРСА
-        # Сбрасываем ТОЛЬКО если это НЕ реверс (при реверсе флаг уже установлен)
-        if self.close_reason and not self.close_reason.startswith("reversing_to_"):
-            self.after_reversal_mode = False
-            self.last_reversal_time = None
-            log_info(self.user_id, f"🔄 Режим реверса сброшен при закрытии сделки (причина: {self.close_reason})", "SignalScalper")
-
         # РАЗМОРОЗКА КОНФИГУРАЦИИ ПОСЛЕ ЗАКРЫТИЯ СДЕЛКИ
         self.active_trade_config = None
         self.config_frozen = False
@@ -1843,24 +1751,6 @@ class SignalScalperStrategy(BaseStrategy):
                     "SignalScalper")
 
         return cooldown_active
-
-    def _is_reversal_cooldown_active(self) -> bool:
-        """Проверяет, активен ли кулдаун после реверса позиции."""
-        if not self.after_reversal_mode or self.last_reversal_time is None:
-            return False
-
-        current_time = time.time()
-        time_since_reversal = current_time - self.last_reversal_time
-        cooldown_active = time_since_reversal < self.reversal_cooldown_seconds
-
-        if cooldown_active:
-            remaining_time = self.reversal_cooldown_seconds - time_since_reversal
-            log_info(self.user_id,
-                    f"🔄 Кулдаун после реверса активен. Осталось {remaining_time:.0f} сек до следующего входа",
-                    "SignalScalper")
-
-        return cooldown_active
-
 
     async def _execute_averaging(self, current_price: Decimal):
         """
@@ -1950,13 +1840,11 @@ class SignalScalperStrategy(BaseStrategy):
             return False
 
         # Рассчитываем процент изменения цены вместо процента от маржи
-        entry_price_to_use = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
+        entry_price_to_use, position_size_to_use = self._get_effective_entry_data()
 
         # Получаем текущую цену из вебсокета (берем из последнего PriceUpdateEvent)
         # Для расчета используем entry_price_to_use и текущее значение PnL
         if entry_price_to_use > 0:
-            # Обратный расчет текущей цены из PnL
-            position_size_to_use = self.total_position_size if self.total_position_size > 0 else self.position_size
 
             if position_size_to_use > 0:
                 # LONG: pnl = (current_price - entry_price) * position_size
@@ -2243,15 +2131,8 @@ class SignalScalperStrategy(BaseStrategy):
         if not self.position_active or not self.entry_price:
             return Decimal('0')
 
-        # Используем среднюю цену входа если есть усреднения
-        entry_price_to_use = self.average_entry_price if self.average_entry_price > 0 else self.entry_price
-        position_size_to_use = self.total_position_size if self.total_position_size > 0 else self.position_size
-
-        # Рассчитываем PnL в зависимости от направления позиции
-        if self.active_direction == "LONG":
-            pnl = (current_price - entry_price_to_use) * position_size_to_use
-        else:  # SHORT
-            pnl = (entry_price_to_use - current_price) * position_size_to_use
+        entry_price_to_use, position_size_to_use = self._get_effective_entry_data()
+        pnl = self._calculate_pnl_gross(entry_price_to_use, current_price, position_size_to_use, self.active_direction)
 
         return pnl
 
@@ -2412,10 +2293,7 @@ class SignalScalperStrategy(BaseStrategy):
             exit_price = self._last_known_price if self._last_known_price else entry_price_for_calc
 
             # Расчёт PnL
-            if self.active_direction == "LONG":
-                pnl_gross = (exit_price - entry_price_for_calc) * position_size_for_calc
-            else:  # SHORT
-                pnl_gross = (entry_price_for_calc - exit_price) * position_size_for_calc
+            pnl_gross = self._calculate_pnl_gross(entry_price_for_calc, exit_price, position_size_for_calc, self.active_direction)
 
             # Комиссии: получаем из БД (OPEN + AVERAGING) + приблизительная CLOSE комиссия
             try:
@@ -2424,9 +2302,7 @@ class SignalScalperStrategy(BaseStrategy):
                     self.user_id, self.symbol, self.account_priority
                 )))
 
-                # Приблизительная комиссия закрытия (пользователь ВСЁ РАВНО платит комиссию при закрытии!)
-                taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')
-                close_commission_estimated = exit_price * position_size_for_calc * taker_fee_rate
+                close_commission_estimated = self._estimate_close_commission(exit_price, position_size_for_calc)
 
                 # Итоговые комиссии = БД (OPEN + AVERAGING) + приблизительная CLOSE
                 commission = fees_from_db + close_commission_estimated
@@ -2438,12 +2314,8 @@ class SignalScalperStrategy(BaseStrategy):
                         "SignalScalper")
 
             except Exception as db_fee_error:
-                # УРОВЕНЬ 2: Ошибка получения комиссий из БД - используем накопленные комиссии
                 log_warning(self.user_id, f"⚠️ [FALLBACK] Ошибка получения комиссий из БД: {db_fee_error}. Использую накопленные комиссии.", "SignalScalper")
-
-                # Приблизительная комиссия закрытия
-                taker_fee_rate = EXCHANGE_FEES[ExchangeType.BYBIT]['taker'] / Decimal('100')
-                close_commission_estimated = exit_price * position_size_for_calc * taker_fee_rate
+                close_commission_estimated = self._estimate_close_commission(exit_price, position_size_for_calc)
 
                 commission = self.total_fees_paid + close_commission_estimated
                 final_pnl = pnl_gross - commission

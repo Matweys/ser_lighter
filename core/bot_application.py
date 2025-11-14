@@ -404,14 +404,6 @@ class BotApplication:
                         strategy_config
                     )
 
-                for component_type, component_config in default_configs["component_configs"].items():
-                    config_enum = getattr(ConfigType, f"COMPONENT_{component_type.upper()}")
-                    await redis_manager.save_config(
-                        user_id,
-                        config_enum,
-                        component_config
-                    )
-
                 log_info(user_id, "Конфигурации по умолчанию созданы", module_name=__name__)
 
         except Exception as e:
@@ -533,14 +525,12 @@ class BotApplication:
 
             # Проверяем какие стратегии включены
             signal_scalper_config = await redis_manager.get_config(user_id, ConfigType.STRATEGY_SIGNAL_SCALPER)
-            flash_drop_config = await redis_manager.get_config(user_id, ConfigType.STRATEGY_FLASH_DROP_CATCHER)
 
             signal_scalper_enabled = signal_scalper_config and signal_scalper_config.get("is_enabled", False)
-            flash_drop_enabled = flash_drop_config and flash_drop_config.get("is_enabled", False)
 
-            log_info(user_id, f"📊 Проверка включенных стратегий: Signal Scalper={'✅' if signal_scalper_enabled else '❌'}, Flash Drop Catcher={'✅' if flash_drop_enabled else '❌'}", module_name=__name__)
+            log_info(user_id, f"📊 Проверка включенных стратегий: Signal Scalper={'✅' if signal_scalper_enabled else '❌'}", module_name=__name__)
 
-            # 1. Запускаем Signal Scalper для watchlist символов (если включен)
+            # Запускаем Signal Scalper для watchlist символов (если включен)
             if signal_scalper_enabled:
                 global_config = await redis_manager.get_config(user_id, ConfigType.GLOBAL)
                 if global_config:
@@ -566,27 +556,9 @@ class BotApplication:
             else:
                 log_info(user_id, "ℹ️ Signal Scalper отключен в настройках, не запускается", module_name=__name__)
 
-            # 2. Запускаем Flash Drop Catcher (если включен) - он сканирует ВСЕ символы автоматически
-            if flash_drop_enabled:
-                log_info(user_id, "🚀 Запуск Flash Drop Catcher (сканирование всех символов)...", module_name=__name__)
-                try:
-                    success = await session.start_strategy(
-                        strategy_type=StrategyType.FLASH_DROP_CATCHER.value,
-                        symbol="ALL",  # Flash Drop Catcher сканирует ВСЕ символы
-                        analysis_data={'trigger': 'autotrade_start'}
-                    )
-                    if success:
-                        log_info(user_id, "✅ Flash Drop Catcher успешно запущен", module_name=__name__)
-                    else:
-                        log_warning(user_id, "⚠️ Не удалось запустить Flash Drop Catcher", module_name=__name__)
-                except Exception as e:
-                    log_error(user_id, f"❌ Ошибка запуска Flash Drop Catcher: {e}", module_name=__name__)
-            else:
-                log_info(user_id, "ℹ️ Flash Drop Catcher отключен в настройках, не запускается", module_name=__name__)
-
-            # Если ни одна стратегия не включена - предупреждение
-            if not signal_scalper_enabled and not flash_drop_enabled:
-                log_warning(user_id, "⚠️ НИ ОДНА СТРАТЕГИЯ НЕ ВКЛЮЧЕНА! Включите хотя бы одну стратегию в настройках.", module_name=__name__)
+            # Если стратегия не включена - предупреждение
+            if not signal_scalper_enabled:
+                log_warning(user_id, "⚠️ СТРАТЕГИЯ НЕ ВКЛЮЧЕНА! Включите Signal Scalper в настройках.", module_name=__name__)
         else:
             log_error(user_id, "Не удалось получить сессию после попытки создания.", module_name=__name__)
 
@@ -868,30 +840,6 @@ class BotApplication:
                     f"• Запущено заново: {symbols_started_fresh}\n\n"
                     f"🔄 Автоторговля возобновлена"
                 )
-
-            # ===================================================================
-            # ШАГ 3: Восстанавливаем Flash Drop Catcher (если был включен)
-            # ===================================================================
-            flash_drop_config = await redis_manager.get_config(user_id, ConfigType.STRATEGY_FLASH_DROP_CATCHER)
-            flash_drop_enabled = flash_drop_config and flash_drop_config.get("is_enabled", False)
-
-            if flash_drop_enabled:
-                log_info(user_id, "🚀 Восстановление Flash Drop Catcher (сканирование всех символов)...", "BotApplication")
-                try:
-                    success = await session.start_strategy(
-                        strategy_type=StrategyType.FLASH_DROP_CATCHER.value,
-                        symbol="ALL",  # Flash Drop Catcher сканирует ВСЕ символы
-                        analysis_data={'trigger': 'recovery_restart'}
-                    )
-                    if success:
-                        log_info(user_id, "✅ Flash Drop Catcher успешно восстановлен", "BotApplication")
-                        recovery_message += "\n\n🚀 <b>Flash Drop Catcher:</b> Восстановлен и активен"
-                    else:
-                        log_error(user_id, "❌ Не удалось восстановить Flash Drop Catcher", "BotApplication")
-                except Exception as e:
-                    log_error(user_id, f"❌ Ошибка восстановления Flash Drop Catcher: {e}", "BotApplication")
-            else:
-                log_info(user_id, "ℹ️ Flash Drop Catcher отключен в настройках, не восстанавливается", "BotApplication")
 
             await self.bot.send_message(
                 chat_id=user_id,

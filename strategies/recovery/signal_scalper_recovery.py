@@ -590,7 +590,7 @@ class SignalScalperRecoveryHandler(BaseRecoveryHandler):
             # Запрашиваем активную сделку из БД
             from database.db_trades import db_manager
 
-            active_trade = await db_manager.get_active_trade(self.user_id, self.symbol)
+            active_trade = await db_manager.get_active_trade(self.user_id, self.symbol, self.strategy.account_priority)
 
             if active_trade:
                 trade_id = active_trade.get('id')

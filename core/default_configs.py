@@ -1,7 +1,6 @@
 # core/default_configs.py
 
 from typing import Dict, Any
-from decimal import Decimal
 
 class DefaultConfigs:
     @staticmethod
@@ -31,8 +30,6 @@ class DefaultConfigs:
         # Сохраняем конфигурации стратегий
         await redis_manager.save_config(user_id, ConfigType.STRATEGY_SIGNAL_SCALPER,
                                         all_configs["strategy_configs"]["signal_scalper"])
-        await redis_manager.save_config(user_id, ConfigType.STRATEGY_FLASH_DROP_CATCHER,
-                                        all_configs["strategy_configs"]["flash_drop_catcher"])
 
 
     @staticmethod
@@ -77,38 +74,6 @@ class DefaultConfigs:
         }
 
 
-    @staticmethod
-    def get_flash_drop_catcher_config() -> Dict[str, Any]:
-        """Конфигурация для Flash Drop Catcher Strategy."""
-        return {
-            # --- Основные параметры ---
-            "is_enabled": False,
-            "order_amount": 1000.0,  # Сумма ордера в USDT
-            "leverage": 2,  # Плечо
-
-            # --- Параметры WebSocket и свечей ---
-            "timeframe_interval": "15",  # Интервал свечей в минутах (1, 3, 5, 15, ...)
-            "candle_history_size": 12,  # Количество свечей для расчета среднего (увеличено для более точной статистики)
-
-            # --- Параметры обнаружения падений (ВАРИАНТ 1: СБАЛАНСИРОВАННЫЙ) ---
-            "base_drop_percent": 4.0,  # Базовый порог падения 4% (динамически корректируется, множитель волатильности=4)
-            "min_drop_percent": 2.5,  # Минимальный порог падения 2.5% (для низковолатильных монет BTC, ETH)
-            "max_drop_percent": 10.0,  # Максимальный порог падения 10% (ограничивает ТОЛЬКО расчет порога, НЕ блокирует сильные падения!)
-
-            # --- Фильтры качества сигнала ---
-            "volume_spike_min": 2.5,  # Минимальный коэффициент всплеска объема (2.5x среднего для большего количества сигналов)
-            "min_daily_volume_usd": 1000000.0,  # Минимальный дневной объем $1M для фильтрации ликвидности
-
-            # --- Параметры позиции ---
-            "max_concurrent_positions": 2,  # Максимум 2 позиции одновременно
-
-            # --- Параметры выхода ---
-            "hard_stop_loss_usdt": -500.0,  # Hard stop loss при
-            "websocket_chunk_size": 150,  # Размер чанка для подписки на символы в WebSocket
-
-            # --- Heartbeat мониторинг ---
-            "enable_heartbeat_notifications": True,  # Включить/выключить уведомления о работе стратегии в Telegram
-        }
 
     @staticmethod
     def get_all_default_configs() -> Dict[str, Dict[str, Any]]:
@@ -116,7 +81,6 @@ class DefaultConfigs:
         return {
             "global_config": DefaultConfigs.get_global_config(),
             "strategy_configs": {
-                "signal_scalper": DefaultConfigs.get_signal_scalper_config(),
-                "flash_drop_catcher": DefaultConfigs.get_flash_drop_catcher_config()
+                "signal_scalper": DefaultConfigs.get_signal_scalper_config()
             }
         }

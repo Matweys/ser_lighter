@@ -14,7 +14,7 @@ from database.db_trades import db_manager, UserProfile
 from core.events import EventBus, UserSessionStartRequestedEvent, UserSessionStopRequestedEvent
 from .states import UserStates
 from cache.redis_manager import redis_manager
-from core.functions import format_currency, format_percentage
+from core.functions import format_currency, format_percentage, get_moscow_time
 from core.default_configs import DefaultConfigs
 from api.bybit_api import BybitAPI
 from core.enums import ConfigType
@@ -32,6 +32,9 @@ from core.settings_config import system_config, DEFAULT_SYMBOLS
 from .multi_account_helpers import (
     PRIORITY_NAMES,
     PRIORITY_EMOJIS,
+    BOT_NAMES,
+    STRATEGY_NAMES,
+    STRATEGY_HEADERS,
     validate_api_keys,
     is_multi_account_mode,
     is_active_position,
@@ -42,7 +45,8 @@ from .multi_account_helpers import (
     get_multi_account_positions_and_orders,
     format_multi_account_balance,
     format_multi_account_positions,
-    format_multi_account_orders
+    format_multi_account_orders,
+    get_demo_mode
 )
 
 
@@ -54,7 +58,6 @@ class BasicCommandHandler:
 
     def __init__(self):
         self.command_stats = {}
-        self.user_sessions = {}
         self.event_bus: Optional[EventBus] = None
         self.bot_application: Optional[BotApplication] = None
 
@@ -120,13 +123,6 @@ async def cmd_start(message: Message, state: FSMContext):
                 default_strategy_config = await redis_manager.get_config(template_user_id, config_enum)
                 if default_strategy_config:
                     await redis_manager.save_config(user_id, config_enum, default_strategy_config)
-
-            # Копируем конфиги компонентов
-            for c_type in all_defaults["component_configs"].keys():
-                config_enum = getattr(ConfigType, f"COMPONENT_{c_type.upper()}")
-                default_component_config = await redis_manager.get_config(template_user_id, config_enum)
-                if default_component_config:
-                    await redis_manager.save_config(user_id, config_enum, default_component_config)
 
         # 3. Очищаем FSM состояние
         await state.clear()
@@ -225,7 +221,6 @@ async def cmd_trade_details(message: Message, state: FSMContext):
         # ШАГ 1: Получаем ВСЕ открытые позиции из БД (OPEN без CLOSE)
         db_positions = await db_manager.get_all_open_positions(user_id)
 
-        # 🔍 DEBUG: Логируем количество найденных позиций
         log_info(user_id, f"[trade_details] Найдено открытых позиций в БД: {len(db_positions)}", module_name='basic_handlers')
 
         if not db_positions:
@@ -251,8 +246,7 @@ async def cmd_trade_details(message: Message, state: FSMContext):
         exchange_positions = {}  # {(symbol, bot_priority): position_data}
 
         # Определяем режим торговли (demo/live)
-        exchange_config = system_config.get_exchange_config("bybit")
-        use_demo = exchange_config.demo if exchange_config else False
+        use_demo = get_demo_mode()
 
         for key_data in api_keys_list:
             priority = key_data['priority']
@@ -265,7 +259,6 @@ async def cmd_trade_details(message: Message, state: FSMContext):
                 ) as api:
                     positions = await api.get_positions()
 
-                    # 🔍 DEBUG: Логируем позиции на бирже
                     if positions:
                         log_info(user_id, f"[trade_details] Бот{priority}: найдено {len(positions)} позиций на бирже", module_name='basic_handlers')
                         for pos in positions:
@@ -280,14 +273,12 @@ async def cmd_trade_details(message: Message, state: FSMContext):
             except Exception as e:
                 log_error(user_id, f"Ошибка получения позиций для Bot{priority}: {e}", module_name='basic_handlers')
 
-        # 🔍 DEBUG: Логируем общее количество активных позиций на бирже
         log_info(user_id, f"[trade_details] Всего активных позиций на бирже: {len(exchange_positions)}", module_name='basic_handlers')
 
         # ШАГ 4: Сопоставляем DB позиции с реальными позициями на бирже
         # Показываем ТОЛЬКО если позиция есть И в БД И на бирже!
         verified_positions = []
 
-        # 🔍 DEBUG: Логируем ключи для диагностики сопоставления
         db_keys = [(db_pos["symbol"], db_pos["bot_priority"]) for db_pos in db_positions]
         exchange_keys = list(exchange_positions.keys())
         log_info(user_id, f"[trade_details] 🔑 Ключи из БД: {db_keys}", module_name='basic_handlers')
@@ -299,7 +290,6 @@ async def cmd_trade_details(message: Message, state: FSMContext):
             strategy_type = db_pos.get("strategy_type", "unknown")
             key = (symbol, bot_priority)
 
-            # 🔍 DEBUG: Логируем каждую попытку сопоставления
             log_info(user_id,
                     f"[trade_details] Проверка позиции: {key} (стратегия: {strategy_type})",
                     module_name='basic_handlers')
@@ -330,7 +320,6 @@ async def cmd_trade_details(message: Message, state: FSMContext):
 
         # ШАГ 5: Сортируем позиции для красивого отображения
         # Сначала Bot 1, потом Bot 2, потом Bot 3
-        # Внутри каждого бота: сначала SignalScalper, потом FlashDropCatcher
         verified_positions.sort(key=lambda x: (
             x["db_position"]["bot_priority"],  # Сортировка по боту
             0 if x["db_position"]["strategy_type"] == "signal_scalper" else 1,  # Сортировка по стратегии
@@ -359,15 +348,10 @@ async def cmd_trade_details(message: Message, state: FSMContext):
             symbol_short = symbol.replace('USDT', '')
 
             # Определяем приоритет бота
-            priority_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
-            priority_emoji = priority_emojis.get(bot_priority, f"#{bot_priority}")
+            priority_emoji = PRIORITY_EMOJIS.get(bot_priority, f"#{bot_priority}")
 
             # Стратегия
-            strategy_names = {
-                "signal_scalper": "SignalScalper",
-                "flash_drop_catcher": "FlashDropCatcher"
-            }
-            strategy_name = strategy_names.get(strategy_type, strategy_type)
+            strategy_name = STRATEGY_NAMES.get(strategy_type, strategy_type)
 
             # Направление позиции (определяем по стороне OPEN ордера из БД)
             open_side = open_order["side"]  # "Buy" или "Sell"
@@ -417,8 +401,7 @@ async def cmd_trade_details(message: Message, state: FSMContext):
                     status_text += "═" * 40 + "\n\n"
 
                 # Заголовок бота
-                bot_names = {1: "BOT #1", 2: "BOT #2", 3: "BOT #3"}
-                bot_name = bot_names.get(bot_priority, f"BOT #{bot_priority}")
+                bot_name = BOT_NAMES.get(bot_priority, f"BOT #{bot_priority}")
                 status_text += f"{priority_emoji} <b>{bot_name}</b>\n"
                 status_text += "─" * 35 + "\n\n"
                 current_bot_priority = bot_priority
@@ -430,11 +413,7 @@ async def cmd_trade_details(message: Message, state: FSMContext):
                     status_text += "\n"
 
                 # Заголовок стратегии
-                strategy_headers = {
-                    "signal_scalper": "📊 Signal Scalper",
-                    "flash_drop_catcher": "⚡ Flash Drop Catcher"
-                }
-                strategy_header = strategy_headers.get(strategy_type, strategy_type)
+                strategy_header = STRATEGY_HEADERS.get(strategy_type, strategy_type)
                 status_text += f"<b>{strategy_header}</b>\n"
                 status_text += "┈" * 35 + "\n"
                 current_strategy_type = strategy_type
@@ -475,9 +454,7 @@ async def cmd_trade_details(message: Message, state: FSMContext):
             status_text += "\n"
 
         # Timestamp
-        from datetime import datetime, timezone, timedelta
-        moscow_tz = timezone(timedelta(hours=3))
-        current_time = datetime.now(moscow_tz).strftime('%H:%M:%S')
+        current_time = get_moscow_time().strftime('%H:%M:%S')
         status_text += f"🕐 Обновлено: {current_time} МСК"
 
         await message.answer(status_text, parse_mode="HTML")
@@ -582,7 +559,7 @@ async def cmd_autotrade_start(message: Message, state: FSMContext):
 
     # ДИАГНОСТИКА: Проверяем состояние EventBus
     log_info(user_id, f"🔍 ДИАГНОСТИКА: basic_handler.event_bus = {basic_handler.event_bus}", module_name='basic_handlers')
-    log_info(user_id, f"🔍 ДИАГНОСТИКА: event_bus.is_running = {basic_handler.event_bus._running if basic_handler.event_bus else 'N/A'}", module_name='basic_handlers')
+    log_info(user_id, f"🔍 ДИАГНОСТИКА: event_bus.is_running = {basic_handler.event_bus.is_running if basic_handler.event_bus else 'N/A'}", module_name='basic_handlers')
 
     # Отправляем событие в шину
     if basic_handler.event_bus:
@@ -611,8 +588,7 @@ async def cmd_autotrade_stop(message: Message, state: FSMContext):
     # Получаем информацию о текущих позициях и ордерах
     try:
         # Определяем режим торговли (demo/live)
-        exchange_config = system_config.get_exchange_config("bybit")
-        use_demo = exchange_config.demo if exchange_config else False
+        use_demo = get_demo_mode()
 
         # === ПРОВЕРКА MULTI-ACCOUNT РЕЖИМА ===
         all_api_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
@@ -647,8 +623,7 @@ async def cmd_autotrade_stop(message: Message, state: FSMContext):
                     for priority in [1, 2, 3]:
                         bot_positions = [p for p in all_positions if p.get('_bot_priority') == priority]
                         if bot_positions:
-                            priority_names = {1: "PRIMARY", 2: "SECONDARY", 3: "TERTIARY"}
-                            position_info += f"  • {priority_names[priority]}: {len(bot_positions)} поз.\n"
+                            position_info += f"  • {PRIORITY_NAMES[priority]}: {len(bot_positions)} поз.\n"
 
                 if all_orders:
                     position_info += f"\n📋 Всего активных ордеров: {len(all_orders)}\n"
@@ -656,8 +631,7 @@ async def cmd_autotrade_stop(message: Message, state: FSMContext):
                     for priority in [1, 2, 3]:
                         bot_orders = [o for o in all_orders if o.get('_bot_priority') == priority]
                         if bot_orders:
-                            priority_names = {1: "PRIMARY", 2: "SECONDARY", 3: "TERTIARY"}
-                            position_info += f"  • {priority_names[priority]}: {len(bot_orders)} орд.\n"
+                            position_info += f"  • {PRIORITY_NAMES[priority]}: {len(bot_orders)} орд.\n"
 
                 await message.answer(
                     f"🛑 <b>Останавливаю автоторговлю...</b>\n\n"
@@ -874,16 +848,13 @@ async def _monitor_pending_trades_multi(user_id: int, message: Message, all_api_
                 status_text = f"⏳ <b>Ожидание завершения операций (Multi-Account)</b>\n\n"
 
                 # Группируем по ботам
-                priority_names = {1: "PRIMARY", 2: "SECONDARY", 3: "TERTIARY"}
-                priority_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
-
                 for priority in [1, 2, 3]:
                     bot_positions = [p for p in all_positions if p.get('_bot_priority') == priority]
                     bot_orders = [o for o in all_orders if o.get('_bot_priority') == priority]
 
                     if bot_positions or bot_orders:
-                        name = priority_names.get(priority, f"Бот {priority}")
-                        emoji = priority_emojis.get(priority, "🔹")
+                        name = PRIORITY_NAMES.get(priority, f"Бот {priority}")
+                        emoji = PRIORITY_EMOJIS.get(priority, "🔹")
 
                         status_text += f"{emoji} <b>{name}:</b>\n"
 
@@ -972,7 +943,7 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
                                f"Обновляю данные из active_session: running={actual_session.running}",
                                "autotrade_status")
                     # Принудительно обновляем Redis из реального состояния
-                    await actual_session._save_session_state()
+                    await actual_session.save_session_state()
                     session_status = await redis_manager.get_user_session(user_id)
             # ВАЖНО: Если сессия НЕ в active_sessions, доверяем Redis (может быть задержка синхронизации)
             # НЕ удаляем данные из Redis в этом случае!
@@ -1019,8 +990,7 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
 
             # Проверяем, какие стратегии должны быть активны, но не запущены
             strategy_configs = [
-                (ConfigType.STRATEGY_SIGNAL_SCALPER, "SIGNAL_SCALPER"),
-                (ConfigType.STRATEGY_FLASH_DROP_CATCHER, "FLASH_DROP_CATCHER")
+                (ConfigType.STRATEGY_SIGNAL_SCALPER, "SIGNAL_SCALPER")
             ]
 
             for config_type, strategy_name in strategy_configs:
@@ -1041,11 +1011,10 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
         if all_api_keys:
             try:
                 # Определяем режим торговли (demo/live)
-                exchange_config = system_config.get_exchange_config("bybit")
-                use_demo = exchange_config.demo if exchange_config else False
+                use_demo = get_demo_mode()
 
                 # === MULTI-ACCOUNT РЕЖИМ (3 аккаунта) - показываем позиции по каждому боту отдельно ===
-                if len(all_api_keys) == 3:
+                if is_multi_account_mode(all_api_keys):
                     log_info(user_id, "Получение позиций в autotrade_status (multi-account режим)", "autotrade_status")
 
                     # Собираем позиции со всех 3 аккаунтов
@@ -1130,7 +1099,7 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
                 if len(parts) >= 2:
                     # Последняя часть - символ (SOLUSDT)
                     symbol = parts[-1]
-                    # Остальное - тип стратегии (signal_scalper, FLASH_DROP_CATCHER)
+                    # Остальное - тип стратегии (signal_scalper)
                     strategy_type = '_'.join(parts[:-1]).upper()
 
                     if strategy_type not in strategies_by_type:
@@ -1144,8 +1113,6 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
             # Переводим название стратегии
             if strategy_type == "SIGNAL_SCALPER":
                 display_name = "📈 Signal Scalper"
-            elif strategy_type == "FLASH_DROP_CATCHER":
-                display_name = "🚀 Flash Drop Catcher"
             else:
                 display_name = f"🔧 {strategy_type.replace('_', ' ').title()}"
 
@@ -1170,16 +1137,13 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
 
                 # Если есть позиции по этому символу - показываем каждую
                 if symbol_positions:
-                    # Эмодзи для приоритетов
-                    priority_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
-
                     for idx, pos in enumerate(symbol_positions):
                         pnl = pos['unrealizedPnl']
                         bot_label = ""
 
                         # Добавляем метку бота для multi-account режима
                         if 'priority' in pos:
-                            bot_emoji = priority_emojis.get(pos['priority'], f"#{pos['priority']}")
+                            bot_emoji = PRIORITY_EMOJIS.get(pos['priority'], f"#{pos['priority']}")
                             bot_label = f" {bot_emoji} Бот {pos['priority']}"
 
                         # Формируем строку статуса
@@ -1215,8 +1179,6 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
                 # Переводим название стратегии
                 if strategy_type == "SIGNAL_SCALPER":
                     display_name = "📈 Signal Scalper"
-                elif strategy_type == "FLASH_DROP_CATCHER":
-                    display_name = "🚀 Flash Drop Catcher"
                 else:
                     display_name = f"🔧 {strategy_type.replace('_', ' ').title()}"
 
@@ -1231,9 +1193,7 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
             status_text += "ℹ️ <i>Для включения перейдите в /settings</i>\n\n"
 
         # Добавляем информацию о времени обновления
-        from datetime import datetime, timezone, timedelta
-        moscow_tz = timezone(timedelta(hours=3))
-        current_time = datetime.now(moscow_tz).strftime('%H:%M:%S')
+        current_time = get_moscow_time().strftime('%H:%M:%S')
         status_text += f"🕐 Обновлено: {current_time} МСК"
 
         await message.answer(status_text, parse_mode="HTML")
@@ -1254,8 +1214,8 @@ async def cmd_balance(message: Message, state: FSMContext):
     await basic_handler.log_command_usage(user_id, "balance")
 
     try:
-        exchange_config = system_config.get_exchange_config("bybit")
-        use_demo = exchange_config.demo if exchange_config else False
+        # Определяем режим торговли (demo/live)
+        use_demo = get_demo_mode()
 
         # === ПРОВЕРКА MULTI-ACCOUNT РЕЖИМА ===
         all_api_keys = await db_manager.get_all_user_api_keys(user_id, "bybit")
@@ -1265,7 +1225,7 @@ async def cmd_balance(message: Message, state: FSMContext):
             return
 
         # === MULTI-ACCOUNT РЕЖИМ (3 аккаунта) ===
-        if len(all_api_keys) == 3:
+        if is_multi_account_mode(all_api_keys):
             log_info(user_id, "Получение баланса в multi-account режиме (3 аккаунта)", "balance")
 
             total_equity_sum = 0
@@ -1323,13 +1283,10 @@ async def cmd_balance(message: Message, state: FSMContext):
             balance_text += "─" * 30 + "\n\n"
 
             # Детали по каждому аккаунту
-            priority_names = {1: "PRIMARY", 2: "SECONDARY", 3: "TERTIARY"}
-            priority_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
-
             for acc in accounts_data:
                 priority = acc['priority']
-                name = priority_names.get(priority, f"Бот {priority}")
-                emoji = priority_emojis.get(priority, "🔹")
+                name = PRIORITY_NAMES.get(priority, f"Бот {priority}")
+                emoji = PRIORITY_EMOJIS.get(priority, "🔹")
                 pnl_emoji_acc = "📈" if acc['unrealised_pnl'] >= 0 else "📉"
 
                 balance_text += f"{emoji} <b>{name} (Бот {priority})</b>\n"
@@ -1398,15 +1355,14 @@ async def cmd_stop_all(message: Message, state: FSMContext):
         from api.bybit_api import BybitAPI
 
         # Определяем режим торговли (demo/live)
-        exchange_config = system_config.get_exchange_config("bybit")
-        use_demo = exchange_config.demo if exchange_config else False
+        use_demo = get_demo_mode()
 
         # Собираем позиции и ордера со ВСЕХ аккаунтов
         all_positions = []
         all_orders = []
 
         # === MULTI-ACCOUNT РЕЖИМ (3 аккаунта) - агрегируем данные ===
-        if len(all_api_keys) == 3:
+        if is_multi_account_mode(all_api_keys):
             log_info(user_id, "Экстренная остановка в multi-account режиме (3 аккаунта)", "stop_all")
 
             for key_data in sorted(all_api_keys, key=lambda x: x['priority']):
@@ -1475,14 +1431,11 @@ async def cmd_stop_all(message: Message, state: FSMContext):
             if len(all_api_keys) == 3:
                 warning_text += f"📈 <b>Открытые позиции ({len(all_positions)}) - MULTI-ACCOUNT:</b>\n"
 
-                priority_names = {1: "PRIMARY", 2: "SECONDARY", 3: "TERTIARY"}
-                priority_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
-
                 for priority in [1, 2, 3]:
                     bot_positions = [p for p in all_positions if p.get('_bot_priority') == priority]
                     if bot_positions:
-                        emoji = priority_emojis.get(priority, "🔹")
-                        warning_text += f"\n{emoji} <b>{priority_names[priority]}:</b>\n"
+                        emoji = PRIORITY_EMOJIS.get(priority, "🔹")
+                        warning_text += f"\n{emoji} <b>{PRIORITY_NAMES[priority]}:</b>\n"
 
                         for pos in bot_positions:
                             symbol = pos.get('symbol', 'Unknown')

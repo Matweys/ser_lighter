@@ -12,7 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from core.logger import log_info, log_error
-from core.enums import ExchangeType, AccountType
+from core.enums import ExchangeType
 
 # --- КОНСТАНТЫ, КОТОРЫЕ ИСПОЛЬЗУЮТСЯ ИЛИ БУДУТ ИСПОЛЬЗОВАТЬСЯ ---
 

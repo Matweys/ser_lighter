@@ -19,6 +19,7 @@ from core.functions import to_decimal, DecimalEncoder
 from cryptography.fernet import Fernet
 import base64
 import os
+from core.functions import get_moscow_tz, get_moscow_time, convert_to_moscow_time, process_order_result, process_order_list
 
 
 class DatabaseError(Exception):
@@ -36,10 +37,10 @@ class QueryError(DatabaseError):
 @dataclass
 class UserProfile:
     """
-    Профиль пользователя (ТОЛЬКО профильные данные).
+    Профиль пользователя.
 
-    Статистика (total_trades, win_rate, total_profit) вычисляется из таблицы trades
-    и НЕ хранится в users для предотвращения дублирования данных.
+    Поля статистики (winning_trades, total_trades, total_profit, max_drawdown, win_rate)
+    существуют в таблице users, но вычисляются динамически из таблицы trades через get_user().
     """
     user_id: int
     username: Optional[str] = None
@@ -49,12 +50,11 @@ class UserProfile:
     is_premium: bool = False
     registration_date: Optional[datetime] = None
     last_activity: Optional[datetime] = None
-    # Статистика добавляется динамически через get_user()
-    winning_trades: int = 0  # Вычисляется из trades
-    total_trades: int = 0     # Вычисляется из trades
-    total_profit: Decimal = Decimal('0')  # Вычисляется из trades
-    max_drawdown: Decimal = Decimal('0')  # Вычисляется из trades
-    win_rate: Decimal = Decimal('0')      # Вычисляется из trades
+    winning_trades: int = 0
+    total_trades: int = 0
+    total_profit: Decimal = Decimal('0')
+    max_drawdown: Decimal = Decimal('0')
+    win_rate: Decimal = Decimal('0')
 
 @dataclass
 class UserApiKeys:
@@ -86,6 +86,7 @@ class TradeRecord:
     strategy_type: str = ""
     order_id: Optional[str] = None
     position_idx: int = 0
+    bot_priority: int = 1  # MULTI-ACCOUNT: 1=PRIMARY, 2=SECONDARY, 3=TERTIARY
     entry_time: Optional[datetime] = None
     exit_time: Optional[datetime] = None
     metadata: Optional[Dict[str, Any]] = None
@@ -280,7 +281,26 @@ class _DatabaseManager:
                     await conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_bot_priority ON orders(bot_priority);")
                     log_info(0, "Индекс 'idx_orders_bot_priority' успешно добавлен.", 'database')
 
-                # Миграция 6: Добавление составного UNIQUE индекса для безопасности многопользовательского режима
+                # Миграция 6: Добавление поля bot_priority в таблицу trades (Multi-Account режим)
+                trades_bot_priority_exists = await conn.fetchval("""
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='trades' AND column_name='bot_priority'
+                """)
+                if not trades_bot_priority_exists:
+                    log_warning(0, "Колонка 'bot_priority' отсутствует в таблице 'trades'. Добавляю...", 'database')
+                    await conn.execute("ALTER TABLE trades ADD COLUMN bot_priority INTEGER DEFAULT 1;")
+                    log_info(0, "Колонка 'bot_priority' успешно добавлена в trades (для Multi-Account режима).", 'database')
+
+                    # Добавляем комментарий для документации
+                    await conn.execute("""
+                        COMMENT ON COLUMN trades.bot_priority IS 'Приоритет бота в Multi-Account режиме: 1=PRIMARY, 2=SECONDARY, 3=TERTIARY'
+                    """)
+
+                    # Добавляем индекс для быстрого поиска по bot_priority
+                    await conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_bot_priority ON trades(bot_priority);")
+                    log_info(0, "Индекс 'idx_trades_bot_priority' успешно добавлен.", 'database')
+
+                # Миграция 7: Добавление составного UNIQUE индекса для безопасности многопользовательского режима
                 unique_constraint_exists = await conn.fetchval("""
                     SELECT 1 FROM pg_constraint
                     WHERE conname = 'unique_user_order_id'
@@ -443,6 +463,7 @@ class _DatabaseManager:
                     strategy_type VARCHAR(50),
                     order_id VARCHAR(100),
                     position_idx INTEGER DEFAULT 0,
+                    bot_priority INTEGER DEFAULT 1,
                     entry_time TIMESTAMPTZ DEFAULT NOW(),
                     exit_time TIMESTAMPTZ,
                     metadata JSONB DEFAULT '{}'::jsonb,
@@ -451,7 +472,7 @@ class _DatabaseManager:
                 )
             """)
             
-            # Таблица ордеров (ПОЛНАЯ СТРУКТУРА)
+            # Таблица ордеров
             await self._execute_query("""
                 CREATE TABLE IF NOT EXISTS orders (
                     id SERIAL PRIMARY KEY,
@@ -467,16 +488,14 @@ class _DatabaseManager:
                     order_id VARCHAR(100) NOT NULL,
                     client_order_id VARCHAR(100),
                     strategy_type VARCHAR(50),
-
-                    -- НОВЫЕ ПОЛЯ ДЛЯ ПОЛНОЙ ИНФОРМАЦИИ
-                    order_purpose VARCHAR(20),              -- 'OPEN', 'CLOSE', 'AVERAGING', 'STOPLOSS'
-                    leverage INTEGER DEFAULT 1,             -- Плечо
-                    profit DECIMAL(20,8) DEFAULT 0,         -- PnL при закрытии (для CLOSE ордеров)
-                    commission DECIMAL(20,8) DEFAULT 0,     -- Комиссия
-                    filled_at TIMESTAMPTZ,                  -- Время исполнения (МСК)
-                    trade_id INTEGER,                       -- Связь со сделкой
-                    is_active BOOLEAN DEFAULT TRUE,         -- Активен ли ордер (для подсчета слотов)
-
+                    order_purpose VARCHAR(20),
+                    leverage INTEGER DEFAULT 1,
+                    profit DECIMAL(20,8) DEFAULT 0,
+                    commission DECIMAL(20,8) DEFAULT 0,
+                    filled_at TIMESTAMPTZ,
+                    trade_id INTEGER,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    bot_priority INTEGER DEFAULT 1,
                     metadata JSONB DEFAULT '{}'::jsonb,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -562,8 +581,7 @@ class _DatabaseManager:
     async def create_user(self, user_profile: UserProfile) -> bool:
         """Создание пользователя"""
         try:
-            moscow_tz = timezone(timedelta(hours=3))
-            current_time = datetime.now(moscow_tz)
+            current_time = get_moscow_time()
 
             query = """
                 INSERT INTO users (user_id, username, first_name, last_name, is_active, is_premium, last_activity)
@@ -665,8 +683,7 @@ class _DatabaseManager:
             bool: True если успешно сохранено
         """
         try:
-            moscow_tz = timezone(timedelta(hours=3))
-            current_time = datetime.now(moscow_tz)
+            current_time = get_moscow_time()
 
             encrypted_api_key = self.encrypt_data(api_key)
             encrypted_secret_key = self.encrypt_data(secret_key)
@@ -773,35 +790,24 @@ class _DatabaseManager:
         """Сохранение сделки с московским временем"""
         try:
             # Преобразуем время в московское (UTC+3)
-            moscow_tz = timezone(timedelta(hours=3))
-
-            # Если время не указано, используем текущее московское время
-            entry_time_msk = trade.entry_time
-            if entry_time_msk and entry_time_msk.tzinfo is None:
-                # Если время naive, считаем его UTC и конвертируем в московское
-                entry_time_msk = entry_time_msk.replace(tzinfo=timezone.utc).astimezone(moscow_tz)
-            elif entry_time_msk is None:
-                entry_time_msk = datetime.now(moscow_tz)
-
-            exit_time_msk = trade.exit_time
-            if exit_time_msk and exit_time_msk.tzinfo is None:
-                exit_time_msk = exit_time_msk.replace(tzinfo=timezone.utc).astimezone(moscow_tz)
+            entry_time_msk = convert_to_moscow_time(trade.entry_time) if trade.entry_time else get_moscow_time()
+            exit_time_msk = convert_to_moscow_time(trade.exit_time)
 
             query = """
                 INSERT INTO trades (
                     user_id, symbol, side, entry_price, exit_price, quantity, leverage,
-                    profit, commission, status, strategy_type, order_id, position_idx,
+                    profit, commission, status, strategy_type, order_id, position_idx, bot_priority,
                     entry_time, exit_time, metadata, created_at, updated_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $18)
                 RETURNING id
             """
 
-            current_moscow_time = datetime.now(moscow_tz)
+            current_moscow_time = get_moscow_time()
 
             result = await self._execute_query(query, (
                 trade.user_id, trade.symbol, trade.side, trade.entry_price, trade.exit_price,
                 trade.quantity, trade.leverage, trade.profit, trade.commission, trade.status,
-                trade.strategy_type, trade.order_id, trade.position_idx, entry_time_msk,
+                trade.strategy_type, trade.order_id, trade.position_idx, trade.bot_priority, entry_time_msk,
                 exit_time_msk, json.dumps(trade.metadata or {}, cls=DecimalEncoder), current_moscow_time
             ), fetch_one=True)
 
@@ -814,20 +820,22 @@ class _DatabaseManager:
             return None
 
     async def update_trade_on_close(self, trade_id: int, exit_price: Decimal, pnl: Decimal, commission: Decimal,
-                                    exit_time: datetime) -> bool:
-        """Обновление записи о сделке при ее закрытии с московским временем."""
+                                    exit_time: datetime, bot_priority: int = 1) -> bool:
+        """
+        Обновление записи о сделке при ее закрытии с московским временем.
+
+        Args:
+            trade_id: ID сделки
+            exit_price: Цена выхода
+            pnl: Прибыль/убыток
+            commission: Комиссия
+            exit_time: Время выхода
+            bot_priority: Приоритет бота (для Multi-Account изоляции)
+        """
         try:
             # Преобразуем время в московское (UTC+3)
-            moscow_tz = timezone(timedelta(hours=3))
-
-            # Конвертируем время выхода в московское
-            exit_time_msk = exit_time
-            if exit_time_msk and exit_time_msk.tzinfo is None:
-                exit_time_msk = exit_time_msk.replace(tzinfo=timezone.utc).astimezone(moscow_tz)
-            elif exit_time_msk is None:
-                exit_time_msk = datetime.now(moscow_tz)
-
-            current_moscow_time = datetime.now(moscow_tz)
+            exit_time_msk = convert_to_moscow_time(exit_time) if exit_time else get_moscow_time()
+            current_moscow_time = get_moscow_time()
 
             query = """
                 UPDATE trades
@@ -838,10 +846,10 @@ class _DatabaseManager:
                     exit_time = $4,
                     status = 'CLOSED',
                     updated_at = $6
-                WHERE id = $5
+                WHERE id = $5 AND bot_priority = $7
                 RETURNING user_id
             """
-            result = await self._execute_query(query, (exit_price, pnl, commission, exit_time_msk, trade_id, current_moscow_time), fetch_one=True)
+            result = await self._execute_query(query, (exit_price, pnl, commission, exit_time_msk, trade_id, current_moscow_time, bot_priority), fetch_one=True)
 
             if result:
                 user_id = result['user_id']
@@ -856,11 +864,18 @@ class _DatabaseManager:
             log_error(0, f"Ошибка обновления сделки {trade_id} в БД: {e}", module_name='database')
             return False
 
-    async def update_trade_on_averaging(self, trade_id: int, new_entry_price: Decimal, new_quantity: Decimal) -> bool:
-        """Обновление записи о сделке при усреднении (изменение entry_price и quantity)."""
+    async def update_trade_on_averaging(self, trade_id: int, new_entry_price: Decimal, new_quantity: Decimal, bot_priority: int = 1) -> bool:
+        """
+        Обновление записи о сделке при усреднении (изменение entry_price и quantity).
+
+        Args:
+            trade_id: ID сделки
+            new_entry_price: Новая средняя цена входа
+            new_quantity: Новое общее количество
+            bot_priority: Приоритет бота (для Multi-Account изоляции)
+        """
         try:
-            moscow_tz = timezone(timedelta(hours=3))
-            current_moscow_time = datetime.now(moscow_tz)
+            current_moscow_time = get_moscow_time()
 
             query = """
                 UPDATE trades
@@ -868,42 +883,69 @@ class _DatabaseManager:
                     entry_price = $1,
                     quantity = $2,
                     updated_at = $4
-                WHERE id = $3
+                WHERE id = $3 AND bot_priority = $5
             """
-            await self._execute_query(query, (new_entry_price, new_quantity, trade_id, current_moscow_time))
+            await self._execute_query(query, (new_entry_price, new_quantity, trade_id, current_moscow_time, bot_priority))
             log_info(0, f"Сделка с ID {trade_id} обновлена при усреднении. Новая цена входа: {new_entry_price:.4f}, количество: {new_quantity}", module_name='database')
             return True
         except Exception as e:
             log_error(0, f"Ошибка обновления сделки {trade_id} при усреднении: {e}", module_name='database')
             return False
 
-    async def get_active_trade(self, user_id: int, symbol: str) -> Optional[Dict]:
-        """Получение активной сделки пользователя по символу."""
+    async def get_active_trade(self, user_id: int, symbol: str, bot_priority: int = 1) -> Optional[Dict]:
+        """
+        Получение активной сделки пользователя по символу.
+
+        Args:
+            user_id: ID пользователя
+            symbol: Символ торговли
+            bot_priority: Приоритет бота (для Multi-Account изоляции)
+
+        Returns:
+            Optional[Dict]: Данные активной сделки или None
+        """
         try:
             query = """
-                SELECT id, entry_price, quantity, side, leverage
+                SELECT id, entry_price, quantity, side, leverage, bot_priority
                 FROM trades
-                WHERE user_id = $1 AND symbol = $2 AND status = 'ACTIVE'
+                WHERE user_id = $1 AND symbol = $2 AND bot_priority = $3 AND status = 'ACTIVE'
                 ORDER BY entry_time DESC
                 LIMIT 1
             """
-            result = await self._execute_query(query, (user_id, symbol), fetch_one=True)
+            result = await self._execute_query(query, (user_id, symbol, bot_priority), fetch_one=True)
             return dict(result) if result else None
         except Exception as e:
-            log_error(user_id, f"Ошибка получения активной сделки для {symbol}: {e}", module_name='database')
+            log_error(user_id, f"Ошибка получения активной сделки для {symbol} Bot_{bot_priority}: {e}", module_name='database')
             return None
 
-    async def get_user_trades(self, user_id: int, limit: int = 100, offset: int = 0) -> List[TradeRecord]:
-        """Получение сделок пользователя"""
+    async def get_user_trades(self, user_id: int, limit: int = 100, offset: int = 0, bot_priority: Optional[int] = None) -> List[TradeRecord]:
+        """
+        Получение сделок пользователя.
+
+        Args:
+            user_id: ID пользователя
+            limit: Лимит сделок
+            offset: Смещение
+            bot_priority: Опциональная фильтрация по bot_priority (None = все боты)
+        """
         try:
-            query = """
-                SELECT * FROM trades 
-                WHERE user_id = $1 
-                ORDER BY created_at DESC 
-                LIMIT $2 OFFSET $3
-            """
-            
-            results = await self._execute_query(query, (user_id, limit, offset), fetch_all=True)
+            # Если bot_priority указан - фильтруем по нему, иначе показываем все боты
+            if bot_priority is not None:
+                query = """
+                    SELECT * FROM trades
+                    WHERE user_id = $1 AND bot_priority = $4
+                    ORDER BY created_at DESC
+                    LIMIT $2 OFFSET $3
+                """
+                results = await self._execute_query(query, (user_id, limit, offset, bot_priority), fetch_all=True)
+            else:
+                query = """
+                    SELECT * FROM trades
+                    WHERE user_id = $1
+                    ORDER BY created_at DESC
+                    LIMIT $2 OFFSET $3
+                """
+                results = await self._execute_query(query, (user_id, limit, offset), fetch_all=True)
             
             trades = []
             for result in results:
@@ -922,6 +964,7 @@ class _DatabaseManager:
                     strategy_type=result['strategy_type'],
                     order_id=result['order_id'],
                     position_idx=result['position_idx'],
+                    bot_priority=result.get('bot_priority', 1),  # MULTI-ACCOUNT SUPPORT
                     entry_time=result['entry_time'],
                     exit_time=result['exit_time'],
                     metadata=result['metadata']
@@ -948,8 +991,7 @@ class _DatabaseManager:
         Обновляет статистику для конкретной стратегии пользователя и возвращает обновленный Win Rate.
         """
         try:
-            moscow_tz = timezone(timedelta(hours=3))
-            current_time = datetime.now(moscow_tz)
+            current_time = get_moscow_time()
             win_increment = 1 if pnl > 0 else 0
 
             query = """
@@ -985,41 +1027,30 @@ class _DatabaseManager:
             return []
 
     async def analyze_database_usage(self) -> Dict[str, Any]:
-        """
-        Анализирует использование таблиц базы данных.
-        Возвращает информацию о количестве записей в каждой таблице.
-        """
+        """Анализирует использование таблиц базы данных"""
         try:
             tables_info = {}
-
-            # Список основных таблиц для анализа
-            tables_to_check = [
-                'users', 'user_api_keys', 'trades', 'positions',
-                'orders', 'user_strategies', 'user_strategy_stats', 'notifications'
-            ]
+            tables_to_check = ['users', 'user_api_keys', 'trades', 'orders', 'user_strategy_stats']
 
             async with self.get_connection() as conn:
                 for table_name in tables_to_check:
                     try:
-                        # Получаем количество записей
                         count_query = f"SELECT COUNT(*) as count FROM {table_name}"
                         result = await conn.fetchrow(count_query)
                         record_count = result['count'] if result else 0
 
-                        # Получаем размер таблицы
                         size_query = f"SELECT pg_size_pretty(pg_total_relation_size('{table_name}')) as size"
                         size_result = await conn.fetchrow(size_query)
                         table_size = size_result['size'] if size_result else 'Unknown'
 
-                        # Получаем дату последнего изменения (если есть поля created_at/updated_at)
                         last_activity = None
                         try:
-                            if table_name in ['trades', 'positions', 'orders', 'user_strategies', 'notifications']:
+                            if table_name in ['trades', 'orders']:
                                 activity_query = f"SELECT MAX(created_at) as last_activity FROM {table_name}"
                                 activity_result = await conn.fetchrow(activity_query)
                                 last_activity = activity_result['last_activity'] if activity_result else None
                         except:
-                            pass  # Ignore if column doesn't exist
+                            pass
 
                         tables_info[table_name] = {
                             'records': record_count,
@@ -1036,7 +1067,6 @@ class _DatabaseManager:
                             'status': f'error: {str(e)}'
                         }
 
-            # Добавляем общую статистику
             total_records = sum(info['records'] for info in tables_info.values() if isinstance(info['records'], int))
             empty_tables = [name for name, info in tables_info.items() if info['status'] == 'empty']
 
@@ -1045,7 +1075,7 @@ class _DatabaseManager:
                 'total_records': total_records,
                 'empty_tables': empty_tables,
                 'empty_count': len(empty_tables),
-                'analysis_time': datetime.now(timezone(timedelta(hours=3))).strftime('%Y-%m-%d %H:%M:%S MSK')
+                'analysis_time': get_moscow_time().strftime('%Y-%m-%d %H:%M:%S MSK')
             }
 
             return {
@@ -1126,10 +1156,6 @@ class _DatabaseManager:
             net_profit = total_profit
 
             win_rate = (Decimal(winning_trades) / Decimal(total_trades) * 100) if total_trades > 0 else Decimal('0')
-
-            # В demo режиме используем сумму маржи всех сделок как приблизительный депозит
-            # В будущем здесь будет использоваться реальный депозит пользователя
-            # TODO: В продакшене заменить на user_profile.initial_deposit
 
             # Запрос для оценки размера депозита на основе использованной маржи
             margin_query = f"""
@@ -1413,8 +1439,7 @@ class _DatabaseManager:
             bool: True если обновление успешно
         """
         try:
-            moscow_tz = timezone(timedelta(hours=3))
-            current_time = datetime.now(moscow_tz)
+            current_time = get_moscow_time()
 
             set_clauses = ["status = $2"]
             params = [order_id, status]
@@ -1623,7 +1648,7 @@ class _DatabaseManager:
         Args:
             user_id: ID пользователя
             symbol: Символ торговли
-            bot_priority: Приоритет бота (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
+            account_priority: Приоритет бота (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
 
         Returns:
             Optional[Dict]: Данные ордера с filled_at и average_price, или None если не найден
@@ -1665,7 +1690,7 @@ class _DatabaseManager:
         Args:
             user_id: ID пользователя
             symbol: Символ торговли
-            bot_priority: Приоритет бота (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
+            account_priority: Приоритет бота (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
 
         Returns:
             float: Сумма всех комиссий в USDT
@@ -1738,7 +1763,7 @@ class _DatabaseManager:
         Args:
             user_id: ID пользователя
             symbol: Символ торговли
-            bot_priority: Приоритет бота (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
+            account_priority: Приоритет бота (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
 
         Returns:
             bool: True если есть наш CLOSE ордер (PENDING или недавно FILLED < 30 сек)
@@ -1774,7 +1799,7 @@ class _DatabaseManager:
         Args:
             user_id: ID пользователя
             symbol: Символ торговли
-            bot_priority: Приоритет бота (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
+            account_priority: Приоритет бота (1=PRIMARY, 2=SECONDARY, 3=TERTIARY)
 
         Returns:
             bool: True если позиция открыта но не закрыта
@@ -1814,7 +1839,7 @@ class _DatabaseManager:
         КРИТИЧНО: Открытая позиция = есть OPEN ордер, но НЕТ соответствующего CLOSE ордера.
         Работает НЕЗАВИСИМО от self.position_active в памяти - только БД как источник истины!
 
-        Показывает позиции для ВСЕХ стратегий (SignalScalper, FlashDropCatcher) и ВСЕХ ботов (Bot_1, Bot_2, Bot_3).
+        Показывает позиции для стратегии SignalScalper и ВСЕХ ботов (Bot_1, Bot_2, Bot_3).
 
         Args:
             user_id: ID пользователя
@@ -2014,8 +2039,7 @@ class _DatabaseManager:
             Optional[int]: ID записи в БД или None
         """
         try:
-            moscow_tz = timezone(timedelta(hours=3))
-            current_time = datetime.now(moscow_tz)
+            current_time = get_moscow_time()
 
             query = """
             INSERT INTO orders (
@@ -2067,8 +2091,7 @@ class _DatabaseManager:
             bool: True если обновление успешно
         """
         try:
-            moscow_tz = timezone(timedelta(hours=3))
-            filled_at = datetime.now(moscow_tz)
+            filled_at = get_moscow_time()
 
             query = """
             UPDATE orders
@@ -2120,8 +2143,7 @@ class _DatabaseManager:
             bool: True если обновление успешно
         """
         try:
-            moscow_tz = timezone(timedelta(hours=3))
-            current_time = datetime.now(moscow_tz)
+            current_time = get_moscow_time()
 
             query = """
             UPDATE orders
@@ -2195,8 +2217,7 @@ class _DatabaseManager:
             bool: True если успешно обновлено
         """
         try:
-            moscow_tz = timezone(timedelta(hours=3))
-            current_time = datetime.now(moscow_tz)
+            current_time = get_moscow_time()
 
             # Обновляем метаданные OPEN ордера + фильтруем по user_id для изоляции!
             # ИСПРАВЛЕНО: Используем CAST для явного приведения типов, чтобы избежать ошибки
@@ -2272,25 +2293,4 @@ class _DatabaseManager:
 
 # Глобальный экземпляр менеджера базы данных
 db_manager = _DatabaseManager()
-
-# Функции для обратной совместимости
-async def init_db_pool():
-    """Инициализация пула соединений (обратная совместимость)"""
-    await db_manager.initialize()
-
-
-async def get_user_bybit_keys(user_id: int) -> Tuple[Optional[str], Optional[str]]:
-    """Получение Bybit ключей (обратная совместимость)"""
-    keys = await db_manager.get_api_keys(user_id, "bybit")
-    if keys:
-        return keys[0], keys[1]  # api_key, secret_key
-    return None, None
-
-def encrypt_data(data: str) -> str:
-    """Шифрование данных (обратная совместимость)"""
-    return db_manager.encrypt_data(data)
-
-def decrypt_data(encrypted_data: str) -> str:
-    """Расшифровка данных (обратная совместимость)"""
-    return db_manager.decrypt_data(encrypted_data)
 

@@ -788,7 +788,8 @@ class DataFeedHandler:
                                 side=order_info.get("side"),
                                 qty=to_decimal(order_info.get("cumExecQty", "0")),
                                 price=to_decimal(order_info.get("avgPrice", "0")),
-                                fee=to_decimal(order_info.get("cumExecFee", "0"))
+                                fee=to_decimal(order_info.get("cumExecFee", "0")),
+                                bot_priority=self.account_priority  # MULTI-ACCOUNT: фильтрация по боту
                             )
                             await self.event_bus.publish(filled_event)
 
@@ -881,7 +882,8 @@ class DataFeedHandler:
                         side=order_data.get("side"),
                         qty=to_decimal(order_data.get("cumExecQty", "0")),
                         price=to_decimal(order_data.get("avgPrice", "0")),
-                        fee=fee_value
+                        fee=fee_value,
+                        bot_priority=self.account_priority  # MULTI-ACCOUNT: фильтрация по боту
                     )
                     await self.event_bus.publish(filled_event)
                     log_info(self.user_id,

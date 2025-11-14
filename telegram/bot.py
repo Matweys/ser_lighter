@@ -13,7 +13,6 @@ from contextlib import asynccontextmanager
 
 from core.settings_config import system_config
 from core.logger import log_info, log_error, log_warning, log_debug
-from core.enums import SystemConstants
 from core.events import EventBus
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.fsm.storage.base import BaseEventIsolation
