@@ -1225,17 +1225,9 @@ async def callback_toggle_symbol(callback: CallbackQuery, state: FSMContext):
         user_config["watchlist_symbols"] = list(selected_symbols)
         await redis_manager.save_config(user_id, ConfigType.GLOBAL, user_config)
 
-        # ИСПРАВЛЕНИЕ: Публикуем событие об изменении настроек для hot-reload
-        if callback_handler.event_bus:
-            settings_event = UserSettingsChangedEvent(
-                user_id=user_id,
-                changed_settings=["watchlist_symbols"],
-                config_type="global"
-            )
-            log_info(user_id, f"🔄 Публикую событие изменения символов: {symbol_to_toggle}, новый список: {list(selected_symbols)}", "callback")
-            await callback_handler.event_bus.publish(settings_event)
-        else:
-            log_error(user_id, "❌ EventBus недоступен для публикации события изменения настроек!", "callback")
+        # КРИТИЧНО: НЕ публикуем событие здесь - это только UI изменение!
+        # Финальное событие будет опубликовано в save_symbol_selection
+        log_info(user_id, f"🔄 Символ переключен: {symbol_to_toggle}, новый список: {list(selected_symbols)}", "callback")
 
         # Обновляем клавиатуру, чтобы показать изменение
         await send_or_edit_symbol_selection_menu(callback, state, is_edit=True)

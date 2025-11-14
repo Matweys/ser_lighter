@@ -89,6 +89,9 @@ class UserSession:
         self.MAX_STRATEGY_SLOTS = 5  # Максимум символов для одной стратегии
         self.strategy_queues: Dict[str, List[str]] = {}  # strategy_type -> [symbols] в очереди ожидания
 
+        # КРИТИЧНО: Кеш текущего watchlist для отслеживания изменений
+        self._cached_watchlist: set = set()
+
         # Статистика сессии
         self.session_stats = {
             "start_time": datetime.now(),
@@ -128,6 +131,10 @@ class UserSession:
             if not global_config:
                 log_error(self.user_id, "Конфигурация пользователя не найдена", module_name=__name__)
                 return False
+
+            # КРИТИЧНО: Инициализация кеша watchlist при старте сессии
+            self._cached_watchlist = set(global_config.get("watchlist_symbols", []))
+            log_debug(self.user_id, f"📝 Кеш watchlist инициализирован: {self._cached_watchlist}", module_name=__name__)
 
             # Инициализация компонентов
             await self._initialize_components()
@@ -933,9 +940,8 @@ class UserSession:
         log_info(self.user_id, "Получено событие изменения настроек. Перезагрузка конфигураций...",
                  module_name=__name__)
         try:
-            # Получаем старый watchlist для сравнения
-            old_config = await redis_manager.get_config(self.user_id, ConfigType.GLOBAL)
-            old_watchlist = set(old_config.get("watchlist_symbols", []))
+            # КРИТИЧНО: Используем КЕШИРОВАННЫЙ watchlist как старый (до изменений)
+            old_watchlist = self._cached_watchlist.copy()
 
             # Обновляем watchlist в DataFeedHandler
             # ✅ КРИТИЧНО: Проверяем оба режима - обычный И multi-account!
@@ -980,6 +986,10 @@ class UserSession:
                         # Нет активной позиции - безопасно отписываемся
                         await self.global_ws_manager.unsubscribe_symbol(self.user_id, symbol)
                         log_info(self.user_id, f"✅ WebSocket отписан от {symbol} (нет активной позиции)", module_name=__name__)
+
+                # КРИТИЧНО: Обновляем кеш watchlist ПОСЛЕ обработки изменений
+                self._cached_watchlist = new_watchlist.copy()
+                log_debug(self.user_id, f"📝 Кеш watchlist обновлён: {self._cached_watchlist}", module_name=__name__)
 
             log_info(self.user_id, "Конфигурации и подписки обновлены после изменения настроек.", module_name=__name__)
 
@@ -1909,22 +1919,30 @@ class UserSession:
 
             log_info(self.user_id, f"🎯 Доступно слотов для новых символов: {available_slots}", module_name=__name__)
 
-            for symbol in added:
+            # КРИТИЧНО: Проверяем ВСЕ символы из watchlist, а не только added!
+            # Это необходимо потому что событие может публиковаться дважды,
+            # и при второй публикации added будет пустым, но стратегии еще не запущены
+            symbols_needing_strategies = set()
+            for symbol in new_watchlist:
+                strategy_id = f"{StrategyType.SIGNAL_SCALPER.value}_{symbol}"
+                # Проверяем есть ли стратегия для этого символа
+                if strategy_id not in self.active_strategies:
+                    # Также проверяем нет ли координатора для multi-account режима
+                    if symbol not in self.coordinators:
+                        symbols_needing_strategies.add(symbol)
+
+            log_info(self.user_id, f"🔍 Символов в watchlist без стратегий: {len(symbols_needing_strategies)} {list(symbols_needing_strategies)}", module_name=__name__)
+
+            # Запускаем стратегии для символов без стратегий (есть свободные слоты)
+            for symbol in symbols_needing_strategies:
                 if available_slots > 0:
-                    # Проверяем, нет ли уже стратегии для этого символа
-                    # ИСПРАВЛЕНО: используем корректное формирование strategy_id как в start_strategy
-                    strategy_id = f"{StrategyType.SIGNAL_SCALPER.value}_{symbol}"
-                    if strategy_id not in self.active_strategies:
-                        symbols_to_start.append(symbol)
-                        available_slots -= 1
-                        log_info(self.user_id, f"✅ Символ {symbol} будет запущен немедленно (есть свободный слот)", module_name=__name__)
-                    else:
-                        log_info(self.user_id, f"ℹ️ Символ {symbol} уже имеет активную стратегию", module_name=__name__)
+                    symbols_to_start.append(symbol)
+                    available_slots -= 1
+                    log_info(self.user_id, f"✅ Символ {symbol} будет запущен (есть свободный слот)", module_name=__name__)
                 else:
                     log_info(self.user_id, f"⏳ Символ {symbol} ожидает освобождения слота (лимит {max_concurrent_trades} достигнут)", module_name=__name__)
-                    # Можно добавить в очередь ожидания для будущей реализации
 
-            # Запускаем новые стратегии для добавленных символов
+            # Запускаем новые стратегии
             for symbol in symbols_to_start:
                 success = await self.start_strategy(
                     strategy_type=StrategyType.SIGNAL_SCALPER.value,
