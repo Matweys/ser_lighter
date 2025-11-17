@@ -477,7 +477,6 @@ class BybitAPI:
                                 "avgPrice": to_decimal(position.get("avgPrice", "0")),
                                 "markPrice": to_decimal(position.get("markPrice", "0")),
                                 "unrealisedPnl": to_decimal(position.get("unrealisedPnl", "0")),
-                                "breakEvenPrice": to_decimal(position.get("breakEvenPrice", "0")),
                             })
 
                     # Логируем успех только при повторных попытках (не спамим при каждом вызове API-монитора)
@@ -550,7 +549,6 @@ class BybitAPI:
                         "avgPrice": to_decimal(position.get("avgPrice", "0")),
                         "markPrice": to_decimal(position.get("markPrice", "0")),
                         "unrealisedPnl": to_decimal(position.get("unrealisedPnl", "0")),
-                        "breakEvenPrice": to_decimal(position.get("breakEvenPrice", "0")),
                         "stopLoss": position.get("stopLoss", "0"),
                         "takeProfit": position.get("takeProfit", "0"),
                         "leverage": position.get("leverage", "1")

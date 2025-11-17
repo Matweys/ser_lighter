@@ -1835,7 +1835,7 @@ class UserSession:
                         symbols_with_positions.add(analysis['symbol'])
 
             # Логируем анализ вайтлиста (только SignalScalper использует вайтлист)
-            log_info(self.user_id, f"📊 Анализ вайтлиста: уникальных символов {current_trading_count}/{max_concurrent_trades}, активных ботов {active_bots_count}", module_name=__name__)
+            log_info(self.user_id, f"📊 Анализ вайтлиста: торгуется символов {current_trading_count}/{max_concurrent_trades}", module_name=__name__)
             if symbols_with_positions:
                 # Показываем уникальные символы с позициями и их список
                 log_info(self.user_id, f"🔍 Символов с открытыми позициями: {len(symbols_with_positions)} ({', '.join(sorted(symbols_with_positions))})", module_name=__name__)
@@ -1917,8 +1917,6 @@ class UserSession:
             available_slots = max_concurrent_trades - current_trading_count
             symbols_to_start = []
 
-            log_info(self.user_id, f"🎯 Доступно слотов для новых символов: {available_slots}", module_name=__name__)
-
             # КРИТИЧНО: Проверяем ВСЕ символы из watchlist, а не только added!
             # Это необходимо потому что событие может публиковаться дважды,
             # и при второй публикации added будет пустым, но стратегии еще не запущены
@@ -1941,6 +1939,10 @@ class UserSession:
                     log_info(self.user_id, f"✅ Символ {symbol} будет запущен (есть свободный слот)", module_name=__name__)
                 else:
                     log_info(self.user_id, f"⏳ Символ {symbol} ожидает освобождения слота (лимит {max_concurrent_trades} достигнут)", module_name=__name__)
+
+            # КРИТИЧНО: Показываем ФИНАЛЬНОЕ количество доступных слотов ПОСЛЕ учета запускаемых символов
+            final_available_slots = max_concurrent_trades - current_trading_count - len(symbols_to_start)
+            log_info(self.user_id, f"🎯 Доступно слотов после запуска: {final_available_slots}", module_name=__name__)
 
             # Запускаем новые стратегии
             for symbol in symbols_to_start:

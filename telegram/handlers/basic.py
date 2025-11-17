@@ -183,7 +183,7 @@ async def cmd_help(message: Message, state: FSMContext):
             f"/stop_all - Экстренная остановка\n\n"
             f"<b>📊 Информация и статистика:</b>\n"
             f"/balance - Баланс аккаунта\n"
-            f"/trade_details - Детали позиций (усреднения, безубыток)\n"
+            f"/trade_details - Детали позиций (усреднения)\n"
             f"/stats - Статистика торговли\n\n"
             f"<b>💡 Совет:</b>\n"
             f"Используйте inline-кнопки в главном меню для быстрого доступа ко всем функциям бота."
@@ -385,15 +385,6 @@ async def cmd_trade_details(message: Message, state: FSMContext):
             else:  # SHORT
                 price_change_percent = ((average_entry_price - current_price) / average_entry_price) * Decimal('100')
 
-            # Получаем цену безубытка С БИРЖИ
-            breakeven_price = None
-            breakeven_price_str = exchange_pos.get("breakEvenPrice", "0")
-            if breakeven_price_str and breakeven_price_str != "0" and breakeven_price_str != "":
-                try:
-                    breakeven_price = Decimal(str(breakeven_price_str))
-                except:
-                    pass
-
             # Добавляем заголовок при смене бота
             if current_bot_priority != bot_priority:
                 if current_bot_priority is not None:
@@ -427,14 +418,6 @@ async def cmd_trade_details(message: Message, state: FSMContext):
                 status_text += f"  • Первый вход: ${float(entry_price):.4f}\n"
                 status_text += f"  • Средняя цена: ${float(average_entry_price):.4f}\n"
                 status_text += f"  • Текущая цена: ${float(current_price):.4f}\n"
-
-                if breakeven_price:
-                    distance_to_be = abs(current_price - breakeven_price)
-                    distance_pct = (distance_to_be / breakeven_price) * 100
-                    be_emoji = "✅" if (direction == "LONG" and current_price >= breakeven_price) or (direction == "SHORT" and current_price <= breakeven_price) else "⏳"
-                    status_text += f"  • Безубыток: ${float(breakeven_price):.4f} {be_emoji}\n"
-                    if be_emoji == "⏳":
-                        status_text += f"     (до БЕ: {float(distance_pct):.2f}%)\n"
             else:
                 status_text += f"  • Цена входа: ${float(entry_price):.4f}\n"
                 status_text += f"  • Текущая цена: ${float(current_price):.4f}\n"

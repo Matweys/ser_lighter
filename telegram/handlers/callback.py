@@ -510,6 +510,16 @@ async def process_strategy_param_value(message: Message, state: FSMContext):
 
             log_info(user_id, f"Обновлен параметр {param_key}={new_value} для стратегии {strategy_type}", "callback")
 
+            # КРИТИЧНО: Публикуем событие об изменении настроек для hot-reload в работающих стратегиях
+            if callback_handler.event_bus:
+                settings_event = UserSettingsChangedEvent(
+                    user_id=user_id,
+                    changed_settings=[param_key],
+                    config_type=f"strategy_{strategy_type}"
+                )
+                await callback_handler.event_bus.publish(settings_event)
+                log_info(user_id, f"Отправлено событие UserSettingsChangedEvent для hot-reload параметра {param_key}", "callback")
+
             await message.delete()
             await state.clear()
 
