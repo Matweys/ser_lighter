@@ -16,11 +16,38 @@ if [ -d ".git" ]; then
     git pull origin main || echo "⚠️  Не удалось обновить репозиторий, продолжаем..."
 fi
 
-# Проверяем наличие python3-venv
+# Устанавливаем системные зависимости
+echo "📦 Проверяем и устанавливаем системные зависимости..."
+
+# Обновляем список пакетов
+apt update
+
+# Устанавливаем python3-venv если нужно
 if ! dpkg -l | grep -q python3-venv; then
     echo "⚠️  python3-venv не установлен. Устанавливаем..."
-    apt update
     apt install -y python3.10-venv || apt install -y python3-venv
+fi
+
+# Устанавливаем build-essential для компиляции (нужно для TA-Lib)
+if ! dpkg -l | grep -q build-essential; then
+    echo "⚠️  build-essential не установлен. Устанавливаем..."
+    apt install -y build-essential
+fi
+
+# Устанавливаем ta-lib библиотеку (нужно для TA-Lib Python пакета)
+if ! ldconfig -p | grep -q libta_lib; then
+    echo "⚠️  ta-lib библиотека не найдена. Устанавливаем..."
+    # Сначала устанавливаем зависимости для компиляции ta-lib
+    apt install -y wget
+    cd /tmp
+    wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
+    tar -xzf ta-lib-0.4.0-src.tar.gz
+    cd ta-lib/
+    ./configure --prefix=/usr
+    make
+    make install
+    cd /root/ser_lighter
+    ldconfig
 fi
 
 # Удаляем старое venv если есть
