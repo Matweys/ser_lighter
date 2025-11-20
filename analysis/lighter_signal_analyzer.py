@@ -3,7 +3,7 @@ Signal Analyzer для Lighter биржи
 Адаптация SignalAnalyzer для работы с Lighter API
 """
 import pandas as pd
-import talib
+import numpy as np
 from decimal import Decimal
 from typing import Optional, Dict
 from dataclasses import dataclass
@@ -23,8 +23,18 @@ class SignalAnalysisResult:
 class LighterSignalAnalyzer:
     """
     Анализатор сигналов для Lighter биржи
-    Реализует логику на основе EMA и RSI с использованием TA-Lib
+    Реализует логику на основе EMA и RSI с использованием pandas
     """
+    
+    @staticmethod
+    def _calculate_rsi(prices: pd.Series, period: int = 14) -> float:
+        """Расчет RSI (Relative Strength Index)"""
+        delta = prices.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi.iloc[-1] if not pd.isna(rsi.iloc[-1]) else 50.0
     
     def __init__(self, user_id: int, api: LighterSimulator, config: Dict):
         self.user_id = user_id
@@ -58,18 +68,18 @@ class LighterSignalAnalyzer:
                           "LighterSignalAnalyzer")
                 return None
             
-            # 2. Подготовка данных для TA-Lib
-            # Конвертируем Decimal в float для TA-Lib
+            # 2. Подготовка данных для pandas
+            # Конвертируем Decimal в float
             close_prices = [float(candle['close']) for candle in candles]
-            close_prices_array = pd.Series(close_prices).to_numpy(dtype=float)
+            close_series = pd.Series(close_prices)
             
-            if len(close_prices_array) < self.EMA_LONG or len(close_prices_array) < self.RSI_PERIOD:
+            if len(close_series) < self.EMA_LONG or len(close_series) < self.RSI_PERIOD:
                 return None
             
-            # 3. Расчет индикаторов
-            ema_short = talib.EMA(close_prices_array, timeperiod=self.EMA_SHORT)[-1]
-            ema_long = talib.EMA(close_prices_array, timeperiod=self.EMA_LONG)[-1]
-            rsi = talib.RSI(close_prices_array, timeperiod=self.RSI_PERIOD)[-1]
+            # 3. Расчет индикаторов используя pandas
+            ema_short = close_series.ewm(span=self.EMA_SHORT, adjust=False).mean().iloc[-1]
+            ema_long = close_series.ewm(span=self.EMA_LONG, adjust=False).mean().iloc[-1]
+            rsi = self._calculate_rsi(close_series, period=self.RSI_PERIOD)
             price = Decimal(str(close_prices[-1]))
             
             # 4. Логика сигналов: EMA + RSI
