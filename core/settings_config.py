@@ -111,10 +111,12 @@ class ConfigLoader:
 
     def __init__(self, env_file: str = ".env"):
         self.env = Env()
-        if Path(env_file).exists():
+        env_path = Path(env_file)
+        if env_path.exists():
             self.env.read_env(env_file)
+            log_info(0, f"Файл .env загружен: {env_path.absolute()}", 'system_config')
         else:
-            log_info(0, f"Файл .env не найден. Используются переменные окружения системы.", 'system_config')
+            log_info(0, f"Файл .env не найден: {env_path.absolute()}. Используются переменные окружения системы.", 'system_config')
 
     def load_config(self) -> SystemConfig:
         """Загрузка и валидация полной конфигурации системы."""
@@ -160,8 +162,11 @@ class ConfigLoader:
         admin_ids_str = self.env.str("ADMIN_IDS", "")
         admin_ids = [int(uid.strip()) for uid in admin_ids_str.split(',') if uid.strip().isdigit()]
         channel_id = self.env.str("TELEGRAM_CHANNEL_ID", None)
+        token = self.env.str("TELEGRAM_TOKEN", "")
+        if not token:
+            log_error(0, "TELEGRAM_TOKEN не найден в .env или переменных окружения!", 'system_config')
         return TelegramConfig(
-            token=self.env.str("TELEGRAM_TOKEN"), 
+            token=token, 
             admin_ids=admin_ids,
             channel_id=channel_id
         )
