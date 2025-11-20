@@ -45,6 +45,7 @@ class LighterSignalScalperStrategy(BaseStrategy):
         self.last_closed_direction: Optional[str] = None
         self.hold_signal_counter = 0
         self.peak_profit_usd: Decimal = Decimal('0')
+        self.max_trailing_level_reached: int = 0  # Максимальный достигнутый уровень трейлинга
         self.is_waiting_for_trade = False
         self.processed_orders: set = set()
         self.current_order_id: Optional[str] = None
@@ -267,6 +268,7 @@ class LighterSignalScalperStrategy(BaseStrategy):
                     self.position_size = Decimal(str(pos_size))
                     self.active_trade_db_id = trade_id
                     self.peak_profit_usd = Decimal('0')
+                    self.max_trailing_level_reached = 0
                     self.is_waiting_for_trade = False
                     
                     # Восстанавливаем время входа
@@ -319,6 +321,7 @@ class LighterSignalScalperStrategy(BaseStrategy):
                     self.position_size = Decimal(str(pos_size))
                     self.active_trade_db_id = trade_id
                     self.peak_profit_usd = Decimal('0')
+                    self.max_trailing_level_reached = 0
                     self.is_waiting_for_trade = False
                     
                     # Восстанавливаем время входа
@@ -404,20 +407,26 @@ class LighterSignalScalperStrategy(BaseStrategy):
         # Поэтапный трейлинг с динамическими порогами и 20% откатом
         current_trailing_level = self._get_trailing_level(pnl)
         
-        if current_trailing_level > 0:  # Если достигли хотя бы начального уровня
+        # Обновляем максимальный достигнутый уровень
+        if current_trailing_level > self.max_trailing_level_reached:
+            self.max_trailing_level_reached = current_trailing_level
+        
+        # ИСПРАВЛЕНО: Проверяем трейлинг-стоп если пик был достигнут (независимо от текущего уровня)
+        # Это важно, чтобы позиция закрылась при откате, даже если текущий PnL упал ниже уровня 1
+        if self.peak_profit_usd > 0 and self.max_trailing_level_reached > 0:
             # Фиксированный 20% откат от пика на всех уровнях
             trailing_distance = self.peak_profit_usd * Decimal('0.20')
             
             # Проверяем условие закрытия: откат от пика >= 20%
             if pnl < (self.peak_profit_usd - trailing_distance):
-                level_name = self._get_level_name(current_trailing_level)
+                level_name = self._get_level_name(self.max_trailing_level_reached)
                 log_info(self.user_id,
                         f"💎 ЗАКРЫТИЕ НА {level_name}! Пик: ${self.peak_profit_usd:.2f}, PnL: ${pnl:.2f}, откат: ${trailing_distance:.2f} (20%)",
                         "LighterSignalScalper")
                 await self._close_position("level_trailing_profit")
             else:
                 # Логируем текущий статус трейлинга
-                level_name = self._get_level_name(current_trailing_level)
+                level_name = self._get_level_name(current_trailing_level if current_trailing_level > 0 else self.max_trailing_level_reached)
                 log_debug(self.user_id,
                          f"Трейлинг {level_name}: пик=${self.peak_profit_usd:.2f}, PnL=${pnl:.2f}, откат допустим=${trailing_distance:.2f}",
                          "LighterSignalScalper")
@@ -628,6 +637,7 @@ class LighterSignalScalperStrategy(BaseStrategy):
                 self.position_size = pos["size"]
                 self.entry_time = datetime.now(timezone.utc)
                 self.peak_profit_usd = Decimal('0')
+                self.max_trailing_level_reached = 0
                 
                 # Инициализация усреднения
                 self.averaging_executed = False
@@ -859,6 +869,7 @@ class LighterSignalScalperStrategy(BaseStrategy):
         self.entry_time = None
         self.position_size = None
         self.peak_profit_usd = Decimal('0')
+        self.max_trailing_level_reached = 0
         
         self.averaging_executed = False
         self.averaging_count = 0
