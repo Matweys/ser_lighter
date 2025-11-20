@@ -1190,6 +1190,98 @@ async def cmd_autotrade_status(message: Message, state: FSMContext):
 
 # --- Команды получения информации ---
 
+@router.message(Command("profit"))
+async def cmd_profit(message: Message, state: FSMContext):
+    """Команда для просмотра статистики прибыли по дням и итогового профита"""
+    user_id = message.from_user.id
+    await basic_handler.log_command_usage(user_id, "profit")
+    
+    try:
+        from database.sqlite_db import sqlite_db
+        from decimal import Decimal
+        from datetime import datetime
+        
+        # Получаем статистику (последние 10 дней)
+        stats = await sqlite_db.get_daily_stats(user_id, days=10)
+        
+        if stats['total_trades'] == 0:
+            await message.answer(
+                "📊 <b>Статистика прибыли</b>\n\n"
+                "ℹ️ Пока нет закрытых сделок.\n"
+                "Статистика появится после закрытия первой сделки.",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Формируем сообщение
+        text_parts = []
+        text_parts.append("💰 <b>СТАТИСТИКА ПРИБЫЛИ</b>\n")
+        text_parts.append("═" * 30 + "\n\n")
+        
+        # Статистика по дням (последние 10 дней)
+        daily_stats = stats['daily_stats']
+        if daily_stats:
+            text_parts.append("📅 <b>ПО ДНЯМ (последние 10 дней):</b>\n")
+            for day_stat in daily_stats[:10]:  # Максимум 10 дней
+                date_str = day_stat['date']
+                try:
+                    # SQLite DATE() возвращает строку в формате 'YYYY-MM-DD'
+                    if isinstance(date_str, str):
+                        # Пробуем разные форматы
+                        if len(date_str) == 10 and date_str.count('-') == 2:
+                            # Формат 'YYYY-MM-DD'
+                            date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+                        else:
+                            # Пробуем ISO формат
+                            date_obj = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                    else:
+                        date_obj = date_str
+                    formatted_date = date_obj.strftime("%d.%m.%Y")
+                except Exception as e:
+                    # Если не удалось распарсить, используем как есть
+                    formatted_date = str(date_str)
+                
+                profit = day_stat['net_profit']
+                trades_count = day_stat['trades_count']
+                emoji = "🟢" if profit >= 0 else "🔴"
+                
+                text_parts.append(
+                    f"{emoji} <b>{formatted_date}</b>\n"
+                    f"   ▫️ Сделок: {trades_count}\n"
+                    f"   ▫️ Чистая прибыль: {profit:+.2f} USDT\n"
+                )
+            text_parts.append("\n")
+        else:
+            text_parts.append("📅 <b>ПО ДНЯМ:</b>\n")
+            text_parts.append("   ℹ️ Нет данных за последние 10 дней\n\n")
+        
+        # Итоговая статистика
+        total_net = stats['total_net_profit']
+        total_profit = stats['total_profit']
+        total_commission = stats['total_commission']
+        total_trades = stats['total_trades']
+        
+        total_emoji = "🟢" if total_net >= 0 else "🔴"
+        
+        text_parts.append("📊 <b>ИТОГО ЗА ВСЁ ВРЕМЯ:</b>\n")
+        text_parts.append(f"   ▫️ Всего сделок: {total_trades}\n")
+        text_parts.append(f"   ▫️ Валовая прибыль: {total_profit:+.2f} USDT\n")
+        text_parts.append(f"   ▫️ Комиссии: -{total_commission:.2f} USDT\n")
+        text_parts.append(f"   {total_emoji} <b>Чистая прибыль: {total_net:+.2f} USDT</b>\n")
+        
+        # Отправляем сообщение
+        full_text = "".join(text_parts)
+        await message.answer(full_text, parse_mode="HTML")
+        
+    except Exception as e:
+        log_error(user_id, f"Ошибка получения статистики прибыли: {e}", module_name='basic_handlers')
+        await message.answer(
+            "❌ <b>Ошибка получения статистики</b>\n\n"
+            f"Произошла ошибка: {str(e)}",
+            parse_mode="HTML"
+        )
+
+
 @router.message(Command("balance"))
 async def cmd_balance(message: Message, state: FSMContext):
     """Обработчик команды /balance с поддержкой multi-account режима"""

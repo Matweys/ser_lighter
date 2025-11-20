@@ -638,6 +638,23 @@ class LighterSignalScalperStrategy(BaseStrategy):
                 # Симулированная комиссия из результата ордера
                 self.total_fees_paid = Decimal(str(order_result.get("commission", 0)))
                 
+                # КРИТИЧНО: Загружаем параметры усреднения из ЗАМОРОЖЕННОЙ конфигурации
+                if self.active_trade_config:
+                    self.averaging_enabled = self.active_trade_config.get("enable_averaging", True)
+                    self.max_averaging_count = int(self.active_trade_config.get("max_averaging_count", 1))
+                    self.averaging_trigger_loss_percent = self._convert_to_decimal(self.active_trade_config.get("averaging_trigger_loss_percent", "15.0"))
+                    self.averaging_multiplier = self._convert_to_decimal(self.active_trade_config.get("averaging_multiplier", "1.0"))
+                    self.averaging_stop_loss_percent = self._convert_to_decimal(self.active_trade_config.get("averaging_stop_loss_percent", "55.0"))
+                    
+                    log_info(self.user_id,
+                            f"🔧 Параметры усреднения загружены:\n"
+                            f"   📊 Усреднение: {'✅ ВКЛ' if self.averaging_enabled else '❌ ВЫКЛ'}\n"
+                            f"      ├─ Триггер: {self.averaging_trigger_loss_percent}% от маржи\n"
+                            f"      ├─ Множитель: {self.averaging_multiplier}x\n"
+                            f"      ├─ Максимум усреднений: {self.max_averaging_count}\n"
+                            f"      └─ SL после усреднений: {self.averaging_stop_loss_percent}%",
+                            "LighterSignalScalper")
+                
                 # Сохранение в БД
                 await self._save_trade_to_db(side, self.entry_price, self.position_size)
                 

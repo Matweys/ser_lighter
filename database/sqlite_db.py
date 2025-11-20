@@ -250,6 +250,86 @@ class SQLiteDB:
             log_error(user_id, f"Ошибка обновления статистики стратегии {strategy_type}: {e}", 'sqlite_db')
             return Decimal('0')
     
+    async def get_daily_stats(self, user_id: int, days: int = 10) -> Dict[str, Any]:
+        """
+        Получает статистику по дням за последние N дней.
+        Возвращает:
+        - daily_stats: список статистики по дням
+        - total_profit: итоговый профит за все время
+        - total_commission: итоговая комиссия за все время
+        - total_trades: общее количество закрытых сделок
+        """
+        try:
+            from datetime import datetime, timedelta, timezone
+            
+            # Получаем статистику по дням (последние N дней)
+            end_date = datetime.now(timezone.utc)
+            start_date = end_date - timedelta(days=days)
+            
+            daily_stats = []
+            # SQLite использует DATE() функцию для извлечения даты
+            async with self.conn.execute("""
+                SELECT 
+                    DATE(exit_time) as trade_date,
+                    COUNT(*) as trades_count,
+                    SUM(profit) as daily_profit,
+                    SUM(commission) as daily_commission
+                FROM trades
+                WHERE user_id = ? 
+                    AND status = 'CLOSED'
+                    AND exit_time IS NOT NULL
+                    AND datetime(exit_time) >= datetime(?)
+                GROUP BY DATE(exit_time)
+                ORDER BY trade_date DESC
+            """, (user_id, start_date.isoformat())) as cursor:
+                async for row in cursor:
+                    daily_stats.append({
+                        'date': row['trade_date'],
+                        'trades_count': row['trades_count'],
+                        'profit': Decimal(str(row['daily_profit'] or 0)),
+                        'commission': Decimal(str(row['daily_commission'] or 0)),
+                        'net_profit': Decimal(str(row['daily_profit'] or 0)) - Decimal(str(row['daily_commission'] or 0))
+                    })
+            
+            # Получаем итоговую статистику за все время
+            async with self.conn.execute("""
+                SELECT 
+                    COUNT(*) as total_trades,
+                    SUM(profit) as total_profit,
+                    SUM(commission) as total_commission
+                FROM trades
+                WHERE user_id = ? AND status = 'CLOSED'
+            """, (user_id,)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    total_trades = row['total_trades'] or 0
+                    total_profit = Decimal(str(row['total_profit'] or 0))
+                    total_commission = Decimal(str(row['total_commission'] or 0))
+                    total_net_profit = total_profit - total_commission
+                else:
+                    total_trades = 0
+                    total_profit = Decimal('0')
+                    total_commission = Decimal('0')
+                    total_net_profit = Decimal('0')
+            
+            return {
+                'daily_stats': daily_stats,
+                'total_profit': total_profit,
+                'total_commission': total_commission,
+                'total_net_profit': total_net_profit,
+                'total_trades': total_trades
+            }
+            
+        except Exception as e:
+            log_error(user_id, f"Ошибка получения статистики по дням: {e}", 'sqlite_db')
+            return {
+                'daily_stats': [],
+                'total_profit': Decimal('0'),
+                'total_commission': Decimal('0'),
+                'total_net_profit': Decimal('0'),
+                'total_trades': 0
+            }
+    
     async def close(self):
         """Закрытие соединения"""
         try:
