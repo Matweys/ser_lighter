@@ -221,12 +221,18 @@ class LighterSignalScalperStrategy(BaseStrategy):
         Цикл проверки сигналов (каждые 5 минут при новой свече)
         """
         try:
+            log_info(self.user_id, "🔄 Цикл проверки сигналов запущен", "LighterSignalScalper")
+            
             while self.is_running:
                 if not self.position_active and not self.is_waiting_for_trade:
+                    log_debug(self.user_id, f"🔍 Проверка сигнала для {self.symbol}...", "LighterSignalScalper")
                     # Проверяем сигнал
                     await self._check_and_process_signal()
+                else:
+                    log_debug(self.user_id, f"⏸️ Пропуск проверки: позиция активна={self.position_active}, ожидание={self.is_waiting_for_trade}", "LighterSignalScalper")
                 
                 # Ждем 5 минут до следующей проверки
+                log_debug(self.user_id, "⏳ Ожидание 5 минут до следующей проверки сигнала...", "LighterSignalScalper")
                 await asyncio.sleep(300)
                 
         except asyncio.CancelledError:
@@ -300,25 +306,34 @@ class LighterSignalScalperStrategy(BaseStrategy):
         """Проверка и обработка сигнала"""
         try:
             if not self.signal_analyzer:
+                log_warning(self.user_id, "⚠️ SignalAnalyzer не инициализирован", "LighterSignalScalper")
                 return
             
+            log_debug(self.user_id, f"📊 Запрос анализа для {self.symbol}...", "LighterSignalScalper")
             analysis_result = await self.signal_analyzer.get_analysis(self.symbol)
             
             if not analysis_result:
+                log_debug(self.user_id, f"⚠️ Анализ не вернул результат для {self.symbol}", "LighterSignalScalper")
                 return
             
             signal = analysis_result.direction
             price = analysis_result.price
+            
+            log_info(self.user_id, 
+                    f"📈 Анализ {self.symbol}: Сигнал={signal}, Цена={price:.4f}, EMA_short={analysis_result.indicators.get('ema_short', 0):.4f}, EMA_long={analysis_result.indicators.get('ema_long', 0):.4f}, RSI={analysis_result.indicators.get('rsi', 0):.2f}",
+                    "LighterSignalScalper")
             
             # Обновляем время последнего сигнала (даже если это HOLD)
             self.last_signal_time = time.time()
             
             # Проверка кулдауна
             if self._is_cooldown_active():
+                log_debug(self.user_id, f"⏸️ Кулдаун активен, пропускаем сигнал {signal}", "LighterSignalScalper")
                 return
             
             # Проверка подтверждения
             if not self._is_signal_confirmed(signal):
+                log_debug(self.user_id, f"⏸️ Сигнал {signal} не подтвержден (требуется {self.required_confirmations} подтверждений, текущее: {self.signal_confirmation_count})", "LighterSignalScalper")
                 return
             
             # Проверка SpikeDetector
