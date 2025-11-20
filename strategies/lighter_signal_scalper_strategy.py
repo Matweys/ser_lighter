@@ -570,15 +570,6 @@ class LighterSignalScalperStrategy(BaseStrategy):
                 entry_time=self.entry_time
             )
             
-            # Обновление статистики стратегии в SQLite
-            from database.sqlite_db import sqlite_db
-            win_rate = await sqlite_db.update_strategy_stats(
-                user_id=self.user_id,
-                strategy_type=self.strategy_type.value,
-                pnl=pnl_net
-            )
-            log_info(self.user_id, f"📊 Статистика обновлена: Win Rate={win_rate:.2f}%", "LighterSignalScalper")
-            
             # Сброс состояния
             self._reset_position_state_after_close(pnl_net)
             
@@ -809,4 +800,89 @@ class LighterSignalScalperStrategy(BaseStrategy):
         
         except Exception as e:
             log_error(self.user_id, f"Ошибка обработки исполнения ордера {event.order_id}: {e}", "LighterSignalScalper")
+    
+    async def _send_trade_close_notification(self, pnl: Decimal, commission: Decimal = Decimal('0'), exit_price: Optional[Decimal] = None, entry_price: Optional[Decimal] = None, entry_time: Optional[datetime] = None):
+        """
+        Переопределяем метод для использования SQLite вместо PostgreSQL.
+        """
+        try:
+            # 1. Обновляем статистику самой стратегии
+            self.stats["orders_count"] += 1
+            self.stats["total_pnl"] += pnl
+            if pnl > 0:
+                self.stats["profit_orders"] += 1
+            else:
+                self.stats["loss_orders"] += 1
+
+            # 2. Обновляем статистику по этой стратегии в SQLite
+            from database.sqlite_db import sqlite_db
+            win_rate = await sqlite_db.update_strategy_stats(
+                user_id=self.user_id,
+                strategy_type=self.strategy_type.value,
+                pnl=pnl
+            )
+
+            # 3. Отправляем уведомление, если бот доступен
+            if not self.bot:
+                log_error(self.user_id, "Бот не инициализирован. Уведомление о закрытии сделки не отправлено.",
+                          "LighterSignalScalper")
+                return
+
+            from telegram.helpers import hbold, hcode
+            strategy_name = self.strategy_type.value.replace('_', ' ').title()
+            bot_prefix = self._get_bot_prefix()
+
+            # Рассчитываем длительность сделки если доступно entry_time
+            duration_line = ""
+            if entry_time:
+                if entry_time.tzinfo is not None:
+                    entry_time_naive = entry_time.astimezone().replace(tzinfo=None)
+                else:
+                    entry_time_naive = entry_time
+                duration_seconds = int((datetime.now() - entry_time_naive).total_seconds())
+                duration_formatted = self._format_duration_russian(duration_seconds)
+                duration_line = f"▫️ {hbold('Время сделки:')} {hcode(duration_formatted)}\n"
+
+            # Формируем строку с ценами входа/выхода если доступны обе цены
+            prices_line = ""
+            if entry_price and exit_price:
+                prices_line = f"▫️ {hbold('Цены:')} Вход ${entry_price:.4f} → Выход ${exit_price:.4f}\n"
+
+            # ПРОЗРАЧНОЕ УВЕДОМЛЕНИЕ: показываем честный результат с учётом всех комиссий
+            if pnl >= 0:
+                icon = "💰"
+                result_text = "ПРИБЫЛЬ ✅"
+                text = (
+                    f"{icon} {hbold('СДЕЛКА ЗАКРЫТА')} {icon}\n\n"
+                    f"▫️ {hbold('Аккаунт:')} {hcode(bot_prefix)}\n"
+                    f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
+                    f"▫️ {hbold('Символ:')} {hcode(self.symbol)}\n"
+                    f"▫️ {hbold('Результат:')} {result_text}\n"
+                    f"▫️ {hbold('Чистый доход:')} {hcode(f'+{pnl:.2f} USDT')}\n"
+                    f"▫️ {hbold('Комиссии:')} {hcode(f'{commission:.2f} USDT')}\n"
+                    f"{duration_line}"
+                    f"{prices_line}"
+                    f"▫️ {hbold('Win Rate стратегии:')} {hcode(f'{win_rate:.2f}%')}"
+                )
+            else:
+                icon = "📉"
+                result_text = "УБЫТОК 🔻"
+                total_loss = abs(pnl)
+                text = (
+                    f"{icon} {hbold('СДЕЛКА ЗАКРЫТА')} {icon}\n\n"
+                    f"▫️ {hbold('Аккаунт:')} {hcode(bot_prefix)}\n"
+                    f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
+                    f"▫️ {hbold('Символ:')} {hcode(self.symbol)}\n"
+                    f"▫️ {hbold('Результат:')} {result_text}\n"
+                    f"▫️ {hbold('Общий убыток:')} {hcode(f'-{total_loss:.2f} USDT')}\n"
+                    f"▫️ {hbold('(включая комиссии:')} {hcode(f'{commission:.2f} USDT)')}\n"
+                    f"{duration_line}"
+                    f"{prices_line}"
+                    f"▫️ {hbold('Win Rate стратегии:')} {hcode(f'{win_rate:.2f}%')}"
+                )
+            
+            self._send_notification_async(text)
+            log_info(self.user_id, "Уведомление о закрытии сделки отправлено успешно.", "LighterSignalScalper")
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка отправки уведомления о закрытии сделки: {e}", "LighterSignalScalper")
 
