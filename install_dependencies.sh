@@ -40,21 +40,8 @@ if ! dpkg -l | grep -q python3-dev; then
     apt install -y python3-dev
 fi
 
-# Устанавливаем ta-lib библиотеку (нужно для TA-Lib Python пакета)
-if ! ldconfig -p | grep -q libta_lib; then
-    echo "⚠️  ta-lib библиотека не найдена. Устанавливаем..."
-    # Сначала устанавливаем зависимости для компиляции ta-lib
-    apt install -y wget
-    cd /tmp
-    wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
-    tar -xzf ta-lib-0.4.0-src.tar.gz
-    cd ta-lib/
-    ./configure --prefix=/usr
-    make
-    make install
-    cd /root/ser_lighter
-    ldconfig
-fi
+# TA-Lib больше не требуется - используем pandas встроенные функции
+# Установка ta-lib библиотеки удалена
 
 # Удаляем старое venv если есть
 if [ -d "venv" ]; then
