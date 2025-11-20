@@ -1463,9 +1463,15 @@ class BaseStrategy(ABC):
                     log_error(self.user_id, f"Текст пропущенного уведомления:\n{text[:200]}...", "base_strategy")
                     return
 
-                # Отправляем уведомление
-                await self.bot.send_message(self.user_id, text, parse_mode=parse_mode)
-                log_debug(self.user_id, "✅ Уведомление успешно отправлено в Telegram", "base_strategy")
+                # Проверяем наличие канала в конфигурации
+                from core.settings_config import system_config
+                channel_id = system_config.telegram.channel_id
+                
+                # Отправляем в канал, если настроен, иначе в личные сообщения
+                chat_id = channel_id if channel_id else self.user_id
+                
+                await self.bot.send_message(chat_id, text, parse_mode=parse_mode)
+                log_debug(self.user_id, f"✅ Уведомление успешно отправлено в {'канал' if channel_id else 'Telegram'}", "base_strategy")
 
             except Exception as e:
                 log_error(self.user_id, f"❌ Ошибка асинхронной отправки уведомления: {e}", "base_strategy")
@@ -2285,15 +2291,22 @@ class BaseStrategy(ABC):
                 minutes = int((downtime.total_seconds() % 3600) / 60)
                 downtime_str = f"{hours}ч {minutes}мин"
 
-            # ИСПРАВЛЕНО: Проверяем наличие ПОЗИЦИИ, а не только ордеров
+            # КРИТИЧНО: Фиксируем данные в локальных переменных СРАЗУ
+            # Это защита от асинхронной отправки - данные могут измениться пока сообщение в очереди
             has_position = getattr(self, 'position_active', False)
             position_size = getattr(self, 'position_size', Decimal('0'))
             entry_price = getattr(self, 'entry_price', Decimal('0'))
             active_direction = getattr(self, 'active_direction', None)
             active_orders_count = len(self.active_orders)
+            bot_number = getattr(self, 'account_priority', 1)  # Номер бота для multi-account
+
+            # Формируем эмодзи для номера бота
+            bot_emoji_map = {1: "1️⃣", 2: "2️⃣", 3: "3️⃣"}
+            bot_emoji = bot_emoji_map.get(bot_number, f"{bot_number}️⃣")
 
             message = (
                 f"🔄 <b>Восстановление после перезагрузки</b>\n\n"
+                f"{bot_emoji} <b>Bot {bot_number}</b>\n"
                 f"📊 Стратегия: <b>{self.strategy_type.value}</b>\n"
                 f"💱 Символ: <b>{self.symbol}</b>\n"
                 f"⏰ Время простоя: <b>{downtime_str}</b>\n"

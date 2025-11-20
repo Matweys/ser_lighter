@@ -321,20 +321,33 @@ class TelegramBotManager:
         return self._is_running
     
     async def send_admin_notification(self, message: str, parse_mode: str = "HTML") -> None:
-        """Отправка уведомления администраторам"""
+        """Отправка уведомления администраторам или в канал"""
         try:
-            if not self.bot or not self.config.admin_ids:
+            if not self.bot:
                 return
             
-            for admin_id in self.config.admin_ids:
+            # Если настроен канал, отправляем туда
+            if self.config.channel_id:
                 try:
                     await self.bot.send_message(
-                        chat_id=admin_id,
+                        chat_id=self.config.channel_id,
                         text=message,
                         parse_mode=parse_mode,
                     )
+                    log_debug(0, f"Уведомление отправлено в канал {self.config.channel_id}", module_name='bot')
                 except Exception as e:
-                    log_error(0, f"Ошибка отправки уведомления админу {admin_id}: {e}", module_name='bot')
+                    log_error(0, f"Ошибка отправки уведомления в канал: {e}", module_name='bot')
+            # Иначе отправляем администраторам
+            elif self.config.admin_ids:
+                for admin_id in self.config.admin_ids:
+                    try:
+                        await self.bot.send_message(
+                            chat_id=admin_id,
+                            text=message,
+                            parse_mode=parse_mode,
+                        )
+                    except Exception as e:
+                        log_error(0, f"Ошибка отправки уведомления админу {admin_id}: {e}", module_name='bot')
                     
         except Exception as e:
             log_error(0, f"Ошибка отправки админ уведомлений: {e}", module_name='bot')

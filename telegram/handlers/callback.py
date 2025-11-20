@@ -1,6 +1,5 @@
 """
-
-Профессиональная система обработки callback запросов для многопользовательского торгового бота
+Система обработки callback запросов для многопользовательского торгового бота
 """
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, Message

@@ -43,7 +43,7 @@ class DefaultConfigs:
             "analysis_timeframe": "5m",
 
             # --- КООРДИНАТОР (Multi-Account) ---
-            "stuck_threshold_percent": 5.0,              # Порог застревания: если PnL < -5% от маржи → активация Бота 2
+            "stuck_threshold_percent": 8.0,              # Порог застревания: если PnL < -8% от маржи → активация Бота 2
 
             # --- STOP LOSS ---
             "enable_stop_loss": True,                    # Включить/выключить стоп-лосс

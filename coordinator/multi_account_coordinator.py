@@ -371,12 +371,7 @@ class MultiAccountCoordinator:
                 pnl_percent = self._calculate_pnl_percent(strategy)
 
                 # Получаем порог застревания из конфига стратегии
-                stuck_threshold = -Decimal(str(strategy.get_config_value("stuck_threshold_percent", 4.0)))
-
-                # ДИАГНОСТИКА: Логируем расчет PnL% только раз в 5 секунд (цикл мониторинга)
-                # log_info(self.user_id,
-                #          f"📊 [Бот {priority}] PnL: {pnl_percent:.2f}% | Маржа: ${strategy.initial_margin_usd:.2f} | Порог: {stuck_threshold}%",
-                #          "Coordinator")
+                stuck_threshold = -Decimal(str(strategy.get_config_value("stuck_threshold_percent", 8.0)))
 
                 if pnl_percent < stuck_threshold:
                     bot_data.status = 'stuck'

@@ -814,20 +814,22 @@ class BotApplication:
             # ===================================================================
             # ШАГ 4: Формируем итоговое сообщение
             # ===================================================================
-            symbols_with_orders_count = len(set(pos['symbol'] for pos in open_positions)) if open_positions else 0
+            # ПРАВИЛЬНЫЙ подсчет: количество позиций (ботов), а не символов
+            total_bots_count = len(open_positions) if open_positions else 0
+            symbols_count = len(set(pos['symbol'] for pos in open_positions)) if open_positions else 0
             symbols_restored_from_redis = len(restored_symbols)
             symbols_started_fresh = len(symbols_to_start)
 
             if has_active_orders:
                 recovery_message = (
                     f"✅ <b>ВОССТАНОВЛЕНИЕ ЗАВЕРШЕНО</b>\n\n"
-                    f"🔄 Всего стратегий запущено: <b>{len(restored_strategies)}</b>\n"
-                    f"{'📋 ' + ', '.join(restored_strategies) if restored_strategies else ''}\n\n"
+                    f"🤖 Всего ордеров запущено: <b>{total_bots_count}</b>\n"
+                    f"💱 Символов: <b>{symbols_count}</b> ({', '.join(sorted(set(pos['symbol'] for pos in open_positions)))})\n\n"
                     f"📊 Статистика:\n"
-                    f"• Восстановлено из Redis: {symbols_restored_from_redis}\n"
-                    f"• Запущено заново: {symbols_started_fresh}\n"
-                    f"• Символов с активными позициями: {symbols_with_orders_count}\n\n"
-                    f"✅ <b>Все ордера под контролем бота!</b>\n"
+                    f"• Символов восстановлено из Redis: {symbols_restored_from_redis}\n"
+                    f"• Символов запущено заново: {symbols_started_fresh}\n"
+                    f"• Ботов с активными позициями: {total_bots_count}\n\n"
+                    f"✅ <b>Все позиции под контролем!</b>\n"
                     f"📊 Отслеживание активно"
                 )
             else:

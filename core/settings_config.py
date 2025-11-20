@@ -78,6 +78,7 @@ class TelegramConfig:
     """Конфигурация Telegram бота"""
     token: str
     admin_ids: List[int] = field(default_factory=list)
+    channel_id: Optional[str] = None  # ID канала для уведомлений
     allowed_updates: List[str] = field(default_factory=lambda: ["message", "callback_query"])
     max_connections: int = 40
 
@@ -154,7 +155,12 @@ class ConfigLoader:
     def _load_telegram_config(self) -> TelegramConfig:
         admin_ids_str = self.env.str("ADMIN_IDS", "")
         admin_ids = [int(uid.strip()) for uid in admin_ids_str.split(',') if uid.strip().isdigit()]
-        return TelegramConfig(token=self.env.str("TELEGRAM_TOKEN"), admin_ids=admin_ids)
+        channel_id = self.env.str("TELEGRAM_CHANNEL_ID", None)
+        return TelegramConfig(
+            token=self.env.str("TELEGRAM_TOKEN"), 
+            admin_ids=admin_ids,
+            channel_id=channel_id
+        )
 
     def _load_exchange_configs(self, config: SystemConfig):
         # Bybit (Multi-Account Support)
