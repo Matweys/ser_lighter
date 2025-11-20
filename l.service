@@ -12,8 +12,8 @@ Environment="PATH=/root/ser_lighter/venv/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PYTHONUNBUFFERED=1"
 EnvironmentFile=-/root/ser_lighter/.env
 
-# Команда запуска (используем Python из виртуального окружения)
-ExecStart=/root/ser_lighter/venv/bin/python /root/ser_lighter/lighter_trading_bot.py
+# Команда запуска (используем Python из виртуального окружения с unbuffered output)
+ExecStart=/root/ser_lighter/venv/bin/python -u /root/ser_lighter/lighter_trading_bot.py
 
 # Перезапуск при сбое
 Restart=always
