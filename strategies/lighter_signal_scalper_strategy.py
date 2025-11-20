@@ -885,4 +885,69 @@ class LighterSignalScalperStrategy(BaseStrategy):
             log_info(self.user_id, "Уведомление о закрытии сделки отправлено успешно.", "LighterSignalScalper")
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления о закрытии сделки: {e}", "LighterSignalScalper")
+    
+    async def _send_trade_open_notification(self, side: str, price: Decimal, quantity: Decimal,
+                                            intended_amount: Optional[Decimal] = None, signal_price: Optional[Decimal] = None):
+        """
+        Переопределяем метод для режима симуляции - убираем предупреждение о корректировке суммы ордера.
+        """
+        try:
+            if not self.bot:
+                log_error(self.user_id, "Telegram бот не инициализирован. Уведомление об открытии сделки не отправлено.", "LighterSignalScalper")
+                return
+
+            from telegram.helpers import hbold, hcode
+            side_text = "LONG 🟢" if side.lower() == 'buy' else "SHORT 🔴"
+            strategy_name = self.strategy_type.value.replace('_', ' ').title()
+            leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
+            actual_amount = (price * quantity) / leverage
+
+            # Формируем блок с ценой сигнала если она передана
+            signal_price_text = ""
+            if signal_price:
+                slippage = price - signal_price if side.lower() == 'buy' else signal_price - price
+                slippage_percent = (slippage / signal_price * 100) if signal_price > 0 else Decimal('0')
+                signal_price_text = (
+                    f"\n📊 {hbold('Цены:')}\n"
+                    f"▫️ {hbold('Цена сигнала:')} {hcode(f'{signal_price:.4f} USDT')}\n"
+                    f"▫️ {hbold('Фактическая цена:')} {hcode(f'{price:.4f} USDT')}\n"
+                    f"▫️ {hbold('Проскальзывание:')} {hcode(f'{slippage:.4f} USDT ({slippage_percent:.3f}%)')}\n"
+                )
+
+            # Проверяем настройку enable_stop_loss
+            enable_stop_loss = self.get_config_value("enable_stop_loss", True)
+            if enable_stop_loss:
+                sl_price, sl_loss = self._get_stop_loss_info(side, price, quantity)
+                sl_text = (
+                    f"\n🛡️ {hbold('Stop Loss:')}\n"
+                    f"▫️ {hbold('SL цена:')} {hcode(f'{sl_price:.4f} USDT')}\n"
+                    f"▫️ {hbold('Ожидаемый убыток:')} {hcode(f'-{sl_loss:.2f} USDT')}"
+                )
+            else:
+                sl_text = (
+                    f"\n🛡️ {hbold('Stop Loss:')} ⚠️ {hcode('ОТКЛЮЧЕН')}\n"
+                    f"▫️ Позиция открыта без стоп-лосса"
+                )
+
+            bot_prefix = self._get_bot_prefix()
+
+            text = (
+                f"📈 {hbold('ОТКРЫТА НОВАЯ СДЕЛКА')} 📈\n\n"
+                f"▫️ {hbold('Аккаунт:')} {hcode(bot_prefix)}\n"
+                f"▫️ {hbold('Стратегия:')} {hcode(strategy_name)}\n"
+                f"▫️ {hbold('Символ:')} {hcode(self.symbol)}\n"
+                f"▫️ {hbold('Направление:')} {side_text}\n"
+                f"▫️ {hbold('Объем:')} {hcode(str(quantity))}\n"
+                f"▫️ {hbold('Стоимость позиции:')} {hcode(f'{actual_amount:.2f} USDT')}"
+                f"{signal_price_text}"
+                f"{sl_text}"
+            )
+
+            # В режиме симуляции НЕ показываем предупреждение о корректировке суммы ордера
+            # так как мы сами контролируем размер ордера
+
+            self._send_notification_async(text)
+            log_info(self.user_id, "Уведомление об открытии сделки отправлено успешно.", "LighterSignalScalper")
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка отправки уведомления об открытии сделки: {e}", "LighterSignalScalper")
 
