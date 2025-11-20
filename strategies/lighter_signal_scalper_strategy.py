@@ -214,6 +214,9 @@ class LighterSignalScalperStrategy(BaseStrategy):
         Заменяет WebSocket PriceUpdateEvent для Lighter
         """
         try:
+            log_info(self.user_id, "🔄 Цикл мониторинга цены запущен", "LighterSignalScalper")
+            iteration = 0
+            
             while self.is_running:
                 if self.position_active and not self.is_waiting_for_trade:
                     try:
@@ -223,8 +226,19 @@ class LighterSignalScalperStrategy(BaseStrategy):
                         if current_price and current_price > 0:
                             self._last_known_price = current_price
                             await self._handle_price_update_internal(current_price)
+                            
+                            # Логируем каждые 10 секунд для отладки
+                            iteration += 1
+                            if iteration % 10 == 0:
+                                entry_price_to_use, position_size_to_use = self._get_effective_entry_data()
+                                pnl = self._calculate_pnl_gross(entry_price_to_use, current_price, position_size_to_use, self.active_direction)
+                                log_info(self.user_id, 
+                                        f"📊 Мониторинг цены: {self.symbol} @ ${current_price:.4f}, PnL=${pnl:.2f}, пик=${self.peak_profit_usd:.2f}",
+                                        "LighterSignalScalper")
                     except Exception as e:
                         log_error(self.user_id, f"Ошибка в цикле мониторинга цены: {e}", "LighterSignalScalper")
+                elif self.position_active:
+                    log_debug(self.user_id, f"⏸️ Мониторинг пропущен: is_waiting_for_trade={self.is_waiting_for_trade}", "LighterSignalScalper")
                 
                 await asyncio.sleep(1.0)  # Обновление каждую секунду
                 
