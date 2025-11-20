@@ -86,6 +86,11 @@ class LighterSignalScalperStrategy(BaseStrategy):
         # Задачи
         self._price_monitor_task: Optional[asyncio.Task] = None
         self._signal_check_task: Optional[asyncio.Task] = None
+        self._status_notification_task: Optional[asyncio.Task] = None
+        
+        # Отслеживание времени для уведомлений о работе
+        self.last_signal_time: Optional[float] = None
+        self.last_status_notification_time: Optional[float] = None
         
         log_info(user_id, f"LighterSignalScalperStrategy инициализирована для {symbol}", "LighterSignalScalper")
     
@@ -105,6 +110,12 @@ class LighterSignalScalperStrategy(BaseStrategy):
         # Запуск цикла проверки сигналов
         self._signal_check_task = asyncio.create_task(self._signal_check_loop())
         
+        # Запуск задачи для уведомлений о работе
+        self._status_notification_task = asyncio.create_task(self._status_notification_loop())
+        
+        # Инициализируем время последнего сигнала текущим временем
+        self.last_signal_time = time.time()
+        
         log_info(self.user_id, f"✅ LighterSignalScalperStrategy запущена для {self.symbol}", "LighterSignalScalper")
     
     async def stop(self):
@@ -120,6 +131,13 @@ class LighterSignalScalperStrategy(BaseStrategy):
             self._signal_check_task.cancel()
             try:
                 await self._signal_check_task
+            except asyncio.CancelledError:
+                pass
+        
+        if self._status_notification_task:
+            self._status_notification_task.cancel()
+            try:
+                await self._status_notification_task
             except asyncio.CancelledError:
                 pass
         
@@ -216,6 +234,68 @@ class LighterSignalScalperStrategy(BaseStrategy):
         except Exception as e:
             log_error(self.user_id, f"Ошибка в цикле проверки сигналов: {e}", "LighterSignalScalper")
     
+    async def _status_notification_loop(self):
+        """
+        Цикл отправки уведомлений о работе бота
+        Отправляет уведомление, если прошёл час без сигналов
+        """
+        try:
+            # Ждём 10 минут перед первой проверкой
+            await asyncio.sleep(600)
+            
+            while self.is_running:
+                try:
+                    current_time = time.time()
+                    
+                    # Проверяем, прошёл ли час с последнего сигнала
+                    if self.last_signal_time:
+                        time_since_last_signal = current_time - self.last_signal_time
+                        one_hour = 3600  # 1 час в секундах
+                        
+                        # Если прошёл час без сигналов и не отправляли уведомление в последний час
+                        if time_since_last_signal >= one_hour:
+                            time_since_last_notification = current_time - (self.last_status_notification_time or 0)
+                            
+                            # Отправляем уведомление не чаще раза в час
+                            if time_since_last_notification >= one_hour:
+                                await self._send_status_notification()
+                                self.last_status_notification_time = current_time
+                    
+                    # Проверяем каждые 10 минут
+                    await asyncio.sleep(600)
+                    
+                except Exception as e:
+                    log_error(self.user_id, f"Ошибка в цикле уведомлений о статусе: {e}", "LighterSignalScalper")
+                    await asyncio.sleep(600)
+                    
+        except asyncio.CancelledError:
+            log_info(self.user_id, "Цикл уведомлений о статусе остановлен", "LighterSignalScalper")
+        except Exception as e:
+            log_error(self.user_id, f"Критическая ошибка в цикле уведомлений о статусе: {e}", "LighterSignalScalper")
+    
+    async def _send_status_notification(self):
+        """Отправка уведомления о том, что бот работает, но сигналов нет"""
+        try:
+            from datetime import datetime
+            
+            moscow_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S MSK")
+            hours_without_signal = int((time.time() - self.last_signal_time) / 3600) if self.last_signal_time else 0
+            
+            status_message = (
+                f"⏰ <b>Бот работает</b>\n\n"
+                f"📊 <b>Символ:</b> <code>{self.symbol}</code>\n"
+                f"⏰ <b>Время:</b> {moscow_time}\n"
+                f"🔍 <b>Статус:</b> Мониторинг активен, сигналов нет\n"
+                f"⏳ <b>Без сигналов:</b> {hours_without_signal} ч.\n\n"
+                f"✅ Бот продолжает работу и ждёт подходящих сигналов"
+            )
+            
+            await self._send_notification_async(status_message, parse_mode="HTML")
+            log_info(self.user_id, f"✅ Отправлено уведомление о работе бота (без сигналов {hours_without_signal} ч.)", "LighterSignalScalper")
+            
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка отправки уведомления о статусе: {e}", "LighterSignalScalper")
+    
     async def _check_and_process_signal(self):
         """Проверка и обработка сигнала"""
         try:
@@ -229,6 +309,9 @@ class LighterSignalScalperStrategy(BaseStrategy):
             
             signal = analysis_result.direction
             price = analysis_result.price
+            
+            # Обновляем время последнего сигнала (даже если это HOLD)
+            self.last_signal_time = time.time()
             
             # Проверка кулдауна
             if self._is_cooldown_active():
