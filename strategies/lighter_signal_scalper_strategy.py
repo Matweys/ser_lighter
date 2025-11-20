@@ -117,12 +117,12 @@ class LighterSignalScalperStrategy(BaseStrategy):
             else:
                 log_warning(self.user_id, f"⚠️ Конфигурация не найдена в Redis, используем конфигурацию по умолчанию", "LighterSignalScalper")
                 # Используем конфигурацию по умолчанию
-                from cache.default_configs import DefaultConfigs
+                from core.default_configs import DefaultConfigs
                 self.config = DefaultConfigs.get_signal_scalper_config()
         except Exception as e:
             log_error(self.user_id, f"❌ Ошибка загрузки конфигурации из Redis: {e}, используем конфигурацию по умолчанию", "LighterSignalScalper")
             # Используем конфигурацию по умолчанию
-            from cache.default_configs import DefaultConfigs
+            from core.default_configs import DefaultConfigs
             self.config = DefaultConfigs.get_signal_scalper_config()
     
     async def start(self):
