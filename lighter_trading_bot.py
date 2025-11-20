@@ -94,7 +94,6 @@ async def main():
         
         # Отправка уведомления о старте в Telegram
         try:
-            from datetime import datetime
             moscow_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S MSK")
             
             start_message = (
