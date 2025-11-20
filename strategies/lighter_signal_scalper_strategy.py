@@ -99,24 +99,40 @@ class LighterSignalScalperStrategy(BaseStrategy):
     
     async def start(self):
         """Запуск стратегии"""
-        await super().start()
+        log_info(self.user_id, f"🚀 Начало запуска LighterSignalScalperStrategy для {self.symbol}, is_running={self.is_running}", "LighterSignalScalper")
+        
+        result = await super().start()
+        log_info(self.user_id, f"📊 super().start() завершен, результат={result}, is_running={self.is_running}", "LighterSignalScalper")
+        
+        if not result:
+            log_error(self.user_id, f"❌ super().start() вернул False, стратегия не запущена", "LighterSignalScalper")
+            return False
+        
+        if not self.is_running:
+            log_error(self.user_id, f"❌ is_running=False после super().start(), стратегия не запущена", "LighterSignalScalper")
+            return False
         
         # Инициализация компонентов
         await self._init_components()
+        log_info(self.user_id, f"✅ Компоненты инициализированы, is_running={self.is_running}", "LighterSignalScalper")
         
         # Запуск мониторинга цены
         self._price_monitor_task = asyncio.create_task(self._price_monitor_loop())
+        log_info(self.user_id, f"✅ Задача мониторинга цены создана, is_running={self.is_running}", "LighterSignalScalper")
         
         # Запуск цикла проверки сигналов
         self._signal_check_task = asyncio.create_task(self._signal_check_loop())
+        log_info(self.user_id, f"✅ Задача проверки сигналов создана, is_running={self.is_running}", "LighterSignalScalper")
         
         # Запуск задачи для уведомлений о работе
         self._status_notification_task = asyncio.create_task(self._status_notification_loop())
+        log_info(self.user_id, f"✅ Задача уведомлений создана, is_running={self.is_running}", "LighterSignalScalper")
         
         # Инициализируем время последнего сигнала текущим временем
         self.last_signal_time = time.time()
         
-        log_info(self.user_id, f"✅ LighterSignalScalperStrategy запущена для {self.symbol}", "LighterSignalScalper")
+        log_info(self.user_id, f"✅ LighterSignalScalperStrategy запущена для {self.symbol}, is_running={self.is_running}", "LighterSignalScalper")
+        return True
     
     async def stop(self):
         """Остановка стратегии"""
