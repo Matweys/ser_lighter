@@ -231,8 +231,12 @@ class LighterSignalScalperStrategy(BaseStrategy):
             else:
                 log_info(self.user_id, f"⏸️ Пропуск первой проверки: позиция активна={self.position_active}, ожидание={self.is_waiting_for_trade}", "LighterSignalScalper")
             
+            # Проверяем состояние перед циклом
+            log_info(self.user_id, f"🔍 Проверка перед циклом: is_running={self.is_running}, position_active={self.position_active}, is_waiting={self.is_waiting_for_trade}", "LighterSignalScalper")
+            
             iteration = 0
             while self.is_running:
+                log_info(self.user_id, f"✅ Вход в цикл while, is_running={self.is_running}", "LighterSignalScalper")
                 iteration += 1
                 log_info(self.user_id, f"🔄 Итерация цикла проверки сигналов #{iteration}", "LighterSignalScalper")
                 
