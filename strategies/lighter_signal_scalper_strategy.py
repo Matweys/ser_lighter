@@ -12,7 +12,7 @@ from api.lighter_simulator import LighterSimulator
 from strategies.base_strategy import BaseStrategy
 from core.enums import StrategyType, EventType
 from core.logger import log_info, log_error, log_warning, log_debug
-from core.events import EventBus
+from core.events import EventBus, PriceUpdateEvent, OrderFilledEvent
 from analysis.lighter_signal_analyzer import LighterSignalAnalyzer, SignalAnalysisResult
 from analysis.spike_detector import SpikeDetector
 from core.concurrency_manager import strategy_locked
