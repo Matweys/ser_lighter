@@ -227,18 +227,27 @@ class LighterSignalScalperStrategy(BaseStrategy):
             if not self.position_active and not self.is_waiting_for_trade:
                 log_info(self.user_id, f"🔍 Первая проверка сигнала для {self.symbol}...", "LighterSignalScalper")
                 await self._check_and_process_signal()
+                log_info(self.user_id, "✅ Первая проверка завершена, переходим в цикл", "LighterSignalScalper")
+            else:
+                log_info(self.user_id, f"⏸️ Пропуск первой проверки: позиция активна={self.position_active}, ожидание={self.is_waiting_for_trade}", "LighterSignalScalper")
             
+            iteration = 0
             while self.is_running:
+                iteration += 1
+                log_info(self.user_id, f"🔄 Итерация цикла проверки сигналов #{iteration}", "LighterSignalScalper")
+                
                 if not self.position_active and not self.is_waiting_for_trade:
                     log_info(self.user_id, f"🔍 Проверка сигнала для {self.symbol}...", "LighterSignalScalper")
                     # Проверяем сигнал
                     await self._check_and_process_signal()
+                    log_info(self.user_id, "✅ Проверка сигнала завершена", "LighterSignalScalper")
                 else:
                     log_info(self.user_id, f"⏸️ Пропуск проверки: позиция активна={self.position_active}, ожидание={self.is_waiting_for_trade}", "LighterSignalScalper")
                 
                 # Ждем 5 минут до следующей проверки
                 log_info(self.user_id, "⏳ Ожидание 5 минут до следующей проверки сигнала...", "LighterSignalScalper")
                 await asyncio.sleep(300)
+                log_info(self.user_id, "⏰ 5 минут прошло, следующая проверка...", "LighterSignalScalper")
                 
         except asyncio.CancelledError:
             log_info(self.user_id, "Цикл проверки сигналов остановлен", "LighterSignalScalper")
