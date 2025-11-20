@@ -97,6 +97,34 @@ class LighterSignalScalperStrategy(BaseStrategy):
     def _get_strategy_type(self) -> StrategyType:
         return StrategyType.SIGNAL_SCALPER  # Используем тот же тип для совместимости
     
+    async def _load_strategy_config(self):
+        """
+        Переопределяем загрузку конфигурации для Lighter.
+        Используем уже переданную конфигурацию, если она есть.
+        Если конфигурация не передана, пытаемся загрузить из Redis (как в базовом классе).
+        """
+        # Если конфигурация уже установлена (передана в конструктор), используем её
+        if self.config:
+            log_info(self.user_id, f"✅ Используется переданная конфигурация для {self.symbol}", "LighterSignalScalper")
+            return
+        
+        # Если конфигурации нет, пытаемся загрузить из Redis (fallback)
+        log_info(self.user_id, f"⚠️ Конфигурация не передана, пытаемся загрузить из Redis...", "LighterSignalScalper")
+        try:
+            await super()._load_strategy_config()
+            if self.config:
+                log_info(self.user_id, f"✅ Конфигурация загружена из Redis", "LighterSignalScalper")
+            else:
+                log_warning(self.user_id, f"⚠️ Конфигурация не найдена в Redis, используем конфигурацию по умолчанию", "LighterSignalScalper")
+                # Используем конфигурацию по умолчанию
+                from cache.default_configs import DefaultConfigs
+                self.config = DefaultConfigs.get_signal_scalper_config()
+        except Exception as e:
+            log_error(self.user_id, f"❌ Ошибка загрузки конфигурации из Redis: {e}, используем конфигурацию по умолчанию", "LighterSignalScalper")
+            # Используем конфигурацию по умолчанию
+            from cache.default_configs import DefaultConfigs
+            self.config = DefaultConfigs.get_signal_scalper_config()
+    
     async def start(self):
         """Запуск стратегии"""
         log_info(self.user_id, f"🚀 Начало запуска LighterSignalScalperStrategy для {self.symbol}, is_running={self.is_running}", "LighterSignalScalper")
