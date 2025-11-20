@@ -841,7 +841,7 @@ class LighterSignalScalperStrategy(BaseStrategy):
                           "LighterSignalScalper")
                 return
 
-            from telegram.helpers import hbold, hcode
+            from aiogram.utils.markdown import hbold, hcode
             strategy_name = self.strategy_type.value.replace('_', ' ').title()
             bot_prefix = self._get_bot_prefix()
 
@@ -996,7 +996,7 @@ class LighterSignalScalperStrategy(BaseStrategy):
                 log_error(self.user_id, "Telegram бот не инициализирован. Уведомление об открытии сделки не отправлено.", "LighterSignalScalper")
                 return
 
-            from telegram.helpers import hbold, hcode
+            from aiogram.utils.markdown import hbold, hcode
             side_text = "LONG 🟢" if side.lower() == 'buy' else "SHORT 🔴"
             strategy_name = self.strategy_type.value.replace('_', ' ').title()
             leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
