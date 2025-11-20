@@ -130,7 +130,7 @@ class ConfigLoader:
                 redis=redis_config,
                 telegram=telegram_config,
                 environment=self.env.str("ENVIRONMENT", "production"),
-                encryption_key=self.env.str("ENCRYPTION_KEY")
+                encryption_key=self.env.str("ENCRYPTION_KEY", "default-encryption-key-change-in-production")
             )
 
             # Загружаем конфигурации для каждой биржи, указанной в .env
@@ -197,11 +197,12 @@ class ConfigLoader:
     @staticmethod
     def _validate_config(config: SystemConfig):
         """Простая валидация ключевых полей."""
-        if not config.database.url: raise ValueError("DATABASE_URL не задан в .env")
-        if not config.redis.url: raise ValueError("REDIS_URL не задан в .env")
-        if not config.telegram.token: raise ValueError("TELEGRAM_TOKEN не задан в .env")
-        if not config.encryption_key: raise ValueError("ENCRYPTION_KEY не задан в .env")
-        if not config.exchanges: raise ValueError("Не настроена ни одна биржа (например, BYBIT_API_KEY).")
+        # DATABASE_URL опционален (для SQLite)
+        # REDIS_URL опционален (можно использовать MemoryStorage)
+        # ENCRYPTION_KEY опционален (есть значение по умолчанию)
+        # exchanges опционален (для lighter бота не нужны биржи)
+        if not config.telegram.token: 
+            raise ValueError("TELEGRAM_TOKEN не задан в .env - обязателен для работы бота")
 
 # --- ГЛОБАЛЬНЫЙ ЭКЗЕМПЛЯР КОНФИГУРАЦИИ ---
 
