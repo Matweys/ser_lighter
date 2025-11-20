@@ -49,25 +49,43 @@ class TelegramBotManager:
             raise
 
     async def _setup_storage(self) -> None:
-        """Настройка Redis storage"""
+        """Настройка Redis storage с fallback на MemoryStorage"""
         try:
             redis_config = system_config.redis
             
-            # Создаем Redis storage с расширенными настройками
-            self.storage = RedisStorage.from_url(redis_config.url,connection_kwargs={
-                    'socket_timeout': redis_config.socket_timeout,
-                    'socket_connect_timeout': redis_config.socket_connect_timeout,
-                    'retry_on_timeout': redis_config.retry_on_timeout,
-                    'health_check_interval': redis_config.health_check_interval,
-                    'max_connections': redis_config.max_connections,
-                }
-            )
+            # Проверяем что Redis URL валидный
+            if not redis_config.url or not redis_config.url.startswith(('redis://', 'rediss://', 'unix://')):
+                log_warning(0, f"Неверный формат Redis URL: {redis_config.url}. Используем MemoryStorage", module_name='bot')
+                from aiogram.fsm.storage.memory import MemoryStorage
+                self.storage = MemoryStorage()
+                log_info(0, "MemoryStorage настроен (Redis недоступен)", module_name='bot')
+                return
             
-            log_info(0, "Redis storage настроен", module_name='bot')
+            # Пытаемся создать Redis storage
+            try:
+                self.storage = RedisStorage.from_url(
+                    redis_config.url,
+                    connection_kwargs={
+                        'socket_timeout': redis_config.socket_timeout,
+                        'socket_connect_timeout': redis_config.socket_connect_timeout,
+                        'retry_on_timeout': redis_config.retry_on_timeout,
+                        'health_check_interval': redis_config.health_check_interval,
+                        'max_connections': redis_config.max_connections,
+                    }
+                )
+                log_info(0, "Redis storage настроен", module_name='bot')
+            except Exception as redis_error:
+                log_warning(0, f"Не удалось подключиться к Redis: {redis_error}. Используем MemoryStorage", module_name='bot')
+                from aiogram.fsm.storage.memory import MemoryStorage
+                self.storage = MemoryStorage()
+                log_info(0, "MemoryStorage настроен (Redis недоступен)", module_name='bot')
             
         except Exception as e:
-            log_error(0, f"Ошибка настройки Redis storage: {e}", module_name='bot')
-            raise
+            log_error(0, f"Критическая ошибка настройки storage: {e}", module_name='bot')
+            # В крайнем случае используем MemoryStorage
+            from aiogram.fsm.storage.memory import MemoryStorage
+            self.storage = MemoryStorage()
+            log_info(0, "MemoryStorage настроен (fallback)", module_name='bot')
     
     async def _setup_bot(self) -> None:
         """Настройка бота"""

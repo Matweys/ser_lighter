@@ -147,10 +147,14 @@ class ConfigLoader:
             raise
 
     def _load_database_config(self) -> DatabaseConfig:
-        return DatabaseConfig(url=self.env.str("DATABASE_URL"))
+        # DATABASE_URL опционален для SQLite (используется в lighter_trading_bot)
+        db_url = self.env.str("DATABASE_URL", "sqlite:///lighter_trading.db")
+        return DatabaseConfig(url=db_url)
 
     def _load_redis_config(self) -> RedisConfig:
-        return RedisConfig(url=self.env.str("REDIS_URL"))
+        # REDIS_URL опционален (можно работать без Redis)
+        redis_url = self.env.str("REDIS_URL", "redis://localhost:6379/0")
+        return RedisConfig(url=redis_url)
 
     def _load_telegram_config(self) -> TelegramConfig:
         admin_ids_str = self.env.str("ADMIN_IDS", "")
