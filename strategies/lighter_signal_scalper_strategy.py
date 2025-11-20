@@ -241,24 +241,37 @@ class LighterSignalScalperStrategy(BaseStrategy):
         entry_price_to_use, position_size_to_use = self._get_effective_entry_data()
         pnl = self._calculate_pnl_gross(entry_price_to_use, current_price, position_size_to_use, self.active_direction)
         
-        # Обновление пика прибыли
-        if pnl > self.peak_profit_usd:
-            self.peak_profit_usd = pnl
-        
         # Проверка усреднения
         if pnl < 0 and not self.averaging_executed:
             loss_percent = (abs(pnl) / self.initial_margin_usd * Decimal('100')) if self.initial_margin_usd > 0 else Decimal('0')
             if loss_percent >= self.averaging_trigger_loss_percent:
                 await self._execute_averaging(current_price)
         
-        # Трейлинг стоп
-        if self.peak_profit_usd > 0:
+        # ЛОГИКА ТРЕЙЛИНГ-СТОПА С 6 СТУПЕНЯМИ
+        # Обновляем пиковую прибыль
+        if pnl > self.peak_profit_usd:
+            self.peak_profit_usd = pnl
+        
+        # Поэтапный трейлинг с динамическими порогами и 20% откатом
+        current_trailing_level = self._get_trailing_level(pnl)
+        
+        if current_trailing_level > 0:  # Если достигли хотя бы начального уровня
+            # Фиксированный 20% откат от пика на всех уровнях
             trailing_distance = self.peak_profit_usd * Decimal('0.20')
+            
+            # Проверяем условие закрытия: откат от пика >= 20%
             if pnl < (self.peak_profit_usd - trailing_distance):
+                level_name = self._get_level_name(current_trailing_level)
                 log_info(self.user_id,
-                        f"💎 ЗАКРЫТИЕ ПО ТРЕЙЛИНГУ! Пик: ${self.peak_profit_usd:.2f}, PnL: ${pnl:.2f}, откат: ${trailing_distance:.2f}",
+                        f"💎 ЗАКРЫТИЕ НА {level_name}! Пик: ${self.peak_profit_usd:.2f}, PnL: ${pnl:.2f}, откат: ${trailing_distance:.2f} (20%)",
                         "LighterSignalScalper")
-                await self._close_position("trailing_stop")
+                await self._close_position("level_trailing_profit")
+            else:
+                # Логируем текущий статус трейлинга
+                level_name = self._get_level_name(current_trailing_level)
+                log_debug(self.user_id,
+                         f"Трейлинг {level_name}: пик=${self.peak_profit_usd:.2f}, PnL=${pnl:.2f}, откат допустим=${trailing_distance:.2f}",
+                         "LighterSignalScalper")
     
     async def _signal_check_loop(self):
         """
@@ -885,6 +898,93 @@ class LighterSignalScalperStrategy(BaseStrategy):
             log_info(self.user_id, "Уведомление о закрытии сделки отправлено успешно.", "LighterSignalScalper")
         except Exception as e:
             log_error(self.user_id, f"Ошибка отправки уведомления о закрытии сделки: {e}", "LighterSignalScalper")
+    
+    def _calculate_dynamic_levels(self) -> Dict[int, Decimal]:
+        """
+        Рассчитывает динамические уровни прибыли для трейлинг-стопа.
+        
+        Использует 6 уровней с процентами от номинальной стоимости позиции:
+        - Уровень 1: 0.20% - МГНОВЕННЫЙ (самый быстрый выход)
+        - Уровень 2: 0.45% - РАННИЙ
+        - Уровень 3: 0.85% - СРЕДНИЙ
+        - Уровень 4: 1.30% - ХОРОШИЙ
+        - Уровень 5: 1.85% - ОТЛИЧНЫЙ
+        - Уровень 6: 2.50% - МАКСИМАЛЬНЫЙ
+        
+        Returns:
+            Dict[int, Decimal]: Словарь с уровнями {уровень: прибыль_в_USDT}
+        """
+        # Получаем параметры пользователя
+        order_amount = max(self._convert_to_decimal(self.get_config_value("order_amount", 200.0)), Decimal('10.0'))
+        leverage = self._convert_to_decimal(self.get_config_value("leverage", 2.0))
+        
+        # Номинальная стоимость позиции (реальный риск с учетом плеча)
+        notional_value = order_amount * leverage
+        
+        # 🎯 ОПТИМИЗИРОВАННЫЕ ПРОЦЕНТЫ для скальпинга
+        # Уровни растут примерно в 1.8-2x для плавного перехода
+        level_percentages = {
+            1: Decimal('0.0025'),   # 0.25% - МГНОВЕННЫЙ (самый быстрый выход)
+            2: Decimal('0.0045'),   # 0.45% - РАННИЙ
+            3: Decimal('0.0085'),   # 0.85% - СРЕДНИЙ
+            4: Decimal('0.0130'),   # 1.30% - ХОРОШИЙ
+            5: Decimal('0.0185'),   # 1.85% - ОТЛИЧНЫЙ
+            6: Decimal('0.0250')    # 2.50% - МАКСИМАЛЬНЫЙ
+        }
+        
+        # Рассчитываем пороги в USDT для всех уровней
+        levels = {
+            0: Decimal('0')  # Уровень 0 - трейлинг неактивен (без минимального порога)
+        }
+        
+        for level, percentage in level_percentages.items():
+            levels[level] = notional_value * percentage
+        
+        return levels
+    
+    def _get_trailing_level(self, current_pnl: Decimal) -> int:
+        """
+        Определяет текущий уровень трейлинга на основе динамически рассчитанной прибыли.
+        
+        Args:
+            current_pnl: Текущая прибыль в USDT
+        
+        Returns:
+            int: Уровень трейлинга (0-6)
+        """
+        levels = self._calculate_dynamic_levels()
+        
+        if current_pnl < levels[1]:
+            return 0  # Не достигли минимального порога
+        elif current_pnl < levels[2]:
+            return 1  # МГНОВЕННЫЙ уровень (0.25%)
+        elif current_pnl < levels[3]:
+            return 2  # РАННИЙ уровень (0.45%)
+        elif current_pnl < levels[4]:
+            return 3  # СРЕДНИЙ уровень (0.85%)
+        elif current_pnl < levels[5]:
+            return 4  # ХОРОШИЙ уровень (1.30%)
+        elif current_pnl < levels[6]:
+            return 5  # ОТЛИЧНЫЙ уровень (1.85%)
+        else:
+            return 6  # МАКСИМАЛЬНЫЙ уровень (2.50%)
+    
+    def _get_level_name(self, level: int) -> str:
+        """Возвращает человекочитаемое название уровня с динамическими значениями."""
+        if level == 0:
+            return "ОЖИДАНИЕ"
+        
+        levels = self._calculate_dynamic_levels()
+        
+        level_names = {
+            1: f"МГНОВЕННЫЙ УРОВЕНЬ (${levels[1]:.2f}+, 0.25%)",
+            2: f"РАННИЙ УРОВЕНЬ (${levels[2]:.2f}+, 0.45%)",
+            3: f"СРЕДНИЙ УРОВЕНЬ (${levels[3]:.2f}+, 0.85%)",
+            4: f"ХОРОШИЙ УРОВЕНЬ (${levels[4]:.2f}+, 1.30%)",
+            5: f"ОТЛИЧНЫЙ УРОВЕНЬ (${levels[5]:.2f}+, 1.85%)",
+            6: f"МАКСИМАЛЬНЫЙ УРОВЕНЬ (${levels[6]:.2f}+, 2.50%)"
+        }
+        return level_names.get(level, "НЕИЗВЕСТНЫЙ УРОВЕНЬ")
     
     async def _send_trade_open_notification(self, side: str, price: Decimal, quantity: Decimal,
                                             intended_amount: Optional[Decimal] = None, signal_price: Optional[Decimal] = None):
