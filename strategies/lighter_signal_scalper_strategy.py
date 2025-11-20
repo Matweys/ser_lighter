@@ -144,6 +144,9 @@ class LighterSignalScalperStrategy(BaseStrategy):
         await self._init_components()
         log_info(self.user_id, f"✅ Компоненты инициализированы, is_running={self.is_running}", "LighterSignalScalper")
         
+        # Восстановление позиций при перезапуске
+        await self._restore_positions_on_startup()
+        
         # Запуск мониторинга цены
         self._price_monitor_task = asyncio.create_task(self._price_monitor_loop())
         log_info(self.user_id, f"✅ Задача мониторинга цены создана, is_running={self.is_running}", "LighterSignalScalper")
@@ -207,6 +210,113 @@ class LighterSignalScalperStrategy(BaseStrategy):
             log_info(self.user_id, "✅ Компоненты инициализированы", "LighterSignalScalper")
         except Exception as e:
             log_error(self.user_id, f"Ошибка инициализации компонентов: {e}", "LighterSignalScalper")
+    
+    async def _restore_positions_on_startup(self):
+        """
+        Восстанавливает активные позиции при перезапуске бота.
+        Проверяет открытые сделки в SQLite и позиции на бирже.
+        """
+        try:
+            log_info(self.user_id, f"🔍 Проверка активных позиций для {self.symbol}...", "LighterSignalScalper")
+            
+            # Получаем активные сделки из SQLite
+            async with sqlite_db.conn.execute("""
+                SELECT id, side, entry_price, quantity, leverage, entry_time
+                FROM trades
+                WHERE user_id = ? AND symbol = ? AND status = 'ACTIVE' AND strategy_type = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (self.user_id, self.symbol, self.strategy_type.value)) as cursor:
+                row = await cursor.fetchone()
+                
+                if not row:
+                    log_info(self.user_id, f"✅ Активных позиций в БД для {self.symbol} не найдено", "LighterSignalScalper")
+                    return
+                
+                trade_id, side, entry_price, quantity, leverage, entry_time_str = row
+                log_info(self.user_id, f"📊 Найдена активная сделка в БД: trade_id={trade_id}, side={side}", "LighterSignalScalper")
+                
+                # Проверяем позиции на бирже
+                positions = await self.api.get_positions(self.symbol)
+                
+                if positions and any(abs(p["size"]) > 1e-12 for p in positions):
+                    # Позиция найдена на бирже - восстанавливаем состояние
+                    pos = positions[0]
+                    pos_size = pos["size"]
+                    pos_avg_price = pos["avgPrice"]
+                    
+                    # Определяем направление
+                    if pos_size > 0:
+                        direction = "LONG"
+                        expected_side = "Buy"
+                    else:
+                        direction = "SHORT"
+                        expected_side = "Sell"
+                        pos_size = abs(pos_size)
+                    
+                    # Проверяем соответствие стороны
+                    if side.lower() != expected_side.lower():
+                        log_warning(self.user_id, 
+                                   f"⚠️ Несоответствие: БД side={side}, биржа direction={direction}", 
+                                   "LighterSignalScalper")
+                    
+                    # Восстанавливаем состояние стратегии
+                    self.position_active = True
+                    self.active_direction = direction
+                    self.entry_price = Decimal(str(pos_avg_price))
+                    self.position_size = Decimal(str(pos_size))
+                    self.active_trade_db_id = trade_id
+                    self.peak_profit_usd = Decimal('0')
+                    self.is_waiting_for_trade = False
+                    
+                    # Восстанавливаем время входа
+                    if entry_time_str:
+                        try:
+                            from datetime import datetime
+                            self.entry_time = datetime.fromisoformat(entry_time_str.replace('Z', '+00:00'))
+                        except:
+                            self.entry_time = datetime.now(timezone.utc)
+                    else:
+                        self.entry_time = datetime.now(timezone.utc)
+                    
+                    # Восстанавливаем начальную маржу
+                    leverage_decimal = Decimal(str(leverage))
+                    position_value = self.entry_price * self.position_size
+                    self.initial_margin_usd = position_value / leverage_decimal
+                    
+                    log_info(self.user_id,
+                            f"✅ Позиция восстановлена: {direction} @ ${self.entry_price:.4f}, размер={self.position_size:.4f}, маржа=${self.initial_margin_usd:.2f}",
+                            "LighterSignalScalper")
+                else:
+                    # Позиции на бирже нет, но в БД есть активная сделка - закрываем сделку в БД
+                    log_warning(self.user_id,
+                               f"⚠️ Позиция в БД (trade_id={trade_id}), но на бирже позиции нет. Закрываем сделку в БД.",
+                               "LighterSignalScalper")
+                    
+                    # Получаем текущую цену для расчета PnL
+                    current_price = await self.api.get_current_price(self.symbol)
+                    if current_price:
+                        entry_price_decimal = Decimal(str(entry_price))
+                        quantity_decimal = Decimal(str(quantity))
+                        
+                        # Простой расчет PnL (без учета комиссий для восстановления)
+                        if side.lower() == "buy":
+                            pnl = (current_price - entry_price_decimal) * quantity_decimal
+                        else:
+                            pnl = (entry_price_decimal - current_price) * quantity_decimal
+                        
+                        await sqlite_db.update_trade_on_close(
+                            trade_id=trade_id,
+                            exit_price=current_price,
+                            pnl=pnl,
+                            commission=Decimal('0'),
+                            exit_time=datetime.now(timezone.utc),
+                            bot_priority=self.account_priority
+                        )
+                        log_info(self.user_id, f"✅ Сделка {trade_id} закрыта в БД (позиция отсутствует на бирже)", "LighterSignalScalper")
+                    
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка восстановления позиций: {e}", "LighterSignalScalper")
     
     async def _price_monitor_loop(self):
         """
