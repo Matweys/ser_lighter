@@ -90,6 +90,20 @@ class SQLiteDB:
             """):
                 pass
             
+            # Таблица статистики стратегий
+            async with self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_strategy_stats (
+                    user_id INTEGER NOT NULL,
+                    strategy_type TEXT NOT NULL,
+                    total_trades INTEGER DEFAULT 0,
+                    winning_trades INTEGER DEFAULT 0,
+                    total_pnl DECIMAL DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, strategy_type)
+                )
+            """):
+                pass
+            
             # Индексы
             await self.conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_user_symbol ON trades(user_id, symbol)")
             await self.conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status)")
@@ -197,6 +211,44 @@ class SQLiteDB:
         except Exception as e:
             log_error(user_id, f"Ошибка получения сделок: {e}", 'sqlite_db')
             return []
+    
+    async def update_strategy_stats(self, user_id: int, strategy_type: str, pnl: Decimal) -> Decimal:
+        """
+        Обновляет статистику для конкретной стратегии пользователя и возвращает обновленный Win Rate.
+        """
+        try:
+            from datetime import datetime
+            current_time = datetime.now().isoformat()
+            win_increment = 1 if pnl > 0 else 0
+            
+            async with self.conn.execute("""
+                INSERT INTO user_strategy_stats (user_id, strategy_type, total_trades, winning_trades, total_pnl, updated_at)
+                VALUES (?, ?, 1, ?, ?, ?)
+                ON CONFLICT(user_id, strategy_type) DO UPDATE SET
+                    total_trades = user_strategy_stats.total_trades + 1,
+                    winning_trades = user_strategy_stats.winning_trades + ?,
+                    total_pnl = user_strategy_stats.total_pnl + ?,
+                    updated_at = ?
+            """, (user_id, strategy_type, win_increment, float(pnl), current_time, win_increment, float(pnl), current_time)):
+                pass
+            
+            await self.conn.commit()
+            
+            # Получаем обновленную статистику для расчета Win Rate
+            async with self.conn.execute("""
+                SELECT total_trades, winning_trades FROM user_strategy_stats
+                WHERE user_id = ? AND strategy_type = ?
+            """, (user_id, strategy_type)) as cursor:
+                row = await cursor.fetchone()
+                if row and row['total_trades'] > 0:
+                    win_rate = (Decimal(str(row['winning_trades'])) / Decimal(str(row['total_trades']))) * 100
+                    return win_rate
+            
+            return Decimal('0')
+            
+        except Exception as e:
+            log_error(user_id, f"Ошибка обновления статистики стратегии {strategy_type}: {e}", 'sqlite_db')
+            return Decimal('0')
     
     async def close(self):
         """Закрытие соединения"""

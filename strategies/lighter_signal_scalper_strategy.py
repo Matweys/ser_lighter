@@ -570,6 +570,15 @@ class LighterSignalScalperStrategy(BaseStrategy):
                 entry_time=self.entry_time
             )
             
+            # Обновление статистики стратегии в SQLite
+            from database.sqlite_db import sqlite_db
+            win_rate = await sqlite_db.update_strategy_stats(
+                user_id=self.user_id,
+                strategy_type=self.strategy_type.value,
+                pnl=pnl_net
+            )
+            log_info(self.user_id, f"📊 Статистика обновлена: Win Rate={win_rate:.2f}%", "LighterSignalScalper")
+            
             # Сброс состояния
             self._reset_position_state_after_close(pnl_net)
             
