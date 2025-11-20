@@ -551,4 +551,82 @@ class LighterSignalScalperStrategy(BaseStrategy):
                 log_info(self.user_id, f"✅ Сделка сохранена в SQLite: trade_id={trade_id}", "LighterSignalScalper")
         except Exception as e:
             log_error(self.user_id, f"Ошибка сохранения сделки в БД: {e}", "LighterSignalScalper")
+    
+    # Реализация абстрактных методов BaseStrategy
+    
+    async def _execute_strategy_logic(self):
+        """Основная логика стратегии (управляется событиями свечей)"""
+        # Логика управляется через мониторинг цены и обработку сигналов
+        pass
+    
+    async def handle_price_update(self, event: "PriceUpdateEvent"):
+        """Обработка обновления цены из EventBus"""
+        # КРИТИЧЕСКИ ВАЖНО: Проверяем что это цена НАШЕГО символа!
+        if event.symbol != self.symbol:
+            return
+        
+        if not self.position_active or not self.entry_price or self.is_waiting_for_trade:
+            return
+        
+        current_price = event.price
+        
+        # Защита от неправильных цен
+        if current_price <= 0:
+            log_warning(self.user_id, f"⚠️ Получена недопустимая цена: {current_price}", "LighterSignalScalper")
+            return
+        
+        # Вызываем внутренний обработчик
+        await self._handle_price_update_internal(current_price)
+    
+    async def _handle_order_filled(self, event: "OrderFilledEvent"):
+        """Обработка исполнения ордера"""
+        # КРИТИЧНО: АТОМАРНАЯ ЗАЩИТА ОТ RACE CONDITION!
+        if event.order_id in self.processed_orders:
+            log_debug(self.user_id, f"[ДУПЛИКАТ] Ордер {event.order_id} уже обработан, игнорируем EventBus дубликат.", "LighterSignalScalper")
+            return
+        
+        # АТОМАРНО добавляем в set
+        self.processed_orders.add(event.order_id)
+        log_debug(self.user_id, f"🔒 Ордер {event.order_id} заблокирован от повторной обработки", "LighterSignalScalper")
+        
+        # MULTI-ACCOUNT: РАННЯЯ фильтрация по bot_priority
+        if hasattr(event, 'bot_priority') and event.bot_priority is not None:
+            if event.bot_priority != self.account_priority:
+                log_debug(self.user_id,
+                         f"[РАННИЙ ФИЛЬТР] Событие для Bot_{event.bot_priority}, а это Bot_{self.account_priority}. ИГНОРИРУЮ.",
+                         "LighterSignalScalper")
+                return
+        
+        # Проверяем что ордер принадлежит БОТУ (есть в БД)
+        try:
+            order_in_db = await sqlite_db.get_open_order_for_position(self.active_trade_db_id)
+            
+            if not order_in_db or order_in_db.get('order_id') != event.order_id:
+                log_warning(self.user_id,
+                           f"⚠️ [НЕ НАШ ОРДЕР] Ордер {event.order_id} НЕ найден в БД бота! ИГНОРИРУЮ.",
+                           "LighterSignalScalper")
+                return
+            
+            # Обработка исполнения ордера
+            log_info(self.user_id, f"✅ Ордер {event.order_id} исполнен: {event.side} {event.filled_qty} @ {event.filled_price}", "LighterSignalScalper")
+            
+            # Обновляем информацию о позиции если это вход
+            if event.side in ["Buy", "Sell"] and not self.position_active:
+                # Это вход в позицию
+                self.position_active = True
+                self.active_direction = "LONG" if event.side == "Buy" else "SHORT"
+                self.entry_price = Decimal(str(event.filled_price))
+                self.position_size = Decimal(str(event.filled_qty))
+                self.entry_time = datetime.now(timezone.utc)
+                
+                log_info(self.user_id, 
+                        f"✅ Позиция открыта: {self.active_direction} {self.position_size} @ {self.entry_price}",
+                        "LighterSignalScalper")
+            elif event.side in ["Buy", "Sell"] and self.position_active:
+                # Это выход из позиции
+                exit_price = Decimal(str(event.filled_price))
+                await self._handle_position_closed(exit_price)
+        
+        except Exception as e:
+            log_error(self.user_id, f"Ошибка обработки исполнения ордера {event.order_id}: {e}", "LighterSignalScalper")
 
