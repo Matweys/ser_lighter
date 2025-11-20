@@ -34,6 +34,12 @@ if ! dpkg -l | grep -q build-essential; then
     apt install -y build-essential
 fi
 
+# Устанавливаем python3-dev для компиляции Python расширений (нужно для TA-Lib)
+if ! dpkg -l | grep -q python3-dev; then
+    echo "⚠️  python3-dev не установлен. Устанавливаем..."
+    apt install -y python3-dev
+fi
+
 # Устанавливаем ta-lib библиотеку (нужно для TA-Lib Python пакета)
 if ! ldconfig -p | grep -q libta_lib; then
     echo "⚠️  ta-lib библиотека не найдена. Устанавливаем..."
