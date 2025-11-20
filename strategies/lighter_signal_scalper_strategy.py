@@ -259,6 +259,34 @@ class LighterSignalScalperStrategy(BaseStrategy):
                         log_warning(self.user_id, 
                                    f"⚠️ Несоответствие: БД side={side}, биржа direction={direction}", 
                                    "LighterSignalScalper")
+                    
+                    # Восстанавливаем состояние стратегии из позиции на бирже
+                    self.position_active = True
+                    self.active_direction = direction
+                    self.entry_price = Decimal(str(pos_avg_price))
+                    self.position_size = Decimal(str(pos_size))
+                    self.active_trade_db_id = trade_id
+                    self.peak_profit_usd = Decimal('0')
+                    self.is_waiting_for_trade = False
+                    
+                    # Восстанавливаем время входа
+                    if entry_time_str:
+                        try:
+                            from datetime import datetime
+                            self.entry_time = datetime.fromisoformat(entry_time_str.replace('Z', '+00:00'))
+                        except:
+                            self.entry_time = datetime.now(timezone.utc)
+                    else:
+                        self.entry_time = datetime.now(timezone.utc)
+                    
+                    # Восстанавливаем начальную маржу
+                    leverage_decimal = Decimal(str(leverage))
+                    position_value = self.entry_price * self.position_size
+                    self.initial_margin_usd = position_value / leverage_decimal
+                    
+                    log_info(self.user_id,
+                            f"✅ Позиция восстановлена из биржи: {direction} @ ${self.entry_price:.4f}, размер={self.position_size:.4f}, маржа=${self.initial_margin_usd:.2f}",
+                            "LighterSignalScalper")
                 else:
                     # Позиции на бирже нет, но в БД есть - восстанавливаем из БД (для симулятора)
                     log_info(self.user_id, f"⚠️ Позиции на бирже нет, восстанавливаем из БД", "LighterSignalScalper")
@@ -283,61 +311,34 @@ class LighterSignalScalperStrategy(BaseStrategy):
                             "avgPrice": float(pos_avg_price)
                         }
                         log_info(self.user_id, f"✅ Позиция восстановлена в симуляторе из БД", "LighterSignalScalper")
-                
-                # Восстанавливаем состояние стратегии
-                self.position_active = True
-                self.active_direction = direction
-                self.entry_price = Decimal(str(pos_avg_price))
-                self.position_size = Decimal(str(pos_size))
-                self.active_trade_db_id = trade_id
-                self.peak_profit_usd = Decimal('0')
-                self.is_waiting_for_trade = False
-                
-                # Восстанавливаем время входа
-                if entry_time_str:
-                    try:
-                        from datetime import datetime
-                        self.entry_time = datetime.fromisoformat(entry_time_str.replace('Z', '+00:00'))
-                    except:
-                        self.entry_time = datetime.now(timezone.utc)
-                else:
-                    self.entry_time = datetime.now(timezone.utc)
-                
-                # Восстанавливаем начальную маржу
-                leverage_decimal = Decimal(str(leverage))
-                position_value = self.entry_price * self.position_size
-                self.initial_margin_usd = position_value / leverage_decimal
-                
-                log_info(self.user_id,
-                        f"✅ Позиция восстановлена: {direction} @ ${self.entry_price:.4f}, размер={self.position_size:.4f}, маржа=${self.initial_margin_usd:.2f}",
-                        "LighterSignalScalper")
-                else:
-                    # Позиции на бирже нет, но в БД есть активная сделка - закрываем сделку в БД
-                    log_warning(self.user_id,
-                               f"⚠️ Позиция в БД (trade_id={trade_id}), но на бирже позиции нет. Закрываем сделку в БД.",
-                               "LighterSignalScalper")
                     
-                    # Получаем текущую цену для расчета PnL
-                    current_price = await self.api.get_current_price(self.symbol)
-                    if current_price:
-                        entry_price_decimal = Decimal(str(entry_price))
-                        quantity_decimal = Decimal(str(quantity))
-                        
-                        # Простой расчет PnL (без учета комиссий для восстановления)
-                        if side.lower() == "buy":
-                            pnl = (current_price - entry_price_decimal) * quantity_decimal
-                        else:
-                            pnl = (entry_price_decimal - current_price) * quantity_decimal
-                        
-                        await sqlite_db.update_trade_on_close(
-                            trade_id=trade_id,
-                            exit_price=current_price,
-                            pnl=pnl,
-                            commission=Decimal('0'),
-                            exit_time=datetime.now(timezone.utc),
-                            bot_priority=self.account_priority
-                        )
-                        log_info(self.user_id, f"✅ Сделка {trade_id} закрыта в БД (позиция отсутствует на бирже)", "LighterSignalScalper")
+                    # Восстанавливаем состояние стратегии из БД
+                    self.position_active = True
+                    self.active_direction = direction
+                    self.entry_price = Decimal(str(pos_avg_price))
+                    self.position_size = Decimal(str(pos_size))
+                    self.active_trade_db_id = trade_id
+                    self.peak_profit_usd = Decimal('0')
+                    self.is_waiting_for_trade = False
+                    
+                    # Восстанавливаем время входа
+                    if entry_time_str:
+                        try:
+                            from datetime import datetime
+                            self.entry_time = datetime.fromisoformat(entry_time_str.replace('Z', '+00:00'))
+                        except:
+                            self.entry_time = datetime.now(timezone.utc)
+                    else:
+                        self.entry_time = datetime.now(timezone.utc)
+                    
+                    # Восстанавливаем начальную маржу
+                    leverage_decimal = Decimal(str(leverage))
+                    position_value = self.entry_price * self.position_size
+                    self.initial_margin_usd = position_value / leverage_decimal
+                    
+                    log_info(self.user_id,
+                            f"✅ Позиция восстановлена из БД: {direction} @ ${self.entry_price:.4f}, размер={self.position_size:.4f}, маржа=${self.initial_margin_usd:.2f}",
+                            "LighterSignalScalper")
                     
         except Exception as e:
             log_error(self.user_id, f"Ошибка восстановления позиций: {e}", "LighterSignalScalper")
