@@ -223,6 +223,20 @@ class LighterSignalScalperStrategy(BaseStrategy):
         try:
             log_info(self.user_id, "🔄 Цикл проверки сигналов запущен", "LighterSignalScalper")
             
+            # Ждем, пока стратегия полностью запустится (is_running станет True)
+            max_wait = 10  # Максимум 10 секунд ожидания
+            wait_count = 0
+            while not self.is_running and wait_count < max_wait:
+                await asyncio.sleep(0.5)
+                wait_count += 0.5
+                log_info(self.user_id, f"⏳ Ожидание запуска стратегии... is_running={self.is_running} (ждем {wait_count:.1f}с)", "LighterSignalScalper")
+            
+            if not self.is_running:
+                log_error(self.user_id, "❌ Стратегия не запустилась за 10 секунд, останавливаем цикл проверки сигналов", "LighterSignalScalper")
+                return
+            
+            log_info(self.user_id, f"✅ Стратегия запущена, is_running={self.is_running}, начинаем проверку сигналов", "LighterSignalScalper")
+            
             # Первая проверка сразу при запуске
             if not self.position_active and not self.is_waiting_for_trade:
                 log_info(self.user_id, f"🔍 Первая проверка сигнала для {self.symbol}...", "LighterSignalScalper")
@@ -230,9 +244,6 @@ class LighterSignalScalperStrategy(BaseStrategy):
                 log_info(self.user_id, "✅ Первая проверка завершена, переходим в цикл", "LighterSignalScalper")
             else:
                 log_info(self.user_id, f"⏸️ Пропуск первой проверки: позиция активна={self.position_active}, ожидание={self.is_waiting_for_trade}", "LighterSignalScalper")
-            
-            # Проверяем состояние перед циклом
-            log_info(self.user_id, f"🔍 Проверка перед циклом: is_running={self.is_running}, position_active={self.position_active}, is_waiting={self.is_waiting_for_trade}", "LighterSignalScalper")
             
             iteration = 0
             while self.is_running:
