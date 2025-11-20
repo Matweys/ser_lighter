@@ -92,6 +92,25 @@ async def main():
         
         log_info(0, "=== БОТ УСПЕШНО ЗАПУЩЕН ===", module_name="lighter_bot")
         
+        # Отправка уведомления о старте в Telegram
+        try:
+            from datetime import datetime
+            moscow_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S MSK")
+            
+            start_message = (
+                f"🚀 <b>Lighter Trading Bot запущен!</b>\n\n"
+                f"📊 <b>Символ:</b> <code>{symbol}</code>\n"
+                f"🎮 <b>Режим:</b> Симуляция\n"
+                f"⏰ <b>Время запуска:</b> {moscow_time}\n\n"
+                f"✅ Бот начал мониторинг сигналов EMA+RSI"
+            )
+            
+            # Отправляем в канал или админам
+            await bot_manager.send_admin_notification(start_message, parse_mode="HTML")
+            log_info(0, "✅ Уведомление о старте отправлено в Telegram", module_name="lighter_bot")
+        except Exception as e:
+            log_warning(0, f"Не удалось отправить уведомление о старте: {e}", module_name="lighter_bot")
+        
         # Запуск Telegram бота
         await bot_manager.start_polling()
         
