@@ -1,0 +1,47 @@
+[Unit]
+Description=Lighter Trading Bot - Симуляция торговли на Lighter бирже
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# ВАЖНО: Измените User и Group на вашего пользователя на сервере
+User=zasssranec
+Group=staff
+# ВАЖНО: Измените WorkingDirectory на путь к проекту на сервере
+WorkingDirectory=/Users/zasssranec/Downloads/futures_bot
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+# ВАЖНО: Измените путь к .env файлу на сервере
+EnvironmentFile=-/Users/zasssranec/Downloads/futures_bot/.env
+
+# ВАЖНО: Измените путь к Python и скрипту на сервере
+# Узнать путь к Python: which python3
+ExecStart=/Library/Frameworks/Python.framework/Versions/3.11/bin/python3 /Users/zasssranec/Downloads/futures_bot/lighter_trading_bot.py
+
+# Перезапуск при сбое
+Restart=always
+RestartSec=10
+StartLimitInterval=300
+StartLimitBurst=5
+
+# Логирование
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lighter-trading-bot
+
+# Безопасность
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# ВАЖНО: Измените ReadWritePaths на путь к проекту на сервере
+ReadWritePaths=/Users/zasssranec/Downloads/futures_bot
+
+# Ограничения ресурсов (опционально)
+# MemoryMax=2G
+# CPUQuota=100%
+
+[Install]
+WantedBy=multi-user.target
+
