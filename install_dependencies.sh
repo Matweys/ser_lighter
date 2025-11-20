@@ -28,20 +28,9 @@ if ! dpkg -l | grep -q python3-venv; then
     apt install -y python3.10-venv || apt install -y python3-venv
 fi
 
-# Устанавливаем build-essential для компиляции (нужно для TA-Lib)
-if ! dpkg -l | grep -q build-essential; then
-    echo "⚠️  build-essential не установлен. Устанавливаем..."
-    apt install -y build-essential
-fi
-
-# Устанавливаем python3-dev для компиляции Python расширений (нужно для TA-Lib)
-if ! dpkg -l | grep -q python3-dev; then
-    echo "⚠️  python3-dev не установлен. Устанавливаем..."
-    apt install -y python3-dev
-fi
-
-# TA-Lib больше не требуется - используем pandas встроенные функции
-# Установка ta-lib библиотеки удалена
+# build-essential и python3-dev больше не требуются (TA-Lib удален)
+# Но оставляем их на случай если понадобятся другие пакеты с компиляцией
+# Можно закомментировать если уверены что не нужны
 
 # Удаляем старое venv если есть
 if [ -d "venv" ]; then
