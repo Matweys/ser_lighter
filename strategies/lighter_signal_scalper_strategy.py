@@ -47,6 +47,7 @@ class LighterSignalScalperStrategy(BaseStrategy):
         self.peak_profit_usd: Decimal = Decimal('0')
         self.max_trailing_level_reached: int = 0  # Максимальный достигнутый уровень трейлинга
         self.is_waiting_for_trade = False
+        self._last_trailing_log_time: float = 0  # Время последнего логирования трейлинга
         self.processed_orders: set = set()
         self.current_order_id: Optional[str] = None
         self.intended_order_amount: Optional[Decimal] = None
@@ -467,12 +468,15 @@ class LighterSignalScalperStrategy(BaseStrategy):
                         "LighterSignalScalper")
                 await self._close_position("level_trailing_profit")
             else:
-                # Логируем текущий статус трейлинга (каждые 10 секунд для отладки)
-                level_name = self._get_level_name(current_trailing_level if current_trailing_level > 0 else self.max_trailing_level_reached)
-                # Логируем INFO вместо DEBUG, чтобы видеть в логах
-                log_info(self.user_id,
-                         f"📊 Трейлинг {level_name}: пик=${self.peak_profit_usd:.2f}, PnL=${pnl:.2f}, порог закрытия=${close_threshold:.2f}, откат допустим=${trailing_distance:.2f} (20%)",
-                         "LighterSignalScalper")
+                # Логируем текущий статус трейлинга (каждые 30 секунд для отладки)
+                import time
+                current_time = time.time()
+                if current_time - self._last_trailing_log_time >= 30:  # Логируем раз в 30 секунд
+                    level_name = self._get_level_name(current_trailing_level if current_trailing_level > 0 else self.max_trailing_level_reached)
+                    log_info(self.user_id,
+                             f"📊 Трейлинг {level_name}: пик=${self.peak_profit_usd:.2f}, PnL=${pnl:.2f}, порог закрытия=${close_threshold:.2f}, откат допустим=${trailing_distance:.2f} (20%)",
+                             "LighterSignalScalper")
+                    self._last_trailing_log_time = current_time
         elif self.peak_profit_usd > 0:
             # Пик достигнут, но уровень еще не определен (может быть на уровне 0)
             log_debug(self.user_id,
