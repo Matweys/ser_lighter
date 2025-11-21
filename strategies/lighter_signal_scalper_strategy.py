@@ -267,8 +267,6 @@ class LighterSignalScalperStrategy(BaseStrategy):
                     self.entry_price = Decimal(str(pos_avg_price))
                     self.position_size = Decimal(str(pos_size))
                     self.active_trade_db_id = trade_id
-                    self.peak_profit_usd = Decimal('0')
-                    self.max_trailing_level_reached = 0
                     self.is_waiting_for_trade = False
                     
                     # Восстанавливаем время входа
@@ -285,6 +283,25 @@ class LighterSignalScalperStrategy(BaseStrategy):
                     leverage_decimal = Decimal(str(leverage))
                     position_value = self.entry_price * self.position_size
                     self.initial_margin_usd = position_value / leverage_decimal
+                    
+                    # Восстанавливаем пик прибыли и уровень трейлинга на основе текущего PnL
+                    current_price = await self.api.get_current_price(self.symbol)
+                    if current_price:
+                        current_pnl = self._calculate_pnl_gross(self.entry_price, current_price, self.position_size, direction)
+                        if current_pnl > 0:
+                            # Устанавливаем текущий PnL как начальный пик (будет обновляться при мониторинге)
+                            self.peak_profit_usd = current_pnl
+                            # Определяем максимальный достигнутый уровень на основе текущего PnL
+                            self.max_trailing_level_reached = self._get_trailing_level(current_pnl)
+                            log_info(self.user_id,
+                                    f"📊 Восстановлен пик прибыли: ${self.peak_profit_usd:.2f}, уровень: {self.max_trailing_level_reached}",
+                                    "LighterSignalScalper")
+                        else:
+                            self.peak_profit_usd = Decimal('0')
+                            self.max_trailing_level_reached = 0
+                    else:
+                        self.peak_profit_usd = Decimal('0')
+                        self.max_trailing_level_reached = 0
                     
                     log_info(self.user_id,
                             f"✅ Позиция восстановлена из биржи: {direction} @ ${self.entry_price:.4f}, размер={self.position_size:.4f}, маржа=${self.initial_margin_usd:.2f}",
@@ -320,8 +337,6 @@ class LighterSignalScalperStrategy(BaseStrategy):
                     self.entry_price = Decimal(str(pos_avg_price))
                     self.position_size = Decimal(str(pos_size))
                     self.active_trade_db_id = trade_id
-                    self.peak_profit_usd = Decimal('0')
-                    self.max_trailing_level_reached = 0
                     self.is_waiting_for_trade = False
                     
                     # Восстанавливаем время входа
@@ -338,6 +353,25 @@ class LighterSignalScalperStrategy(BaseStrategy):
                     leverage_decimal = Decimal(str(leverage))
                     position_value = self.entry_price * self.position_size
                     self.initial_margin_usd = position_value / leverage_decimal
+                    
+                    # Восстанавливаем пик прибыли и уровень трейлинга на основе текущего PnL
+                    current_price = await self.api.get_current_price(self.symbol)
+                    if current_price:
+                        current_pnl = self._calculate_pnl_gross(self.entry_price, current_price, self.position_size, direction)
+                        if current_pnl > 0:
+                            # Устанавливаем текущий PnL как начальный пик (будет обновляться при мониторинге)
+                            self.peak_profit_usd = current_pnl
+                            # Определяем максимальный достигнутый уровень на основе текущего PnL
+                            self.max_trailing_level_reached = self._get_trailing_level(current_pnl)
+                            log_info(self.user_id,
+                                    f"📊 Восстановлен пик прибыли: ${self.peak_profit_usd:.2f}, уровень: {self.max_trailing_level_reached}",
+                                    "LighterSignalScalper")
+                        else:
+                            self.peak_profit_usd = Decimal('0')
+                            self.max_trailing_level_reached = 0
+                    else:
+                        self.peak_profit_usd = Decimal('0')
+                        self.max_trailing_level_reached = 0
                     
                     log_info(self.user_id,
                             f"✅ Позиция восстановлена из БД: {direction} @ ${self.entry_price:.4f}, размер={self.position_size:.4f}, маржа=${self.initial_margin_usd:.2f}",
