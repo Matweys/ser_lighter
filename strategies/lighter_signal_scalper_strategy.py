@@ -664,7 +664,7 @@ class LighterSignalScalperStrategy(BaseStrategy):
             self.config_frozen = True
             
             # Получаем параметры
-            order_amount = self._convert_to_decimal(self.config.get("order_amount", 200.0))
+            order_amount = self._convert_to_decimal(self.config.get("order_amount", 300.0))
             self.intended_order_amount = order_amount
             
             # Размещаем ордер
@@ -840,7 +840,7 @@ class LighterSignalScalperStrategy(BaseStrategy):
         try:
             self.is_waiting_for_trade = True
             
-            order_amount = self._convert_to_decimal(self._get_frozen_config_value("order_amount", 200.0))
+            order_amount = self._convert_to_decimal(self._get_frozen_config_value("order_amount", 300.0))
             averaging_amount = order_amount * self.averaging_multiplier
             
             side = "Buy" if self.active_direction == "LONG" else "Sell"
@@ -1157,8 +1157,8 @@ class LighterSignalScalperStrategy(BaseStrategy):
             Dict[int, Decimal]: Словарь с уровнями {уровень: прибыль_в_USDT}
         """
         # Получаем параметры пользователя
-        order_amount = max(self._convert_to_decimal(self.get_config_value("order_amount", 200.0)), Decimal('10.0'))
-        leverage = self._convert_to_decimal(self.get_config_value("leverage", 2.0))
+        order_amount = max(self._convert_to_decimal(self.get_config_value("order_amount", 300.0)), Decimal('10.0'))
+        leverage = self._convert_to_decimal(self.get_config_value("leverage", 3.0))
         
         # Номинальная стоимость позиции (реальный риск с учетом плеча)
         notional_value = order_amount * leverage
@@ -1242,7 +1242,13 @@ class LighterSignalScalperStrategy(BaseStrategy):
             side_text = "LONG 🟢" if side.lower() == 'buy' else "SHORT 🔴"
             strategy_name = self.strategy_type.value.replace('_', ' ').title()
             leverage = self._convert_to_decimal(self.get_config_value("leverage", 1.0))
-            actual_amount = (price * quantity) / leverage
+            # Показываем стоимость позиции (notional), а не маржу
+            # Если передан intended_amount, используем его, иначе рассчитываем из quantity и leverage
+            if intended_amount:
+                actual_amount = intended_amount
+            else:
+                # Стоимость позиции = цена * количество (без деления на leverage)
+                actual_amount = price * quantity
 
             # Формируем блок с ценой сигнала если она передана
             signal_price_text = ""

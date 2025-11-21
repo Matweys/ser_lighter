@@ -38,8 +38,8 @@ class DefaultConfigs:
         return {
             # --- Основные ---
             "is_enabled": True,
-            "order_amount": 200.0,
-            "leverage": 2,
+            "order_amount": 300.0,
+            "leverage": 3,
             "analysis_timeframe": "5m",
 
             # --- КООРДИНАТОР (Multi-Account) ---
