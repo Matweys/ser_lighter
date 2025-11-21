@@ -15,7 +15,8 @@ from core.settings_config import system_config
 from core.logger import log_info, log_error, log_warning, log_debug
 from core.events import EventBus
 from aiogram.fsm.storage.redis import RedisStorage
-from aiogram.fsm.storage.base import BaseEventIsolation
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.base import BaseStorage
 
 
 class TelegramBotManager:
@@ -25,7 +26,7 @@ class TelegramBotManager:
         self.config = system_config.telegram
         self.bot: Optional[Bot] = None
         self.dp: Optional[Dispatcher] = None
-        self.storage: Optional[RedisStorage] = None
+        self.storage: Optional[BaseStorage] = None
         self.event_bus: Optional[EventBus] = None
         self._webhook_app: Optional[web.Application] = None
         self._is_running = False
@@ -56,13 +57,26 @@ class TelegramBotManager:
             # Проверяем что Redis URL валидный
             if not redis_config.url or not redis_config.url.startswith(('redis://', 'rediss://', 'unix://')):
                 log_warning(0, f"Неверный формат Redis URL: {redis_config.url}. Используем MemoryStorage", module_name='bot')
-                from aiogram.fsm.storage.memory import MemoryStorage
                 self.storage = MemoryStorage()
                 log_info(0, "MemoryStorage настроен (Redis недоступен)", module_name='bot')
                 return
             
-            # Пытаемся создать Redis storage
+            # Пытаемся проверить подключение к Redis перед созданием storage
             try:
+                import redis.asyncio as redis_async
+                
+                # Создаем временный клиент для проверки подключения
+                test_client = redis_async.from_url(
+                    redis_config.url,
+                    socket_connect_timeout=2,  # Короткий таймаут для быстрой проверки
+                    socket_timeout=2
+                )
+                
+                # Пытаемся подключиться
+                await asyncio.wait_for(test_client.ping(), timeout=3)
+                await test_client.aclose()  # Закрываем тестовое подключение
+                
+                # Если дошли сюда, Redis доступен - создаем RedisStorage
                 self.storage = RedisStorage.from_url(
                     redis_config.url,
                     connection_kwargs={
@@ -73,17 +87,17 @@ class TelegramBotManager:
                         'max_connections': redis_config.max_connections,
                     }
                 )
-                log_info(0, "Redis storage настроен", module_name='bot')
-            except Exception as redis_error:
-                log_warning(0, f"Не удалось подключиться к Redis: {redis_error}. Используем MemoryStorage", module_name='bot')
-                from aiogram.fsm.storage.memory import MemoryStorage
+                log_info(0, "Redis storage настроен и проверен", module_name='bot')
+                    
+            except (asyncio.TimeoutError, ConnectionError, OSError, Exception) as redis_error:
+                # Если проверка не удалась, Redis недоступен - используем MemoryStorage
+                log_warning(0, f"Redis недоступен: {redis_error}. Используем MemoryStorage", module_name='bot')
                 self.storage = MemoryStorage()
                 log_info(0, "MemoryStorage настроен (Redis недоступен)", module_name='bot')
             
         except Exception as e:
             log_error(0, f"Критическая ошибка настройки storage: {e}", module_name='bot')
             # В крайнем случае используем MemoryStorage
-            from aiogram.fsm.storage.memory import MemoryStorage
             self.storage = MemoryStorage()
             log_info(0, "MemoryStorage настроен (fallback)", module_name='bot')
     
