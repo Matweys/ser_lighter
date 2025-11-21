@@ -1202,11 +1202,14 @@ async def cmd_profit(message: Message, state: FSMContext):
         from datetime import datetime
         
         # Убеждаемся, что база данных инициализирована
-        if not sqlite_db._is_initialized:
+        if not sqlite_db._is_initialized or not sqlite_db.conn:
+            log_info(user_id, "Инициализация SQLite базы данных для команды /profit", module_name='basic_handlers')
             await sqlite_db.initialize()
         
         # Получаем статистику (последние 10 дней)
+        log_info(user_id, f"Запрос статистики прибыли для user_id={user_id}", module_name='basic_handlers')
         stats = await sqlite_db.get_daily_stats(user_id, days=10)
+        log_info(user_id, f"Статистика получена: total_trades={stats['total_trades']}", module_name='basic_handlers')
         
         if stats['total_trades'] == 0:
             await message.answer(
@@ -1278,10 +1281,13 @@ async def cmd_profit(message: Message, state: FSMContext):
         await message.answer(full_text, parse_mode="HTML")
         
     except Exception as e:
-        log_error(user_id, f"Ошибка получения статистики прибыли: {e}", module_name='basic_handlers')
+        import traceback
+        error_traceback = traceback.format_exc()
+        log_error(user_id, f"Ошибка получения статистики прибыли: {e}\n{error_traceback}", module_name='basic_handlers')
         await message.answer(
             "❌ <b>Ошибка получения статистики</b>\n\n"
-            f"Произошла ошибка: {str(e)}",
+            f"Произошла ошибка: {str(e)}\n\n"
+            "Попробуйте позже или обратитесь к администратору.",
             parse_mode="HTML"
         )
 
