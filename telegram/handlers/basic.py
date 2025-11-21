@@ -1206,9 +1206,13 @@ async def cmd_profit(message: Message, state: FSMContext):
             log_info(user_id, "Инициализация SQLite базы данных для команды /profit", module_name='basic_handlers')
             await sqlite_db.initialize()
         
+        # ВАЖНО: Для Lighter бота все сделки сохраняются с user_id=0
+        # Поэтому используем user_id=0 для получения статистики
+        stats_user_id = 0
+        
         # Получаем статистику (последние 10 дней)
-        log_info(user_id, f"Запрос статистики прибыли для user_id={user_id}", module_name='basic_handlers')
-        stats = await sqlite_db.get_daily_stats(user_id, days=10)
+        log_info(user_id, f"Запрос статистики прибыли для user_id={stats_user_id} (Lighter бот)", module_name='basic_handlers')
+        stats = await sqlite_db.get_daily_stats(stats_user_id, days=10)
         log_info(user_id, f"Статистика получена: total_trades={stats['total_trades']}", module_name='basic_handlers')
         
         if stats['total_trades'] == 0:
