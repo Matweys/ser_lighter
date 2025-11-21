@@ -260,6 +260,10 @@ class SQLiteDB:
         - total_trades: общее количество закрытых сделок
         """
         try:
+            # Убеждаемся, что база данных инициализирована
+            if not self._is_initialized or not self.conn:
+                await self.initialize()
+            
             from datetime import datetime, timedelta, timezone
             
             # Получаем статистику по дням (последние N дней)

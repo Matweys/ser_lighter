@@ -1201,6 +1201,10 @@ async def cmd_profit(message: Message, state: FSMContext):
         from decimal import Decimal
         from datetime import datetime
         
+        # Убеждаемся, что база данных инициализирована
+        if not sqlite_db._is_initialized:
+            await sqlite_db.initialize()
+        
         # Получаем статистику (последние 10 дней)
         stats = await sqlite_db.get_daily_stats(user_id, days=10)
         
