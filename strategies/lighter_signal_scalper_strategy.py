@@ -690,6 +690,15 @@ class LighterSignalScalperStrategy(BaseStrategy):
             
             # Получаем текущую цену
             exit_price = self._last_known_price if self._last_known_price else self.entry_price
+            if exit_price is None:
+                exit_price = await self.api.get_current_price(self.symbol)
+                if exit_price is None:
+                    log_error(self.user_id, "Не удалось получить цену для закрытия позиции", "LighterSignalScalper")
+                    self.is_waiting_for_trade = False
+                    return
+            
+            # Убеждаемся, что exit_price - Decimal
+            exit_price = self._convert_to_decimal(exit_price)
             
             # Размещаем ордер закрытия (противоположное направление)
             close_side = "Sell" if self.active_direction == "LONG" else "Buy"
@@ -697,11 +706,15 @@ class LighterSignalScalperStrategy(BaseStrategy):
             # Получаем размер позиции
             positions = await self.api.get_positions(self.symbol)
             if positions:
-                pos_size = positions[0]["size"]
+                # Конвертируем pos_size в Decimal для корректных вычислений
+                pos_size_raw = positions[0]["size"]
+                pos_size = self._convert_to_decimal(pos_size_raw)
                 
                 # Для Lighter нужно закрыть через reduce_only ордер
                 # Используем текущую цену как целевую (market close)
-                order_result = await self.api.place_market_order(close_side, float(pos_size * exit_price))
+                # Вычисляем notional в Decimal, затем конвертируем в float для API
+                notional_usd = pos_size * exit_price
+                order_result = await self.api.place_market_order(close_side, float(notional_usd))
                 
                 if order_result:
                     await asyncio.sleep(2.0)
