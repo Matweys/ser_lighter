@@ -1204,19 +1204,27 @@ async def cmd_profit(message: Message, state: FSMContext):
         # Убеждаемся, что база данных инициализирована
         # Используем абсолютный путь к базе данных (как в lighter_trading_bot.py)
         import os
-        import sys
         
         # Определяем путь к базе данных (в рабочей директории бота)
         # Рабочая директория бота: /root/ser_lighter
         bot_working_dir = "/root/ser_lighter"
         db_path = os.path.join(bot_working_dir, "lighter_trading.db")
         
-        log_info(user_id, f"Путь к базе данных: {db_path}", module_name='basic_handlers')
+        log_info(user_id, f"Команда /profit: путь к базе данных: {db_path}, инициализирована: {sqlite_db._is_initialized}", module_name='basic_handlers')
         
+        # Если база данных не инициализирована или путь отличается, переинициализируем
         if not sqlite_db._is_initialized or not sqlite_db.conn:
             log_info(user_id, "Инициализация SQLite базы данных для команды /profit", module_name='basic_handlers')
             # Устанавливаем правильный путь к базе данных
             sqlite_db.db_path = db_path
+            await sqlite_db.initialize()
+        elif sqlite_db.db_path != db_path:
+            # Если путь отличается, закрываем старое соединение и открываем новое
+            log_info(user_id, f"Путь к базе данных изменился: {sqlite_db.db_path} -> {db_path}, переинициализация", module_name='basic_handlers')
+            if sqlite_db.conn:
+                await sqlite_db.close()
+            sqlite_db.db_path = db_path
+            sqlite_db._is_initialized = False
             await sqlite_db.initialize()
         
         # ВАЖНО: Для Lighter бота все сделки сохраняются с user_id=0
@@ -1225,8 +1233,14 @@ async def cmd_profit(message: Message, state: FSMContext):
         
         # Получаем статистику (последние 10 дней)
         log_info(user_id, f"Запрос статистики прибыли для user_id={stats_user_id} (Lighter бот)", module_name='basic_handlers')
-        stats = await sqlite_db.get_daily_stats(stats_user_id, days=10)
-        log_info(user_id, f"Статистика получена: total_trades={stats['total_trades']}", module_name='basic_handlers')
+        try:
+            stats = await sqlite_db.get_daily_stats(stats_user_id, days=10)
+            log_info(user_id, f"Статистика получена: total_trades={stats['total_trades']}, daily_stats_count={len(stats.get('daily_stats', []))}", module_name='basic_handlers')
+        except Exception as e:
+            log_error(user_id, f"Ошибка при получении статистики из БД: {e}", module_name='basic_handlers')
+            import traceback
+            log_error(user_id, f"Traceback: {traceback.format_exc()}", module_name='basic_handlers')
+            raise
         
         if stats['total_trades'] == 0:
             await message.answer(
