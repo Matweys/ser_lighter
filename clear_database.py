@@ -19,7 +19,13 @@ from core.logger import log_info, log_error
 async def clear_database():
     """Очистка базы данных"""
     try:
-        log_info(0, "Инициализация SQLite базы данных...", module_name="clear_db")
+        # Устанавливаем правильный путь к базе данных (абсолютный путь)
+        import os
+        bot_working_dir = "/root/ser_lighter"
+        db_path = os.path.join(bot_working_dir, "lighter_trading.db")
+        sqlite_db.db_path = db_path
+        
+        log_info(0, f"Инициализация SQLite базы данных: {db_path}", module_name="clear_db")
         await sqlite_db.initialize()
         
         # Подсчитываем количество записей перед удалением
