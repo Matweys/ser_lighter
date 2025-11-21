@@ -1202,8 +1202,21 @@ async def cmd_profit(message: Message, state: FSMContext):
         from datetime import datetime
         
         # Убеждаемся, что база данных инициализирована
+        # Используем абсолютный путь к базе данных (как в lighter_trading_bot.py)
+        import os
+        import sys
+        
+        # Определяем путь к базе данных (в рабочей директории бота)
+        # Рабочая директория бота: /root/ser_lighter
+        bot_working_dir = "/root/ser_lighter"
+        db_path = os.path.join(bot_working_dir, "lighter_trading.db")
+        
+        log_info(user_id, f"Путь к базе данных: {db_path}", module_name='basic_handlers')
+        
         if not sqlite_db._is_initialized or not sqlite_db.conn:
             log_info(user_id, "Инициализация SQLite базы данных для команды /profit", module_name='basic_handlers')
+            # Устанавливаем правильный путь к базе данных
+            sqlite_db.db_path = db_path
             await sqlite_db.initialize()
         
         # ВАЖНО: Для Lighter бота все сделки сохраняются с user_id=0
