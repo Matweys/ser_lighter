@@ -435,35 +435,49 @@ class LighterSignalScalperStrategy(BaseStrategy):
         
         # ЛОГИКА ТРЕЙЛИНГ-СТОПА С 6 СТУПЕНЯМИ
         # Обновляем пиковую прибыль
+        old_peak = self.peak_profit_usd
         if pnl > self.peak_profit_usd:
             self.peak_profit_usd = pnl
+            if old_peak != pnl:
+                log_info(self.user_id, f"📈 Новый пик прибыли: ${self.peak_profit_usd:.2f} (было ${old_peak:.2f})", "LighterSignalScalper")
         
         # Поэтапный трейлинг с динамическими порогами и 20% откатом
         current_trailing_level = self._get_trailing_level(pnl)
         
         # Обновляем максимальный достигнутый уровень
+        old_max_level = self.max_trailing_level_reached
         if current_trailing_level > self.max_trailing_level_reached:
             self.max_trailing_level_reached = current_trailing_level
+            if old_max_level != current_trailing_level:
+                level_name = self._get_level_name(current_trailing_level)
+                log_info(self.user_id, f"🎯 Достигнут новый уровень трейлинга: {level_name} (уровень {current_trailing_level})", "LighterSignalScalper")
         
         # ИСПРАВЛЕНО: Проверяем трейлинг-стоп если пик был достигнут (независимо от текущего уровня)
         # Это важно, чтобы позиция закрылась при откате, даже если текущий PnL упал ниже уровня 1
         if self.peak_profit_usd > 0 and self.max_trailing_level_reached > 0:
             # Фиксированный 20% откат от пика на всех уровнях
             trailing_distance = self.peak_profit_usd * Decimal('0.20')
+            close_threshold = self.peak_profit_usd - trailing_distance
             
             # Проверяем условие закрытия: откат от пика >= 20%
-            if pnl < (self.peak_profit_usd - trailing_distance):
+            if pnl < close_threshold:
                 level_name = self._get_level_name(self.max_trailing_level_reached)
                 log_info(self.user_id,
-                        f"💎 ЗАКРЫТИЕ НА {level_name}! Пик: ${self.peak_profit_usd:.2f}, PnL: ${pnl:.2f}, откат: ${trailing_distance:.2f} (20%)",
+                        f"💎 ЗАКРЫТИЕ НА {level_name}! Пик: ${self.peak_profit_usd:.2f}, PnL: ${pnl:.2f}, откат: ${trailing_distance:.2f} (20%), порог закрытия: ${close_threshold:.2f}",
                         "LighterSignalScalper")
                 await self._close_position("level_trailing_profit")
             else:
-                # Логируем текущий статус трейлинга
+                # Логируем текущий статус трейлинга (каждые 10 секунд для отладки)
                 level_name = self._get_level_name(current_trailing_level if current_trailing_level > 0 else self.max_trailing_level_reached)
-                log_debug(self.user_id,
-                         f"Трейлинг {level_name}: пик=${self.peak_profit_usd:.2f}, PnL=${pnl:.2f}, откат допустим=${trailing_distance:.2f}",
+                # Логируем INFO вместо DEBUG, чтобы видеть в логах
+                log_info(self.user_id,
+                         f"📊 Трейлинг {level_name}: пик=${self.peak_profit_usd:.2f}, PnL=${pnl:.2f}, порог закрытия=${close_threshold:.2f}, откат допустим=${trailing_distance:.2f} (20%)",
                          "LighterSignalScalper")
+        elif self.peak_profit_usd > 0:
+            # Пик достигнут, но уровень еще не определен (может быть на уровне 0)
+            log_debug(self.user_id,
+                     f"⏳ Ожидание достижения первого уровня трейлинга: пик=${self.peak_profit_usd:.2f}, PnL=${pnl:.2f}",
+                     "LighterSignalScalper")
     
     async def _signal_check_loop(self):
         """
